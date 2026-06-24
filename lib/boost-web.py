@@ -420,8 +420,13 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
     else:
         return {"ok": False, "message": "Unknown action."}
 
-    message = (result.stdout or result.stderr).strip()
-    return {"ok": result.returncode == 0, "message": message or "Done."}
+    if result.returncode == 0:
+        return {"ok": True, "message": f"{action.capitalize()} applied successfully."}
+    
+    # On error, just return the last line of stderr or stdout so it fits in a toast
+    full_err = (result.stderr or result.stdout).strip()
+    short_err = full_err.split("\n")[-1] if full_err else "Unknown error"
+    return {"ok": False, "message": short_err}
 
 
 def valid_hhmm(value: str) -> bool:
