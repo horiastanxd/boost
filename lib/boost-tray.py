@@ -3,13 +3,14 @@ import os
 import sys
 import time
 import subprocess
+import webbrowser
 from pathlib import Path
 import threading
 
 import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('AyatanaAppIndicator3', '0.1')
-from gi.repository import Gtk, GLib, AyatanaAppIndicator3
+from gi.repository import Gtk, Gdk, GLib, AyatanaAppIndicator3
 
 STATE_DIR = Path("/var/lib/power-profile")
 CONF_FILE = Path("/etc/boost-auto.conf")
@@ -136,7 +137,7 @@ class BoostTray:
         self.menu.append(Gtk.SeparatorMenuItem())
         
         dash_item = Gtk.MenuItem(label="📊 Open Web Dashboard")
-        dash_item.connect("activate", lambda w: run_cmd("/usr/local/bin/auto open"))
+        dash_item.connect("activate", lambda w: Gtk.show_uri_on_window(None, "http://127.0.0.1:8765", Gdk.CURRENT_TIME))
         self.menu.append(dash_item)
         
         quit_item = Gtk.MenuItem(label="Quit Tray")
