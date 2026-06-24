@@ -437,493 +437,646 @@ INDEX_HTML = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Boost Power Manager — premium Linux power profile control dashboard">
 <title>Boost Control Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;600;700;800&display=swap');
-:root{color-scheme:dark;--bg-gradient:radial-gradient(circle at 10% 20%, rgba(12,20,39,1) 0%, rgba(5,9,18,1) 90%);--panel-bg:rgba(13,24,45,0.6);--panel-border:rgba(255,255,255,0.07);--text-main:#f1f5f9;--text-muted:#94a3b8;--accent:#0ea5e9;--accent-glow:rgba(14,165,233,0.35);--color-boost:#f43f5e;--color-boost-glow:rgba(244,63,94,0.4);--color-powersave:#10b981;--color-powersave-glow:rgba(16,185,129,0.4);--color-silent:#8b5cf6;--color-silent-glow:rgba(139,92,246,0.4);--color-restore:#6b7280;--color-warn:#f59e0b;--color-danger:#ef4444;--color-ok:#10b981;--font-title:'Outfit',-apple-system,BlinkMacSystemFont,sans-serif;--font-body:'Inter',-apple-system,BlinkMacSystemFont,sans-serif}
-*{box-sizing:border-box}body{margin:0;background:var(--bg-gradient);background-attachment:fixed;color:var(--text-main);font-family:var(--font-body);line-height:1.5;-webkit-font-smoothing:antialiased}button,input{font:inherit}
-main{max-width:1200px;margin:0 auto;padding:40px 24px}.top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:24px;margin-bottom:32px}
-h1{font-family:var(--font-title);font-weight:800;font-size:36px;margin:0;background:linear-gradient(to right,#38bdf8,#818cf8,#f43f5e);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:-0.02em}
-.subtitle{color:var(--text-muted);margin-top:4px;font-size:15px}
-.card{background:var(--panel-bg);border:1px solid var(--panel-border);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-radius:16px;padding:24px;box-shadow:0 10px 30px rgba(0,0,0,0.25);transition:transform 0.3s ease,box-shadow 0.3s ease}
-.card:hover{box-shadow:0 15px 35px rgba(0,0,0,0.3)}.status-dot{width:10px;height:10px;border-radius:50%;background:var(--color-powersave);box-shadow:0 0 12px var(--color-powersave);margin-right:8px;display:inline-block;animation:pulse 2s infinite}
-.status-dot.off{background:var(--color-boost);box-shadow:0 0 12px var(--color-boost)}
-@keyframes pulse{0%{transform:scale(0.95);opacity:0.8}50%{transform:scale(1.1);opacity:1}100%{transform:scale(0.95);opacity:0.8}}
-.gauges-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px;margin-bottom:32px}
-.gauge-card{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:20px}
-.gauge-wrapper{position:relative;width:120px;height:120px;margin-bottom:12px}
-.gauge-svg{transform:rotate(-90deg);width:120px;height:120px}
-.gauge-bg{fill:none;stroke:rgba(255,255,255,0.05);stroke-width:8}
-.gauge-fill{fill:none;stroke:var(--accent);stroke-width:8;stroke-linecap:round;transition:stroke-dashoffset 0.6s cubic-bezier(0.4,0,0.2,1);filter:drop-shadow(0 0 6px var(--accent-glow))}
-.gauge-value{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:var(--font-title);font-weight:700;font-size:22px}
-.gauge-value small{font-size:12px;font-weight:500;color:var(--text-muted)}
-.gauge-label{color:var(--text-muted);font-size:12px;text-transform:uppercase;letter-spacing:0.06em;font-weight:600}
-.stats-details{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:16px;width:100%;margin-top:16px;border-top:1px solid rgba(255,255,255,0.05);padding-top:16px}
-.detail-item{display:flex;flex-direction:column}.detail-lbl{font-size:11px;text-transform:uppercase;color:var(--text-muted);letter-spacing:0.04em}
-.detail-val{font-size:15px;font-weight:600;margin-top:4px}
-.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,380px);gap:24px}
-@media(max-width:900px){.split{grid-template-columns:1fr}}
-.section-title{font-family:var(--font-title);font-weight:700;font-size:20px;margin:0 0 16px;display:flex;align-items:center;gap:8px}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap');
+:root{
+  color-scheme:dark;
+  --bg-deep:#050912;
+  --bg-surface:rgba(13,24,45,0.55);
+  --bg-surface-hover:rgba(13,24,45,0.75);
+  --panel-border:rgba(255,255,255,0.06);
+  --panel-border-hover:rgba(255,255,255,0.12);
+  --text-main:#f1f5f9;
+  --text-secondary:#cbd5e1;
+  --text-muted:#64748b;
+  --accent:#0ea5e9;
+  --accent-glow:rgba(14,165,233,0.3);
+  --color-boost:#f43f5e;
+  --color-boost-glow:rgba(244,63,94,0.35);
+  --color-powersave:#10b981;
+  --color-powersave-glow:rgba(16,185,129,0.35);
+  --color-silent:#8b5cf6;
+  --color-silent-glow:rgba(139,92,246,0.35);
+  --color-warn:#f59e0b;
+  --color-danger:#ef4444;
+  --color-ok:#10b981;
+  --font-title:'Outfit',system-ui,sans-serif;
+  --font-body:'Inter',system-ui,sans-serif;
+  --radius:16px;
+  --radius-sm:10px;
+  --transition:0.3s cubic-bezier(0.4,0,0.2,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg-deep);
+  color:var(--text-main);
+  font-family:var(--font-body);
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+  overflow-x:hidden;
+}
+/* Animated mesh gradient background */
+body::before{
+  content:'';position:fixed;inset:0;z-index:-1;
+  background:
+    radial-gradient(ellipse 80% 50% at 20% 20%, rgba(14,165,233,0.08) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 40% at 80% 80%, rgba(139,92,246,0.06) 0%, transparent 50%),
+    radial-gradient(ellipse 50% 60% at 50% 0%, rgba(244,63,94,0.04) 0%, transparent 50%);
+  animation:bg-drift 20s ease-in-out infinite alternate;
+}
+@keyframes bg-drift{
+  0%{opacity:0.6;transform:scale(1) translate(0,0)}
+  50%{opacity:1;transform:scale(1.05) translate(-1%,2%)}
+  100%{opacity:0.7;transform:scale(1) translate(1%,-1%)}
+}
+button,input,select{font:inherit}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* Layout */
+main{max-width:1240px;margin:0 auto;padding:40px 24px 60px}
+@media(max-width:640px){main{padding:20px 12px 40px}}
+
+/* Header */
+.header{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:20px;margin-bottom:36px}
+.header-left h1{
+  font-family:var(--font-title);font-weight:800;font-size:clamp(28px,5vw,40px);
+  background:linear-gradient(135deg,#38bdf8 0%,#818cf8 40%,#f43f5e 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text;letter-spacing:-0.03em;line-height:1.2;
+}
+.header-left .tagline{color:var(--text-muted);font-size:14px;margin-top:4px;font-weight:400}
+.status-badge{
+  display:flex;align-items:center;gap:10px;
+  background:var(--bg-surface);border:1px solid var(--panel-border);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border-radius:var(--radius);padding:14px 20px;
+  animation:fade-up 0.6s var(--transition) both;animation-delay:0.1s;
+}
+.status-indicator{width:10px;height:10px;border-radius:50%;flex-shrink:0;animation:pulse-dot 2s ease-in-out infinite}
+.status-indicator.active{background:var(--color-ok);box-shadow:0 0 12px var(--color-powersave-glow)}
+.status-indicator.inactive{background:var(--color-danger);box-shadow:0 0 12px var(--color-boost-glow)}
+@keyframes pulse-dot{0%,100%{transform:scale(0.9);opacity:0.7}50%{transform:scale(1.15);opacity:1}}
+.status-text{font-weight:600;font-size:14px}
+.status-sub{color:var(--text-muted);font-size:11px;margin-top:2px}
+
+/* Connection bar */
+.conn-bar{
+  position:fixed;top:0;left:0;right:0;z-index:10000;
+  background:rgba(239,68,68,0.9);color:#fff;text-align:center;
+  padding:8px;font-size:13px;font-weight:600;
+  transform:translateY(-100%);transition:transform 0.3s ease;
+}
+.conn-bar.show{transform:translateY(0)}
+
+/* Cards */
+.card{
+  background:var(--bg-surface);
+  border:1px solid var(--panel-border);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border-radius:var(--radius);padding:24px;
+  box-shadow:0 4px 24px rgba(0,0,0,0.2);
+  transition:border-color var(--transition),box-shadow var(--transition),transform var(--transition);
+}
+.card:hover{
+  border-color:var(--panel-border-hover);
+  box-shadow:0 8px 32px rgba(0,0,0,0.3);
+  transform:translateY(-2px);
+}
+/* Staggered entrance */
+.card{animation:fade-up 0.5s var(--transition) both}
+@keyframes fade-up{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+
+/* Gauges */
+.gauges-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px;margin-bottom:32px}
+.gauge-card{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:28px 20px}
+.gauge-card:nth-child(1){animation-delay:0.05s}.gauge-card:nth-child(2){animation-delay:0.1s}
+.gauge-card:nth-child(3){animation-delay:0.15s}.gauge-card:nth-child(4){animation-delay:0.2s}
+.gauge-wrapper{position:relative;width:130px;height:130px;margin-bottom:14px}
+.gauge-svg{transform:rotate(-90deg);width:130px;height:130px}
+.gauge-bg{fill:none;stroke:rgba(255,255,255,0.04);stroke-width:10}
+.gauge-fill{fill:none;stroke-width:10;stroke-linecap:round;transition:stroke-dashoffset 0.8s cubic-bezier(0.4,0,0.2,1),stroke 0.4s ease}
+.gauge-value{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  font-family:var(--font-title);font-weight:700;font-size:26px;
+  transition:color 0.4s ease;
+}
+.gauge-value small{font-size:13px;font-weight:500;color:var(--text-muted)}
+.gauge-label{color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:0.1em;font-weight:600}
+
+/* Temp danger glow */
+.gauge-card.temp-alert{
+  border-color:rgba(239,68,68,0.4) !important;
+  box-shadow:0 0 40px rgba(239,68,68,0.15),0 4px 24px rgba(0,0,0,0.2) !important;
+  animation:fade-up 0.5s var(--transition) both, temp-pulse 2s ease-in-out infinite !important;
+}
+@keyframes temp-pulse{0%,100%{box-shadow:0 0 30px rgba(239,68,68,0.1)}50%{box-shadow:0 0 50px rgba(239,68,68,0.25)}}
+
+/* Detail items */
+.stats-details{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:16px;width:100%;margin-top:16px;border-top:1px solid rgba(255,255,255,0.04);padding-top:16px}
+.detail-item{display:flex;flex-direction:column;gap:4px}
+.detail-lbl{font-size:10px;text-transform:uppercase;color:var(--text-muted);letter-spacing:0.08em;font-weight:600}
+.detail-val{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
+
+/* Split layout */
+.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,400px);gap:24px}
+@media(max-width:960px){.split{grid-template-columns:1fr}}
+
+/* Section titles */
+.section-title{
+  font-family:var(--font-title);font-weight:700;font-size:18px;
+  margin:0 0 16px;display:flex;align-items:center;gap:8px;
+  letter-spacing:-0.01em;
+}
+
+/* Controls */
 .control-group{margin-bottom:24px}.control-group:last-child{margin-bottom:0}
-.control-label{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:8px;font-weight:600}
+.control-label{font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:8px;font-weight:600}
 .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
-.btn{border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);color:var(--text-main);border-radius:10px;padding:10px 16px;font-weight:500;cursor:pointer;transition:all 0.2s ease;font-size:14px}
-.btn:hover{background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);transform:translateY(-1px)}
-.btn:active{transform:translateY(1px)}
-.btn.primary-boost{background:var(--color-boost);border-color:transparent;box-shadow:0 4px 12px var(--color-boost-glow)}
-.btn.primary-boost:hover{background:#ff5277;box-shadow:0 6px 16px var(--color-boost-glow)}
-.btn.good-save{background:var(--color-powersave);border-color:transparent;box-shadow:0 4px 12px var(--color-powersave-glow)}
-.btn.good-save:hover{background:#14d496;box-shadow:0 6px 16px var(--color-powersave-glow)}
-.btn.silent-mode{background:var(--color-silent);border-color:transparent;box-shadow:0 4px 12px var(--color-silent-glow)}
-.btn.silent-mode:hover{background:#a78bfa;box-shadow:0 6px 16px var(--color-silent-glow)}
-.btn.restore-bios{background:rgba(30,41,59,0.8);border-color:rgba(75,85,99,0.3)}
-.btn.restore-bios:hover{background:rgba(51,65,85,0.8)}
-.btn.active-preset{border-color:var(--accent);box-shadow:0 0 10px var(--accent-glow);background:rgba(14,165,233,0.15)}
-.field-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05);padding:12px;border-radius:12px}
-.field-row label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--text-muted);text-transform:uppercase}
-.field-row input{width:90px;background:#090f1d;color:var(--text-main);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:8px;text-align:center;transition:border-color 0.2s ease}
-.field-row input:focus{outline:none;border-color:var(--accent)}
-.message{min-height:24px;color:var(--color-ok);margin-top:14px;font-weight:500;font-size:13px;display:flex;align-items:center;gap:6px}
-.message.error{color:var(--color-danger)}
-.reason{border-left:4px solid var(--accent);background:rgba(14,165,233,0.04);padding:12px 16px;border-radius:0 12px 12px 0;margin:0 0 16px;font-size:14px}
-.chart-container{background:rgba(13,24,45,0.4);border:1px solid rgba(255,255,255,0.05);border-radius:12px;padding:16px;margin-top:12px}
-.chart-svg{width:100%;height:180px;display:block}
-.chart-legend{display:flex;gap:16px;justify-content:center;margin-top:8px;font-size:12px}
+
+/* Buttons */
+.btn{
+  border:1px solid rgba(255,255,255,0.08);
+  background:rgba(255,255,255,0.03);color:var(--text-main);
+  border-radius:var(--radius-sm);padding:10px 18px;
+  font-weight:500;cursor:pointer;font-size:13px;
+  transition:all 0.2s ease;position:relative;overflow:hidden;
+  user-select:none;
+}
+.btn::after{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(255,255,255,0.05),transparent);
+  opacity:0;transition:opacity 0.2s ease;
+}
+.btn:hover{background:rgba(255,255,255,0.07);border-color:rgba(255,255,255,0.15);transform:translateY(-1px)}
+.btn:hover::after{opacity:1}
+.btn:active{transform:translateY(1px);transition-duration:0.05s}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.btn.primary-boost{background:linear-gradient(135deg,#f43f5e,#e11d48);border-color:transparent;box-shadow:0 4px 16px var(--color-boost-glow)}
+.btn.primary-boost:hover{box-shadow:0 6px 24px var(--color-boost-glow);background:linear-gradient(135deg,#fb7185,#f43f5e)}
+.btn.good-save{background:linear-gradient(135deg,#10b981,#059669);border-color:transparent;box-shadow:0 4px 16px var(--color-powersave-glow)}
+.btn.good-save:hover{box-shadow:0 6px 24px var(--color-powersave-glow);background:linear-gradient(135deg,#34d399,#10b981)}
+.btn.silent-mode{background:linear-gradient(135deg,#8b5cf6,#7c3aed);border-color:transparent;box-shadow:0 4px 16px var(--color-silent-glow)}
+.btn.silent-mode:hover{box-shadow:0 6px 24px var(--color-silent-glow);background:linear-gradient(135deg,#a78bfa,#8b5cf6)}
+.btn.restore-bios{background:rgba(30,41,59,0.6);border-color:rgba(75,85,99,0.2)}
+.btn.restore-bios:hover{background:rgba(51,65,85,0.6)}
+.btn.active-preset{border-color:var(--accent) !important;box-shadow:0 0 16px var(--accent-glow) !important;background:rgba(14,165,233,0.12) !important}
+
+/* Keyboard shortcut hints */
+.btn .kbd{
+  display:inline-block;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);
+  border-radius:4px;padding:1px 6px;font-size:10px;margin-left:8px;
+  font-family:var(--font-body);font-weight:600;color:var(--text-muted);
+  vertical-align:middle;
+}
+
+/* Field rows */
+.field-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:rgba(255,255,255,0.015);border:1px solid rgba(255,255,255,0.04);padding:14px;border-radius:12px}
+.field-row label{display:flex;flex-direction:column;gap:4px;font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;font-weight:600}
+.field-row input{width:90px;background:rgba(5,9,18,0.8);color:var(--text-main);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:8px 10px;text-align:center;transition:border-color 0.2s ease;font-variant-numeric:tabular-nums}
+.field-row input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
+
+/* Decision reason */
+.reason{
+  border-left:3px solid var(--accent);
+  background:linear-gradient(135deg,rgba(14,165,233,0.04),rgba(14,165,233,0.01));
+  padding:14px 18px;border-radius:0 12px 12px 0;margin:0 0 16px;font-size:13px;
+  color:var(--text-secondary);line-height:1.6;
+}
+
+/* Chart */
+.chart-container{background:rgba(5,9,18,0.4);border:1px solid rgba(255,255,255,0.04);border-radius:12px;padding:16px;margin-top:12px}
+.chart-svg{width:100%;height:200px;display:block}
+.chart-legend{display:flex;gap:20px;justify-content:center;margin-top:10px;font-size:11px;color:var(--text-muted)}
 .legend-item{display:flex;align-items:center;gap:6px}
-.legend-dot{width:10px;height:10px;border-radius:2px}
-.table-wrap{overflow-x:auto;border-radius:12px;border:1px solid rgba(255,255,255,0.05);margin-top:12px}
-table{width:100%;border-collapse:collapse;background:rgba(15,23,42,0.3)}
-th,td{text-align:left;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.05);white-space:nowrap}
-th{color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:0.06em;background:rgba(255,255,255,0.02)}
-tr:last-child td{border-bottom:0}tr:hover td{background:rgba(255,255,255,0.01)}
-#toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
-.toast { background: var(--panel-bg); backdrop-filter: blur(16px); border: 1px solid var(--panel-border); border-left: 4px solid var(--accent); padding: 16px 20px; border-radius: 12px; color: #fff; box-shadow: 0 10px 30px rgba(0,0,0,0.3); font-weight: 500; font-size: 14px; opacity: 0; transform: translateY(20px); animation: toast-in 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
-.toast.error { border-left-color: var(--color-danger); }
-.toast.hide { animation: toast-out 0.3s ease forwards; }
-@keyframes toast-in { to { opacity: 1; transform: translateY(0); } }
-@keyframes toast-out { to { opacity: 0; transform: translateY(20px); } }
+.legend-dot{width:10px;height:10px;border-radius:3px}
+
+/* Tables */
+.table-wrap{overflow-x:auto;border-radius:12px;border:1px solid rgba(255,255,255,0.04);margin-top:12px}
+table{width:100%;border-collapse:collapse;background:rgba(5,9,18,0.3)}
+th,td{text-align:left;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.03);white-space:nowrap;font-variant-numeric:tabular-nums}
+th{color:var(--text-muted);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;background:rgba(255,255,255,0.015);font-weight:600}
+tr:last-child td{border-bottom:0}
+tr:hover td{background:rgba(255,255,255,0.015)}
+tr.active-preset td{background:rgba(14,165,233,0.06)}
+
+/* Toast notifications */
+#toast-container{position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column-reverse;gap:10px;pointer-events:none}
+.toast{
+  pointer-events:auto;
+  background:rgba(13,24,45,0.9);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid var(--panel-border);border-left:3px solid var(--accent);
+  padding:14px 20px;border-radius:12px;color:#fff;
+  box-shadow:0 16px 48px rgba(0,0,0,0.4);
+  font-weight:500;font-size:13px;
+  opacity:0;transform:translateX(100%);
+  animation:toast-slide-in 0.4s cubic-bezier(0.16,1,0.3,1) forwards;
+  max-width:360px;
+}
+.toast.error{border-left-color:var(--color-danger)}
+.toast.hide{animation:toast-slide-out 0.3s ease forwards}
+@keyframes toast-slide-in{to{opacity:1;transform:translateX(0)}}
+@keyframes toast-slide-out{to{opacity:0;transform:translateX(100%)}}
+
+/* Footer */
+.footer{
+  text-align:center;padding:32px 0 16px;
+  color:var(--text-muted);font-size:11px;
+  border-top:1px solid rgba(255,255,255,0.03);margin-top:48px;
+}
+.footer kbd{
+  display:inline-block;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);
+  border-radius:4px;padding:2px 6px;font-size:10px;font-family:var(--font-body);
+}
+
+/* Skeleton loading */
+.skeleton{background:linear-gradient(90deg,rgba(255,255,255,0.03) 0%,rgba(255,255,255,0.06) 50%,rgba(255,255,255,0.03) 100%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:6px}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.08);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,0.15)}
 </style>
 </head>
 <body>
+<div class="conn-bar" id="connBar">⚠ Connection lost — reconnecting...</div>
 <div id="toast-container"></div>
 <main>
-<div class="top">
-  <div>
+<div class="header">
+  <div class="header-left">
     <h1>Boost Control Panel</h1>
-    <div class="subtitle">Linux power profile manager dashboard for Intel/AMD + NVIDIA desktops</div>
+    <div class="tagline">Linux power profile manager • Intel / AMD + NVIDIA</div>
   </div>
-  <div class="card" style="padding: 14px 20px;">
-    <div style="display:flex; align-items:center;"><span id="serviceDot" class="status-dot"></span><strong id="serviceText">Checking...</strong></div>
-    <div class="subtitle" style="font-size:12px; text-align:right;" id="updatedText">-</div>
+  <div class="status-badge">
+    <div>
+      <div style="display:flex;align-items:center;gap:8px"><span id="serviceDot" class="status-indicator active"></span><span class="status-text" id="serviceText">Initializing...</span></div>
+      <div class="status-sub" id="updatedText">Connecting to telemetry...</div>
+    </div>
   </div>
 </div>
 
-<section class="gauges-grid" aria-label="Live status">
-  <div class="card gauge-card">
+<section class="gauges-grid" aria-label="Live system metrics">
+  <div class="card gauge-card" id="cpuLoadCard">
     <div class="gauge-wrapper">
-      <svg class="gauge-svg" viewBox="0 0 120 120">
-        <circle class="gauge-bg" cx="60" cy="60" r="50" />
-        <circle id="cpuLoadCircle" class="gauge-fill" cx="60" cy="60" r="50" style="stroke: #0ea5e9; filter: drop-shadow(0 0 4px rgba(14,165,233,0.4));" />
+      <svg class="gauge-svg" viewBox="0 0 130 130">
+        <circle class="gauge-bg" cx="65" cy="65" r="54" />
+        <circle id="cpuLoadCircle" class="gauge-fill" cx="65" cy="65" r="54" style="stroke:#0ea5e9;filter:drop-shadow(0 0 8px rgba(14,165,233,0.4))" />
       </svg>
-      <div class="gauge-value"><span id="cpuLoadText">-</span><small>%</small></div>
+      <div class="gauge-value"><span id="cpuLoadText">—</span><small>%</small></div>
     </div>
     <div class="gauge-label">CPU Load</div>
   </div>
-  
-  <div class="card gauge-card">
+
+  <div class="card gauge-card" id="cpuTempCard">
     <div class="gauge-wrapper">
-      <svg class="gauge-svg" viewBox="0 0 120 120">
-        <circle class="gauge-bg" cx="60" cy="60" r="50" />
-        <circle id="cpuTempCircle" class="gauge-fill" cx="60" cy="60" r="50" style="stroke: #f59e0b; filter: drop-shadow(0 0 4px rgba(245,158,11,0.4));" />
+      <svg class="gauge-svg" viewBox="0 0 130 130">
+        <circle class="gauge-bg" cx="65" cy="65" r="54" />
+        <circle id="cpuTempCircle" class="gauge-fill" cx="65" cy="65" r="54" style="stroke:#f59e0b;filter:drop-shadow(0 0 8px rgba(245,158,11,0.4))" />
       </svg>
-      <div class="gauge-value"><span id="cpuTempText">-</span><small>°C</small></div>
+      <div class="gauge-value"><span id="cpuTempText">—</span><small>°C</small></div>
     </div>
     <div class="gauge-label">CPU Temperature</div>
   </div>
 
-  <div class="card" style="display:flex; flex-direction:column; justify-content:center;">
-    <div class="gauge-label" style="margin-bottom:8px;">GPU Metrics</div>
-    <div class="detail-val" style="font-size:22px; font-weight:700;"><span id="gpuPowerText">-</span> W <span style="font-size:14px; color:var(--text-muted); font-weight:500;">/ <span id="gpuLimitText">-</span> W limit</span></div>
-    <div class="subtitle" style="font-size:14px; margin-top:2px;">GPU Temp: <strong id="gpuTempText" style="color:var(--text-main);">-</strong></div>
+  <div class="card gauge-card" style="animation-delay:0.15s">
+    <div class="gauge-label" style="margin-bottom:12px;font-size:12px">GPU Metrics</div>
+    <div style="font-family:var(--font-title);font-size:28px;font-weight:700;line-height:1.2"><span id="gpuPowerText">—</span><small style="font-size:14px;color:var(--text-muted);font-weight:400"> W</small></div>
+    <div style="color:var(--text-muted);font-size:12px;margin-top:4px">of <span id="gpuLimitText">—</span> W limit</div>
+    <div style="margin-top:12px;font-size:13px;color:var(--text-secondary)">🌡️ GPU Temp: <strong id="gpuTempText" style="color:var(--text-main)">—</strong> °C</div>
   </div>
 
-  <div class="card" style="display:flex; flex-direction:column; justify-content:center;">
-    <div class="gauge-label" style="margin-bottom:6px;">Current Configuration</div>
-    <div class="stats-details" style="margin-top:0; border:none; padding:0; grid-template-columns:1fr 1fr;">
-      <div class="detail-item">
-        <div class="detail-lbl">Active Profile</div>
-        <div class="detail-val" id="profile">-</div>
-      </div>
-      <div class="detail-item">
-        <div class="detail-lbl">Auto Mode</div>
-        <div class="detail-val" id="autoMode">-</div>
-      </div>
-      <div class="detail-item" style="margin-top:8px;">
-        <div class="detail-lbl">Turbo Boost</div>
-        <div class="detail-val" id="turbo">-</div>
-      </div>
-      <div class="detail-item" style="margin-top:8px;">
-        <div class="detail-lbl">RAPL PL1/PL2</div>
-        <div class="detail-val" id="limits">-</div>
-      </div>
+  <div class="card gauge-card" style="animation-delay:0.2s">
+    <div class="gauge-label" style="margin-bottom:12px;font-size:12px">System Config</div>
+    <div class="stats-details" style="margin-top:0;border:none;padding:0;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="detail-item"><div class="detail-lbl">Profile</div><div class="detail-val" id="profile">—</div></div>
+      <div class="detail-item"><div class="detail-lbl">Auto Mode</div><div class="detail-val" id="autoMode">—</div></div>
+      <div class="detail-item"><div class="detail-lbl">Turbo</div><div class="detail-val" id="turbo">—</div></div>
+      <div class="detail-item"><div class="detail-lbl">RAPL PL1/PL2</div><div class="detail-val" id="limits">—</div></div>
     </div>
   </div>
 </section>
 
 <div class="split">
-  <div style="display:flex; flex-direction:column; gap:24px;">
-    <section class="card">
+  <div style="display:flex;flex-direction:column;gap:24px">
+    <section class="card" style="animation-delay:0.25s">
       <div class="section-title">⚡ Power Profiles & Auto Modes</div>
-      
+
       <div class="control-group">
-        <div class="control-label">Manual Mode Profile Override</div>
-        <div class="subtitle" style="margin-bottom:12px;">Selecting a manual profile disables Auto mode, ensuring they do not conflict.</div>
+        <div class="control-label">Manual Profile Override</div>
+        <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Selecting a manual profile disables Auto mode</div>
         <div class="actions">
-          <button class="btn primary-boost" id="btn-boost" data-action="boost">Boost</button>
-          <button class="btn good-save" id="btn-powersave" data-action="powersave">Powersave</button>
-          <button class="btn silent-mode" id="btn-silent" data-action="silent">Silent (Overnight)</button>
-          <button class="btn restore-bios" id="btn-restore" data-action="restore">Restore BIOS Defaults</button>
+          <button class="btn primary-boost" id="btn-boost" data-action="boost">🚀 Boost <span class="kbd">1</span></button>
+          <button class="btn good-save" id="btn-powersave" data-action="powersave">🍃 Powersave <span class="kbd">2</span></button>
+          <button class="btn silent-mode" id="btn-silent" data-action="silent">🌙 Silent <span class="kbd">3</span></button>
+          <button class="btn restore-bios" id="btn-restore" data-action="restore">♻️ Restore <span class="kbd">4</span></button>
         </div>
       </div>
 
       <div class="control-group">
         <div class="control-label">Auto Switching Level</div>
-        <div class="subtitle" style="margin-bottom:12px;">Choose Summer mode in warm rooms to lower thermal limits and reduce noise.</div>
+        <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Summer mode lowers thermal limits for warm environments</div>
         <div class="actions">
           <button class="btn" id="mode-calm" data-action="auto-mode" data-value="calm">Calm</button>
-          <button class="btn" id="mode-summer" data-action="auto-mode" data-value="summer" style="color:var(--color-warn);">Summer</button>
+          <button class="btn" id="mode-summer" data-action="auto-mode" data-value="summer" style="color:var(--color-warn)">☀️ Summer</button>
           <button class="btn" id="mode-friendly" data-action="auto-mode" data-value="friendly">Friendly</button>
           <button class="btn" id="mode-active" data-action="auto-mode" data-value="active">Active</button>
           <button class="btn" id="mode-quiet" data-action="auto-mode" data-value="quiet">Quiet</button>
-          <button class="btn danger" id="mode-off" data-action="auto-mode" data-value="off">Off</button>
+          <button class="btn" id="mode-off" data-action="auto-mode" data-value="off" style="color:var(--color-danger)">Off</button>
         </div>
       </div>
-
     </section>
 
-    <section class="card">
-      <div class="section-title">📊 Live Power Telemetry (Last 30 samples)</div>
+    <section class="card" style="animation-delay:0.3s">
+      <div class="section-title">📊 Live Telemetry <span style="font-size:12px;color:var(--text-muted);font-weight:400;font-family:var(--font-body)">(last 30 samples)</span></div>
       <div class="chart-container">
-        <svg id="historyChart" class="chart-svg" viewBox="0 0 1000 180" preserveAspectRatio="none">
-          <text x="50%" y="50%" text-anchor="middle" fill="#94a3b8">Collecting history data...</text>
+        <svg id="historyChart" class="chart-svg" viewBox="0 0 1000 200" preserveAspectRatio="none">
+          <text x="50%" y="50%" text-anchor="middle" fill="#64748b" font-size="13" font-family="Inter,sans-serif">Collecting telemetry data...</text>
         </svg>
         <div class="chart-legend">
-          <div class="legend-item"><span class="legend-dot" style="background:#0ea5e9;"></span><span>CPU Load (%)</span></div>
-          <div class="legend-item"><span class="legend-dot" style="background:#f59e0b;"></span><span>CPU Temp (°C)</span></div>
-          <div class="legend-item"><span class="legend-dot" style="background:#ec4899;"></span><span>GPU Power (W / 200)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background:#0ea5e9"></span><span>CPU Load (%)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span><span>CPU Temp (°C)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background:#ec4899"></span><span>GPU Power (W/200)</span></div>
         </div>
       </div>
     </section>
   </div>
 
-  <aside style="display:flex; flex-direction:column; gap:24px;">
-    <section class="card">
+  <aside style="display:flex;flex-direction:column;gap:24px">
+    <section class="card" style="animation-delay:0.3s">
       <div class="section-title">⏳ Auto Pause & Snooze</div>
       <div class="control-group">
         <div class="control-label">Snooze suggestions for:</div>
-        <div class="actions" style="margin-bottom:16px;">
+        <div class="actions" style="margin-bottom:16px">
           <button class="btn" data-action="snooze" data-value="30m">30m</button>
           <button class="btn" data-action="snooze" data-value="1h">1h</button>
           <button class="btn" data-action="snooze" data-value="2h">2h</button>
+          <button class="btn" data-action="snooze" data-value="4h">4h</button>
           <button class="btn" data-action="today-off">All Today</button>
         </div>
-        <div class="actions">
-          <button class="btn good-save" style="width:100%; text-align:center;" data-action="resume">Resume Auto Mode</button>
-        </div>
+        <button class="btn good-save" style="width:100%;text-align:center" data-action="resume">▶ Resume Auto</button>
       </div>
-
-      <div class="stats-details" style="margin-top:16px;">
-        <div class="detail-item">
-          <div class="detail-lbl">Status</div>
-          <div class="detail-val" id="pauseState">-</div>
-        </div>
-        <div class="detail-item">
-          <div class="detail-lbl">Reason</div>
-          <div class="detail-val" style="font-size:13px; color:var(--text-muted);" id="pauseReason">-</div>
-        </div>
+      <div class="stats-details" style="margin-top:16px">
+        <div class="detail-item"><div class="detail-lbl">Status</div><div class="detail-val" id="pauseState">—</div></div>
+        <div class="detail-item"><div class="detail-lbl">Reason</div><div class="detail-val" style="font-size:12px;color:var(--text-muted)" id="pauseReason">—</div></div>
       </div>
     </section>
 
-    <section class="card">
+    <section class="card" style="animation-delay:0.35s">
       <div class="section-title">🌙 Quiet Hours & Summer Nights</div>
       <div class="control-group">
         <div class="control-label">Quiet hours schedule</div>
-        <div class="subtitle" style="margin-bottom:12px;">No prompts will be shown during quiet hours.</div>
+        <div style="color:var(--text-muted);font-size:12px;margin-bottom:10px">No prompts during quiet hours</div>
         <div class="field-row">
           <label>Start <input id="quietStart" value="22:00" placeholder="HH:MM"></label>
           <label>End <input id="quietEnd" value="08:00" placeholder="HH:MM"></label>
-          <button class="btn active-preset" id="saveQuiet" style="margin-top: 14px; width: 100%;">Save</button>
+          <button class="btn active-preset" id="saveQuiet" style="margin-top:14px;width:100%">Save Schedule</button>
         </div>
       </div>
-
-      <div class="control-group" style="margin-top:20px;">
-        <div class="control-label">Summer Nights Switch</div>
-        <div class="subtitle" style="margin-bottom:12px;">Allows Summer mode to automatically enable Silent mode overnight without prompting.</div>
+      <div class="control-group" style="margin-top:20px">
+        <div class="control-label">Summer Nights</div>
+        <div style="color:var(--text-muted);font-size:12px;margin-bottom:10px">Auto-enable Silent overnight in Summer mode</div>
         <div class="actions">
           <button class="btn good-save" id="summer-nights-on" data-action="summer-nights" data-value="on">Enable</button>
           <button class="btn" id="summer-nights-off" data-action="summer-nights" data-value="off">Disable</button>
         </div>
-        <div class="subtitle" style="font-size:12px; margin-top:8px;">Current State: <strong id="summerNights" style="color:var(--text-main);">-</strong></div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:8px">State: <strong id="summerNights" style="color:var(--text-main)">—</strong></div>
       </div>
     </section>
 
-    <section class="card">
-      <div class="section-title">📋 Reports & History</div>
-      <div class="gauge-label" style="margin-bottom:8px;">Power averages</div>
-      <div class="stats-details" style="margin-top:0; border:none; padding:0; grid-template-columns:1fr 1fr; gap:12px;">
-        <div class="detail-item">
-          <div class="detail-lbl">Average CPU</div>
-          <div class="detail-val" id="avgCpu">-</div>
-        </div>
-        <div class="detail-item">
-          <div class="detail-lbl">Max CPU Temp</div>
-          <div class="detail-val" id="maxTemp">-</div>
-        </div>
-        <div class="detail-item">
-          <div class="detail-lbl">Average GPU</div>
-          <div class="detail-val" id="avgGpu">-</div>
-        </div>
-        <div class="detail-item">
-          <div class="detail-lbl">Governor EPP</div>
-          <div class="detail-val" id="epp">-</div>
-        </div>
+    <section class="card" style="animation-delay:0.4s">
+      <div class="section-title">📋 Reports & Averages</div>
+      <div class="stats-details" style="margin-top:0;border:none;padding:0;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="detail-item"><div class="detail-lbl">Avg CPU</div><div class="detail-val" id="avgCpu">—</div></div>
+        <div class="detail-item"><div class="detail-lbl">Max Temp</div><div class="detail-val" id="maxTemp">—</div></div>
+        <div class="detail-item"><div class="detail-lbl">Avg GPU</div><div class="detail-val" id="avgGpu">—</div></div>
+        <div class="detail-item"><div class="detail-lbl">Governor</div><div class="detail-val" id="epp">—</div></div>
       </div>
-      <div class="actions" style="margin-top:20px; width:100%; flex-direction:column; gap:8px;">
-        <button class="btn" style="width:100%;" data-action="report">Generate Full HTML Report</button>
-        <a class="btn" style="width:100%; text-align:center; text-decoration:none;" href="/report" target="_blank" rel="noreferrer">Open Latest Report ↗</a>
+      <div class="actions" style="margin-top:20px;flex-direction:column;gap:8px">
+        <button class="btn" style="width:100%" data-action="report">Generate HTML Report</button>
+        <a class="btn" style="width:100%;text-align:center;display:block" href="/report" target="_blank" rel="noreferrer">Open Latest Report ↗</a>
       </div>
-      <p class="subtitle" style="font-size:11px; word-break:break-all;" id="reportPath">-</p>
+      <p style="font-size:10px;color:var(--text-muted);margin-top:8px;word-break:break-all" id="reportPath">—</p>
     </section>
   </aside>
 </div>
 
-<section class="card" style="margin-top:24px;">
-  <div class="section-title">🧠 Auto Switch Decision Reason</div>
-  <p class="reason" id="decisionReason">-</p>
-  <div class="stats-details" style="grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); border-top:none; padding-top:0;">
-    <div class="detail-item">
-      <div class="detail-lbl">Warm Threshold</div>
-      <div class="detail-val" id="tempHot">-</div>
-    </div>
-    <div class="detail-item">
-      <div class="detail-lbl">Critical Temp</div>
-      <div class="detail-val" id="tempCritical">-</div>
-    </div>
-    <div class="detail-item">
-      <div class="detail-lbl">Boost Below</div>
-      <div class="detail-val" id="boostLimit">-</div>
-    </div>
-    <div class="detail-item">
-      <div class="detail-lbl">Busy Trigger</div>
-      <div class="detail-val" id="busyTrigger">-</div>
-    </div>
-    <div class="detail-item">
-      <div class="detail-lbl">Idle Trigger</div>
-      <div class="detail-val" id="idleTrigger">-</div>
-    </div>
-    <div class="detail-item">
-      <div class="detail-lbl">Cooldown</div>
-      <div class="detail-val" id="cooldown">-</div>
-    </div>
+<section class="card" style="margin-top:24px;animation-delay:0.45s">
+  <div class="section-title">🧠 Auto Switch Decision Engine</div>
+  <p class="reason" id="decisionReason">—</p>
+  <div class="stats-details" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));border-top:none;padding-top:0">
+    <div class="detail-item"><div class="detail-lbl">Warm Threshold</div><div class="detail-val" id="tempHot">—</div></div>
+    <div class="detail-item"><div class="detail-lbl">Critical Temp</div><div class="detail-val" id="tempCritical">—</div></div>
+    <div class="detail-item"><div class="detail-lbl">Boost Below</div><div class="detail-val" id="boostLimit">—</div></div>
+    <div class="detail-item"><div class="detail-lbl">Busy Trigger</div><div class="detail-val" id="busyTrigger">—</div></div>
+    <div class="detail-item"><div class="detail-lbl">Idle Trigger</div><div class="detail-val" id="idleTrigger">—</div></div>
+    <div class="detail-item"><div class="detail-lbl">Cooldown</div><div class="detail-val" id="cooldown">—</div></div>
   </div>
 </section>
 
-<section class="section" style="margin-top:32px;">
-  <h2 style="font-family:var(--font-title); font-size:24px; font-weight:700;">Preset Threshold Reference</h2>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Mode</th><th>Warm Limit</th><th>Critical Limit</th><th>Boost Allowed Below</th><th>Busy Trigger</th><th>Idle Trigger</th><th>Prompt Cooldown</th></tr></thead>
-      <tbody id="modes"></tbody>
-    </table>
-  </div>
+<section style="margin-top:32px">
+  <h2 style="font-family:var(--font-title);font-size:22px;font-weight:700;margin-bottom:12px">Preset Threshold Reference</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Mode</th><th>Warm</th><th>Critical</th><th>Boost Below</th><th>Busy Trigger</th><th>Idle Trigger</th><th>Cooldown</th></tr></thead>
+    <tbody id="modes"></tbody>
+  </table></div>
 </section>
 
-<section class="section" style="margin-top:32px; margin-bottom:40px;">
-  <h2 style="font-family:var(--font-title); font-size:24px; font-weight:700;">Live Sensor History</h2>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Time</th><th>Applied Profile</th><th>CPU Load</th><th>CPU Temp</th><th>GPU Load & Power</th><th>RAPL Limits</th></tr></thead>
-      <tbody id="history"></tbody>
-    </table>
-  </div>
+<section style="margin-top:32px">
+  <h2 style="font-family:var(--font-title);font-size:22px;font-weight:700;margin-bottom:12px">Sensor History Log</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Time</th><th>Profile</th><th>CPU Load</th><th>CPU Temp</th><th>GPU</th><th>RAPL</th></tr></thead>
+    <tbody id="history"></tbody>
+  </table></div>
 </section>
+
+<footer class="footer">
+  Boost Power Manager v1.2.0 — Keyboard: <kbd>1</kbd> Boost <kbd>2</kbd> Powersave <kbd>3</kbd> Silent <kbd>4</kbd> Restore <kbd>R</kbd> Refresh
+</footer>
 </main>
 
 <script>
-const $ = (id) => document.getElementById(id)
+const $ = id => document.getElementById(id);
+let _prevData = null;
+let _failCount = 0;
 
-function secondsText(seconds) {
-  if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
-  if (seconds >= 60) return `${Math.floor(seconds / 60)}m`
-  return `${seconds}s`
+function secondsText(s) {
+  if (s >= 3600) return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`;
+  if (s >= 60) return `${Math.floor(s/60)}m`;
+  return `${s}s`;
 }
 
 function showToast(text, isError = false) {
-  const container = $('toast-container') || (() => {
-    const c = document.createElement('div');
-    c.id = 'toast-container';
-    document.body.appendChild(c);
-    return c;
-  })();
-  const toast = document.createElement('div');
-  toast.className = isError ? 'toast error' : 'toast';
-  toast.textContent = text;
-  container.appendChild(toast);
-  setTimeout(() => {
-    toast.classList.add('hide');
-    setTimeout(() => toast.remove(), 300);
-  }, 4000);
-}
-
-function setMessage(text, isError = false) {
-  showToast(text, isError);
-}
-
-async function fetchStatus() {
-  const res = await fetch('/api/status');
-  if (!res.ok) throw new Error('API Error');
-  return res.json();
+  const c = $('toast-container');
+  const t = document.createElement('div');
+  t.className = isError ? 'toast error' : 'toast';
+  t.textContent = text;
+  c.appendChild(t);
+  setTimeout(() => { t.classList.add('hide'); setTimeout(() => t.remove(), 300); }, 4000);
 }
 
 function setGauge(id, value, max = 100) {
-  const circle = document.getElementById(`${id}Circle`);
-  const text = document.getElementById(`${id}Text`);
+  const circle = $(`${id}Circle`);
+  const text = $(`${id}Text`);
   if (!circle || !text) return;
-  
-  const radius = 50;
-  const circumference = 2 * Math.PI * radius;
-  
-  circle.style.strokeDasharray = circumference;
+  const r = 54, circ = 2 * Math.PI * r;
+  circle.style.strokeDasharray = circ;
   const pct = Math.min(Math.max(value, 0), max) / max;
-  const offset = circumference - (pct * circumference);
-  circle.style.strokeDashoffset = offset;
+  circle.style.strokeDashoffset = circ - pct * circ;
   text.textContent = Math.round(value);
 }
 
-function drawHistoryChart(history) {
-  const svg = document.getElementById('historyChart');
-  if (!history || history.length === 0) {
-    svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#94a3b8">No history data available yet</text>';
+function tempColor(temp) {
+  if (temp >= 85) return '#ef4444';
+  if (temp >= 75) return '#f59e0b';
+  if (temp >= 60) return '#fb923c';
+  return '#10b981';
+}
+
+function loadColor(load) {
+  if (load >= 90) return '#ef4444';
+  if (load >= 70) return '#f59e0b';
+  if (load >= 40) return '#0ea5e9';
+  return '#10b981';
+}
+
+function drawChart(history) {
+  const svg = $('historyChart');
+  if (!history || !history.length) {
+    svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#64748b" font-size="13" font-family="Inter,sans-serif">Waiting for telemetry data...</text>';
     return;
   }
-  
-  const width = 1000;
-  const height = 180;
-  const paddingLeft = 40;
-  const paddingRight = 20;
-  const paddingTop = 20;
-  const paddingBottom = 25;
-  
-  const chartWidth = width - paddingLeft - paddingRight;
-  const chartHeight = height - paddingTop - paddingBottom;
-  
-  const pointsCount = history.length;
-  let loadPoints = [];
-  let tempPoints = [];
-  let gpuPoints = [];
-  
-  for (let i = 0; i < pointsCount; i++) {
-    const x = paddingLeft + (i / (pointsCount - 1)) * chartWidth;
-    const loadVal = parseFloat(history[i].cpu_load || 0);
-    const tempVal = parseFloat(history[i].cpu_temp || 0);
-    const gpuVal = parseFloat(history[i].gpu_power || 0);
-    const gpuPct = (gpuVal / 200) * 100;
-    
-    const loadY = height - paddingBottom - (loadVal / 100) * chartHeight;
-    const tempY = height - paddingBottom - (tempVal / 100) * chartHeight;
-    const gpuY = height - paddingBottom - (Math.min(gpuPct, 100) / 100) * chartHeight;
-    
-    loadPoints.push(`${x},${loadY}`);
-    tempPoints.push(`${x},${tempY}`);
-    gpuPoints.push(`${x},${gpuY}`);
+  const W = 1000, H = 200, pL = 45, pR = 15, pT = 15, pB = 25;
+  const cW = W - pL - pR, cH = H - pT - pB;
+  const n = history.length;
+
+  function makePath(data, key, max, color) {
+    let pts = [], areaPts = [];
+    for (let i = 0; i < n; i++) {
+      const x = pL + (n > 1 ? (i/(n-1)) * cW : cW/2);
+      const v = Math.min(parseFloat(data[i][key] || 0), max);
+      const y = H - pB - (v/max) * cH;
+      pts.push(`${x},${y}`);
+      areaPts.push(`${x},${y}`);
+    }
+    const lineD = `M ${pts.join(' L ')}`;
+    const areaD = `${lineD} L ${pL + cW},${H - pB} L ${pL},${H - pB} Z`;
+    return `<path d="${areaD}" fill="url(#grad-${color})" opacity="0.15"/>
+            <path d="${lineD}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
   }
-  
-  let gridLines = '';
-  for (let pct = 0; pct <= 100; pct += 25) {
-    const y = height - paddingBottom - (pct / 100) * chartHeight;
-    gridLines += `<line x1="${paddingLeft}" y1="${y}" x2="${width - paddingRight}" y2="${y}" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>`;
-    gridLines += `<text x="${paddingLeft - 10}" y="${y + 4}" fill="#64748b" font-size="10" font-family="sans-serif" text-anchor="end">${pct}%</text>`;
+
+  let grid = '';
+  for (let p = 0; p <= 100; p += 25) {
+    const y = H - pB - (p/100) * cH;
+    grid += `<line x1="${pL}" y1="${y}" x2="${W-pR}" y2="${y}" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>`;
+    grid += `<text x="${pL-8}" y="${y+4}" fill="#475569" font-size="9" font-family="Inter,sans-serif" text-anchor="end">${p}</text>`;
   }
-  
-  const loadPath = `<path d="M ${loadPoints.join(' L ')}" fill="none" stroke="#0ea5e9" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />`;
-  const tempPath = `<path d="M ${tempPoints.join(' L ')}" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />`;
-  const gpuPath = `<path d="M ${gpuPoints.join(' L ')}" fill="none" stroke="#ec4899" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />`;
-  
+
+  // GPU power mapped to 0-200W scale shown as percentage
+  let gpuData = history.map(r => ({...r, gpu_pct: String((parseFloat(r.gpu_power||0)/200)*100)}));
+
   svg.innerHTML = `
-    <g class="grid-lines">${gridLines}</g>
-    <g class="chart-paths">
-      ${loadPath}
-      ${tempPath}
-      ${gpuPath}
-    </g>
+    <defs>
+      <linearGradient id="grad-#0ea5e9" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0ea5e9"/><stop offset="1" stop-color="#0ea5e9" stop-opacity="0"/></linearGradient>
+      <linearGradient id="grad-#f59e0b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f59e0b"/><stop offset="1" stop-color="#f59e0b" stop-opacity="0"/></linearGradient>
+      <linearGradient id="grad-#ec4899" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ec4899"/><stop offset="1" stop-color="#ec4899" stop-opacity="0"/></linearGradient>
+    </defs>
+    ${grid}
+    ${makePath(history, 'cpu_load', 100, '#0ea5e9')}
+    ${makePath(history, 'cpu_temp', 100, '#f59e0b')}
+    ${makePath(gpuData, 'gpu_pct', 100, '#ec4899')}
   `;
 }
 
 function render(data) {
-  $('serviceDot').className = data.auto.service === 'active' ? 'status-dot' : 'status-dot off'
-  $('serviceText').textContent = `Daemon Auto: ${data.auto.service} | Web Dashboard: ${data.web.service}`
-  $('updatedText').textContent = `Telemetry Live Status • Refreshed: ${data.time}`
-  $('profile').textContent = data.friendlyProfile
-  $('autoMode').textContent = data.auto.mode
-  
-  // Update circular gauges
+  // Connection status
+  $('connBar').classList.remove('show');
+  _failCount = 0;
+
+  // Service status
+  const isActive = data.auto.service === 'active';
+  $('serviceDot').className = `status-indicator ${isActive ? 'active' : 'inactive'}`;
+  $('serviceText').textContent = `Auto: ${data.auto.service} • Web: ${data.web.service}`;
+  $('updatedText').textContent = `Live • ${data.time}`;
+
+  // Gauges with dynamic colors
   setGauge('cpuLoad', data.cpu.load);
   setGauge('cpuTemp', data.cpu.temp);
-  
-  const cpuTempCard = document.getElementById('cpuTempCircle').closest('.gauge-card');
-  if (data.cpu.temp >= 80) {
-    cpuTempCard.style.boxShadow = '0 0 30px rgba(239, 68, 68, 0.4)';
-    cpuTempCard.style.borderColor = 'rgba(239, 68, 68, 0.5)';
-  } else {
-    cpuTempCard.style.boxShadow = '';
-    cpuTempCard.style.borderColor = '';
-  }
-  
-  $('gpuPowerText').textContent = data.gpu.power
-  $('gpuLimitText').textContent = data.gpu.limit
-  $('gpuTempText').textContent = `${data.gpu.temp} C`
-  
-  $('limits').textContent = `${data.limits.pl1}/${data.limits.pl2} W`
-  $('turbo').textContent = data.system.turbo
-  $('pauseState').textContent = data.auto.pause.snoozed ? 'Snoozed' : data.auto.pause.todayOff ? 'Today off' : data.auto.pause.quietActive ? 'Quiet hours' : 'Available'
-  $('pauseReason').textContent = data.auto.pause.reason
-  $('quietStart').value = data.auto.quietStart
-  $('quietEnd').value = data.auto.quietEnd
-  $('summerNights').textContent = data.auto.summerSilentNights.toUpperCase()
-  $('decisionReason').textContent = data.auto.decision
-  $('tempHot').textContent = `${data.auto.thresholds.tempHot} C`
-  $('tempCritical').textContent = `${data.auto.thresholds.tempCritical} C`
-  $('boostLimit').textContent = `${data.auto.thresholds.boostTempLimit} C`
-  $('busyTrigger').textContent = `${data.auto.thresholds.loadHigh}% for ${secondsText(data.auto.thresholds.loadHighDuration)}`
-  $('idleTrigger').textContent = `${data.auto.thresholds.loadIdle}% for ${secondsText(data.auto.thresholds.loadIdleDuration)}`
-  $('cooldown').textContent = secondsText(data.auto.thresholds.promptCooldown)
-  $('avgCpu').textContent = `${Math.round(data.summary.avg_cpu)}%`
-  $('maxTemp').textContent = `${Math.round(data.summary.max_temp)} C`
-  $('avgGpu').textContent = `${Number(data.summary.avg_gpu).toFixed(1)} W`
-  $('epp').textContent = `${data.system.governor} (${data.system.epp})`
-  $('reportPath').textContent = data.report.latestExists ? 'Saved to: ' + data.report.path : 'No HTML report generated yet.'
-  
-  // Render history chart
-  drawHistoryChart(data.history);
-  
-  // Highlight active profile buttons
-  ['boost', 'powersave', 'silent'].forEach(act => {
-    const btn = document.getElementById(`btn-${act}`);
-    if (btn) btn.classList.remove('active-preset');
-  });
-  if (data.profile === 'performance') $('btn-boost').classList.add('active-preset');
-  else if (data.profile === 'balanced') $('btn-powersave').classList.add('active-preset');
-  else if (data.profile === 'power-saver') $('btn-silent').classList.add('active-preset');
-  
-  // Highlight active auto mode buttons
-  ['calm', 'summer', 'friendly', 'active', 'quiet', 'off'].forEach(m => {
-    const btn = document.getElementById(`mode-${m}`);
-    if (btn) btn.classList.remove('active-preset');
-  });
-  const activeModeBtn = document.getElementById(`mode-${data.auto.mode}`);
-  if (activeModeBtn) activeModeBtn.classList.add('active-preset');
 
-  // Highlight Summer Nights
+  const loadCircle = $('cpuLoadCircle');
+  const lc = loadColor(data.cpu.load);
+  loadCircle.style.stroke = lc;
+  loadCircle.style.filter = `drop-shadow(0 0 8px ${lc}40)`;
+
+  const tempCircle = $('cpuTempCircle');
+  const tc = tempColor(data.cpu.temp);
+  tempCircle.style.stroke = tc;
+  tempCircle.style.filter = `drop-shadow(0 0 8px ${tc}40)`;
+
+  // Temp danger state
+  const tempCard = $('cpuTempCard');
+  if (data.cpu.temp >= 80) { tempCard.classList.add('temp-alert'); }
+  else { tempCard.classList.remove('temp-alert'); }
+
+  // GPU
+  $('gpuPowerText').textContent = data.gpu.power;
+  $('gpuLimitText').textContent = data.gpu.limit;
+  $('gpuTempText').textContent = data.gpu.temp;
+
+  // System config
+  $('profile').textContent = data.friendlyProfile;
+  $('autoMode').textContent = data.auto.mode;
+  $('limits').textContent = `${data.limits.pl1}/${data.limits.pl2} W`;
+  $('turbo').textContent = data.system.turbo;
+
+  // Pause
+  const p = data.auto.pause;
+  $('pauseState').textContent = p.snoozed ? '⏸ Snoozed' : p.todayOff ? '⏸ Today off' : p.quietActive ? '🌙 Quiet hours' : '✅ Available';
+  $('pauseReason').textContent = p.reason;
+
+  // Quiet hours
+  $('quietStart').value = data.auto.quietStart;
+  $('quietEnd').value = data.auto.quietEnd;
+  $('summerNights').textContent = data.auto.summerSilentNights.toUpperCase();
+
+  // Decision
+  $('decisionReason').textContent = data.auto.decision;
+  const t = data.auto.thresholds;
+  $('tempHot').textContent = `${t.tempHot}°C`;
+  $('tempCritical').textContent = `${t.tempCritical}°C`;
+  $('boostLimit').textContent = `${t.boostTempLimit}°C`;
+  $('busyTrigger').textContent = `${t.loadHigh}% / ${secondsText(t.loadHighDuration)}`;
+  $('idleTrigger').textContent = `${t.loadIdle}% / ${secondsText(t.loadIdleDuration)}`;
+  $('cooldown').textContent = secondsText(t.promptCooldown);
+
+  // Summary
+  $('avgCpu').textContent = `${Math.round(data.summary.avg_cpu)}%`;
+  $('maxTemp').textContent = `${Math.round(data.summary.max_temp)}°C`;
+  $('avgGpu').textContent = `${Number(data.summary.avg_gpu).toFixed(1)} W`;
+  $('epp').textContent = `${data.system.governor} (${data.system.epp})`;
+  $('reportPath').textContent = data.report.latestExists ? data.report.path : 'No report generated yet';
+
+  // Chart
+  drawChart(data.history);
+
+  // Active profile highlight
+  ['boost','powersave','silent'].forEach(a => { const b = $(`btn-${a}`); if(b) b.classList.remove('active-preset'); });
+  if (data.profile === 'performance') $('btn-boost')?.classList.add('active-preset');
+  else if (data.profile === 'balanced') $('btn-powersave')?.classList.add('active-preset');
+  else if (data.profile === 'power-saver') $('btn-silent')?.classList.add('active-preset');
+
+  // Active auto mode highlight
+  ['calm','summer','friendly','active','quiet','off'].forEach(m => { const b = $(`mode-${m}`); if(b) b.classList.remove('active-preset'); });
+  $(`mode-${data.auto.mode}`)?.classList.add('active-preset');
+
+  // Summer nights
   if (data.auto.summerSilentNights === 'yes') {
     $('summer-nights-on').classList.add('active-preset');
     $('summer-nights-off').classList.remove('active-preset');
@@ -932,64 +1085,80 @@ function render(data) {
     $('summer-nights-off').classList.add('active-preset');
   }
 
-  $('modes').innerHTML = data.auto.modes.map(mode => `
-    <tr class="${data.auto.mode === mode.mode ? 'active-preset' : ''}">
-      <td style="font-weight:600; text-transform:capitalize;">${mode.mode}</td>
-      <td>${mode.tempHot} C</td>
-      <td>${mode.tempCritical} C</td>
-      <td>${mode.boostTempLimit} C</td>
-      <td>${mode.loadHigh}% / ${secondsText(mode.loadHighDuration)}</td>
-      <td>${mode.loadIdle}% / ${secondsText(mode.loadIdleDuration)}</td>
-      <td>${secondsText(mode.promptCooldown)}</td>
-    </tr>`).join('')
-    
-  $('history').innerHTML = data.history.slice().reverse().map(row => `
+  // Modes table
+  $('modes').innerHTML = data.auto.modes.map(m => `
+    <tr class="${data.auto.mode === m.mode ? 'active-preset' : ''}">
+      <td style="font-weight:600;text-transform:capitalize">${m.mode}</td>
+      <td>${m.tempHot}°C</td><td>${m.tempCritical}°C</td><td>${m.boostTempLimit}°C</td>
+      <td>${m.loadHigh}% / ${secondsText(m.loadHighDuration)}</td>
+      <td>${m.loadIdle}% / ${secondsText(m.loadIdleDuration)}</td>
+      <td>${secondsText(m.promptCooldown)}</td>
+    </tr>`).join('');
+
+  // History table
+  $('history').innerHTML = data.history.slice().reverse().map(r => `
     <tr>
-      <td>${row.iso ? row.iso.split('T')[1].substring(0,8) : '-'}</td>
-      <td style="text-transform:capitalize;">${row.profile === 'performance' ? 'Boost' : row.profile === 'balanced' ? 'Powersave' : row.profile === 'power-saver' ? 'Silent' : row.profile}</td>
-      <td><span style="display:inline-block; width:45px; font-weight:600;">${row.cpu_load || 0}%</span></td>
-      <td>${row.cpu_temp || 0} C</td>
-      <td>${row.gpu_temp || 0} C / ${row.gpu_power || 0} W</td>
-      <td>${row.pl1 || 0}/${row.pl2 || 0} W</td>
-    </tr>`).join('')
+      <td>${r.iso ? r.iso.split('T')[1].substring(0,8) : '—'}</td>
+      <td style="text-transform:capitalize">${{performance:'Boost',balanced:'Balanced','power-saver':'Silent'}[r.profile]||r.profile}</td>
+      <td><strong>${r.cpu_load||0}%</strong></td>
+      <td style="color:${tempColor(parseInt(r.cpu_temp||0))}">${r.cpu_temp||0}°C</td>
+      <td>${r.gpu_temp||0}°C / ${r.gpu_power||0}W</td>
+      <td>${r.pl1||0}/${r.pl2||0}W</td>
+    </tr>`).join('');
+
+  _prevData = data;
 }
 
 async function refresh() {
   try {
-    render(await fetchStatus())
-  } catch (error) {
-    setMessage(error.message, true)
+    const res = await fetch('/api/status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    render(await res.json());
+  } catch (e) {
+    _failCount++;
+    if (_failCount >= 3) $('connBar').classList.add('show');
   }
 }
 
 async function sendAction(action, value = null) {
   try {
-    const response = await fetch('/api/action', {
+    const r = await fetch('/api/action', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, value })
-    })
-    const result = await response.json()
-    setMessage(result.message || (result.ok ? 'Action Applied' : 'Execution Error'), !result.ok)
-    await refresh()
-  } catch (e) {
-    setMessage(e.message, true)
-  }
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action, value})
+    });
+    const result = await r.json();
+    showToast(result.message || (result.ok ? 'Applied' : 'Error'), !result.ok);
+    await refresh();
+  } catch (e) { showToast(e.message, true); }
 }
 
-document.addEventListener('click', (event) => {
-  const button = event.target.closest('[data-action]')
-  if (!button) return
-  event.preventDefault()
-  sendAction(button.dataset.action, button.dataset.value || null)
-})
+// Event delegation
+document.addEventListener('click', e => {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  e.preventDefault();
+  sendAction(btn.dataset.action, btn.dataset.value || null);
+});
 
 $('saveQuiet').addEventListener('click', () => {
-  sendAction('quiet-hours', JSON.stringify({ start: $('quietStart').value, end: $('quietEnd').value }))
-})
+  sendAction('quiet-hours', JSON.stringify({start: $('quietStart').value, end: $('quietEnd').value}));
+});
 
-refresh()
-setInterval(refresh, 2000)
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  const key = e.key.toLowerCase();
+  if (key === '1') sendAction('boost');
+  else if (key === '2') sendAction('powersave');
+  else if (key === '3') sendAction('silent');
+  else if (key === '4') sendAction('restore');
+  else if (key === 'r') refresh();
+});
+
+// Start polling
+refresh();
+setInterval(refresh, 2000);
 </script>
 </body>
 </html>"""
