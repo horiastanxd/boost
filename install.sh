@@ -37,7 +37,7 @@ migrate_config() {
 }
 
 echo "[install] Copying scripts to /usr/local/bin..."
-for bin in boost powersave silent restore power-save-originals auto power-report boost-web; do
+for bin in boost powersave silent summer restore power-save-originals auto power-report boost-web; do
     install -m 755 "$REPO_DIR/bin/$bin" /usr/local/bin/"$bin"
     echo "  -> /usr/local/bin/$bin"
 done
@@ -68,7 +68,7 @@ mkdir -p /var/lib/power-profile
 
 echo ""
 echo "[install] Done. Commands available:"
-echo "  boost | powersave | silent | restore    — manual profiles"
+echo "  boost | powersave | silent | summer | restore    — main shortcuts"
 echo "  auto start | stop | status | logs       — intelligent auto-daemon"
 echo "  auto stats | auto report                — text and web statistics"
 echo "  auto web                                — local web dashboard"

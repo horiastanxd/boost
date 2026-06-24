@@ -23,6 +23,7 @@ powersave   # Efficient daily use — barely slower, 15–25°C cooler
 silent      # Overnight — quiet fans, priority process, minimum power
 restore     # Revert everything to your boot-time BIOS state
 auto        # Intelligent daemon — monitors load & temp, prompts when switching makes sense
+summer      # Shortcut for Auto Summer mode
 auto summer # Hot-room mode — cooler behavior for warm summer rooms
 auto stats  # Current power statistics in terminal
 auto report # Local HTML report with recent samples
@@ -74,7 +75,7 @@ boost            # switch to when you need full power
 silent           # tonight, before you sleep
 restore          # back to BIOS defaults anytime
 auto mode calm   # optional: enable gentle automatic suggestions
-auto summer      # hot-room mode when ambient temperature is high
+summer           # shortcut: hot-room Auto mode when ambient temperature is high
 auto report      # generate and open a local web report
 auto web         # open realtime web controls
 auto doctor      # check whether sensors, GPU stats, reports, and notifications work
@@ -213,6 +214,7 @@ Restores all settings to the state captured at boot:
 auto setup           # guided menu, easiest option
 auto doctor          # friendly health check
 auto modes           # show all Auto mode thresholds
+summer              # shortcut for auto mode summer
 auto mode calm       # rare suggestions, best default
 auto mode summer     # hot-room mode, cooler and slower to suggest Boost
 auto mode friendly   # balanced suggestions
@@ -327,6 +329,7 @@ Loop devices (snap/flatpak mounts) are excluded.
   boost                   # performance profile
   powersave               # efficient profile
   silent                  # overnight profile
+  summer                  # shortcut for Auto Summer mode
   restore                 # revert to boot state
   power-save-originals    # run by systemd at boot
   auto                    # gentle automatic helper
@@ -372,7 +375,7 @@ tests/
 
 ```bash
 sudo rm /usr/local/bin/{boost,powersave,silent,restore,power-save-originals}
-sudo rm /usr/local/bin/{auto,power-report,boost-web}
+sudo rm /usr/local/bin/{summer,auto,power-report,boost-web}
 sudo rm /usr/local/lib/power-common.sh
 sudo rm /usr/local/lib/boost-web.py
 sudo systemctl disable --now power-save-originals.service boost-auto.service boost-web.service

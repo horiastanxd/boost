@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# summer - hot-room Auto mode shortcut
+
+set -e
+
+case "${1:-}" in
+    ""|on|start)
+        exec /usr/local/bin/auto mode summer
+        ;;
+    status)
+        exec /usr/local/bin/auto status
+        ;;
+    off|stop)
+        exec /usr/local/bin/auto mode calm
+        ;;
+    --version)
+        echo "summer 1.0.0"
+        ;;
+    --help|-h|help)
+        cat <<'EOF'
+Usage: summer [on|off|status]
+
+Shortcut for hot-room Auto mode:
+  summer        enable Auto Summer mode
+  summer off    return Auto to Calm mode
+  summer status show Auto status
+EOF
+        ;;
+    *)
+        echo "Usage: summer [on|off|status]" >&2
+        exit 1
+        ;;
+esac
