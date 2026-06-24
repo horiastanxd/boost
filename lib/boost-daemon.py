@@ -142,10 +142,15 @@ class BoostDaemon:
 
     def is_game_running(self):
         try:
-            out = subprocess.check_output(['ps', '-e', '-o', 'comm='], text=True)
-            for p in out.strip().split('\n'):
-                if any(g in p for g in GAME_PROCESSES):
-                    return True
+            for pid in os.listdir('/proc'):
+                if pid.isdigit():
+                    try:
+                        with open(f'/proc/{pid}/comm', 'r') as f:
+                            comm = f.read().strip()
+                            if any(g in comm for g in GAME_PROCESSES):
+                                return True
+                    except:
+                        pass
         except Exception:
             pass
         return False
@@ -156,15 +161,46 @@ class BoostDaemon:
         except Exception:
             return "balanced"
 
+    def read_text(self, path, default=""):
+        try:
+            with open(path, 'r') as f: return f.read().strip()
+        except: return default
+
+    def get_gpu_stats(self):
+        try:
+            out = subprocess.check_output(['nvidia-smi', '--query-gpu=temperature.gpu,power.draw,power.limit', '--format=csv,noheader,nounits'], text=True).strip()
+            if out:
+                parts = [x.strip() for x in out.split('\n')[0].split(',')]
+                if len(parts) == 3: return parts
+        except: pass
+        return ["0", "0", "0"]
+
     def record_stats(self, load, temp, profile):
         try:
             if not os.path.exists(STATE_DIR): os.makedirs(STATE_DIR)
-            subprocess.Popen(['bash', '-c', f'source /usr/local/lib/power-common.sh >/dev/null 2>&1 && record_power_sample {load}'])
+            
+            gpu_temp, gpu_power, gpu_limit = self.get_gpu_stats()
+            pl1 = str(int(self.read_text('/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw', '0')) // 1000000)
+            pl2 = str(int(self.read_text('/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw', '0')) // 1000000)
+            gov = self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor', 'unknown')
+            epp = self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference', 'unknown')
+            turbo = "ON" if self.read_text('/sys/devices/system/cpu/intel_pstate/no_turbo', '1') == '0' else "OFF"
+            
+            iso_time = datetime.now().astimezone().replace(microsecond=0).isoformat()
+            row = f"{int(time.time())},{iso_time},{profile},{load},{temp},{gpu_temp},{gpu_power},{gpu_limit},{pl1},{pl2},{gov},{epp},{turbo}\n"
+            
+            if not os.path.exists(STATS_FILE):
+                with open(STATS_FILE, 'w') as f:
+                    f.write("epoch,iso,profile,cpu_load,cpu_temp,gpu_temp,gpu_power,gpu_limit,pl1,pl2,governor,epp,turbo\n")
+            
+            with open(STATS_FILE, 'a') as f:
+                f.write(row)
+                
             # Prevent infinite growth: if file > 250KB, keep only last 2000 lines (~1.5 days at 1 min interval)
-            if os.path.exists(STATS_FILE) and os.path.getsize(STATS_FILE) > 250 * 1024:
+            if os.path.getsize(STATS_FILE) > 250 * 1024:
                 subprocess.Popen(['bash', '-c', f'tail -n 2000 {STATS_FILE} > {STATS_FILE}.tmp && mv {STATS_FILE}.tmp {STATS_FILE}'])
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"Error recording stats: {e}")
 
     def run_command(self, cmd):
         subprocess.Popen(cmd, shell=True, env=dict(os.environ, AUTO_HELPER_INTERNAL="1"))

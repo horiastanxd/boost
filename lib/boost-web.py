@@ -297,12 +297,23 @@ def cpu_totals() -> tuple[int, int]:
     return sum(values), idle
 
 
+_LAST_CPU_TOTAL = 0
+_LAST_CPU_IDLE = 0
+
 def cpu_load_percent() -> int:
-    total_a, idle_a = cpu_totals()
-    time.sleep(0.15)
-    total_b, idle_b = cpu_totals()
-    delta_total = total_b - total_a
-    delta_idle = idle_b - idle_a
+    global _LAST_CPU_TOTAL, _LAST_CPU_IDLE
+    total, idle = cpu_totals()
+    
+    if _LAST_CPU_TOTAL == 0:  # First run
+        _LAST_CPU_TOTAL = total
+        _LAST_CPU_IDLE = idle
+        return 0
+        
+    delta_total = total - _LAST_CPU_TOTAL
+    delta_idle = idle - _LAST_CPU_IDLE
+    _LAST_CPU_TOTAL = total
+    _LAST_CPU_IDLE = idle
+    
     if delta_total <= 0:
         return 0
     return int((delta_total - delta_idle) * 100 / delta_total)
@@ -328,8 +339,13 @@ def rapl_w(constraint: int) -> int:
 def history(limit: int = 80) -> list[dict[str, str]]:
     if not STATS_FILE.exists():
         return []
-    rows = list(csv.DictReader(STATS_FILE.open(encoding="utf-8")))
-    return rows[-limit:]
+    with open(STATS_FILE, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    if len(lines) <= 1:
+        return []
+    # Header + last N lines
+    target_lines = [lines[0]] + lines[-(limit):]
+    return list(csv.DictReader(target_lines))
 
 
 def summary(rows: list[dict[str, str]]) -> dict[str, float]:
