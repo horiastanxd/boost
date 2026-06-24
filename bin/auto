@@ -1,52 +1,201 @@
 #!/usr/bin/env bash
-# auto - intelligent power profile daemon
-# Monitors CPU temp + load, prompts or auto-switches profiles
-# Version: 1.1.0
+# auto - friendly power profile daemon
+# Monitors heat + load and suggests profile changes without stealing focus.
+# Version: 1.2.0
+
+set -u
 
 CONF_FILE="/etc/boost-auto.conf"
 STATE_DIR="/var/lib/power-profile"
 PID_FILE="$STATE_DIR/auto.pid"
 SERVICE="boost-auto.service"
+SNOOZE_FILE="$STATE_DIR/auto-snooze-until"
+SKIP_TODAY_FILE="$STATE_DIR/auto-skip-date"
 
-# ── Default thresholds (override in /etc/boost-auto.conf) ──────────────────
-TEMP_CRITICAL=85    # °C: auto-switch to powersave immediately, no prompt
-TEMP_HOT=78         # °C: prompt to switch to powersave (if on boost)
-LOAD_HIGH=75        # %: after LOAD_HIGH_DURATION → prompt boost
-LOAD_HIGH_DURATION=60   # seconds of sustained high load
-LOAD_IDLE=8         # %: after LOAD_IDLE_DURATION → prompt powersave
-LOAD_IDLE_DURATION=300  # seconds of sustained idle
-PROMPT_COOLDOWN=300     # seconds between prompts (avoid spam)
-POLL_INTERVAL=5         # seconds between checks
-# ───────────────────────────────────────────────────────────────────────────
+# Friendly defaults. Use `auto mode calm|friendly|active|quiet|off`.
+AUTO_MODE=friendly
+QUIET_HOURS_START=22:00
+QUIET_HOURS_END=08:00
+ALLOW_CRITICAL_AUTO=yes
+TEMP_CRITICAL=85
+TEMP_HOT=78
+LOAD_HIGH=75
+LOAD_HIGH_DURATION=120
+LOAD_IDLE=8
+LOAD_IDLE_DURATION=600
+PROMPT_COOLDOWN=900
+POLL_INTERVAL=5
 
-[[ -f "$CONF_FILE" ]] && source "$CONF_FILE"
+if [[ -f "$CONF_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONF_FILE"
+fi
 
-# ── Subcommand dispatch ────────────────────────────────────────────────────
+apply_mode_preset() {
+    case "${AUTO_MODE:-friendly}" in
+        calm)
+            TEMP_HOT=80
+            LOAD_HIGH=85
+            LOAD_HIGH_DURATION=300
+            LOAD_IDLE=5
+            LOAD_IDLE_DURATION=1200
+            PROMPT_COOLDOWN=3600
+            ;;
+        active)
+            TEMP_HOT=76
+            LOAD_HIGH=65
+            LOAD_HIGH_DURATION=45
+            LOAD_IDLE=12
+            LOAD_IDLE_DURATION=240
+            PROMPT_COOLDOWN=300
+            ;;
+        quiet|off|friendly|custom) ;;
+        *)
+            AUTO_MODE=friendly
+            ;;
+    esac
+}
+apply_mode_preset
+
+ensure_state_dir() {
+    mkdir -p "$STATE_DIR"
+}
+
+need_root() {
+    if [[ $EUID -ne 0 ]]; then
+        exec sudo "$0" "$@"
+    fi
+}
+
+set_config_value() {
+    local key="$1" value="$2"
+    ensure_state_dir
+    touch "$CONF_FILE"
+    if grep -qE "^[[:space:]]*${key}=" "$CONF_FILE"; then
+        sed -i -E "s|^[[:space:]]*${key}=.*|${key}=${value}|" "$CONF_FILE"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$CONF_FILE"
+    fi
+}
+
+parse_duration() {
+    local value="${1:-120}"
+    case "$value" in
+        *h) echo $(( ${value%h} * 3600 )) ;;
+        *m) echo $(( ${value%m} * 60 )) ;;
+        *s) echo "${value%s}" ;;
+        *) echo "$value" ;;
+    esac
+}
+
+friendly_profile() {
+    case "${1:-unknown}" in
+        performance) echo "Boost" ;;
+        power-saver) echo "Economie maxima" ;;
+        balanced) echo "Echilibrat" ;;
+        *) echo "${1:-necunoscut}" ;;
+    esac
+}
+
+format_seconds() {
+    local seconds="${1:-0}"
+    if (( seconds >= 3600 )); then
+        echo "$(( seconds / 3600 ))h $(( seconds % 3600 / 60 ))m"
+    elif (( seconds >= 60 )); then
+        echo "$(( seconds / 60 ))m"
+    else
+        echo "${seconds}s"
+    fi
+}
+
+show_help() {
+    cat <<'EOF'
+Usage: auto [start|stop|restart|status|logs|config|mode|quiet-hours|snooze|today-off|resume]
+
+Simple controls:
+  auto mode calm        fewer suggestions, best for non-technical users
+  auto mode friendly    balanced suggestions, default
+  auto mode active      more responsive suggestions
+  auto mode quiet       only protect the PC when it gets too hot
+  auto mode off         turn auto mode off completely
+
+Quiet controls:
+  auto quiet-hours 22:00 08:00
+  auto quiet-hours off
+  auto snooze 2h
+  auto today-off
+  auto resume
+
+Advanced users can still edit /etc/boost-auto.conf.
+EOF
+}
+
+show_config_friendly() {
+    cat <<EOF
+Auto power helper
+
+Mode: ${AUTO_MODE}
+Quiet hours: ${QUIET_HOURS_START}-${QUIET_HOURS_END}
+Critical protection: ${ALLOW_CRITICAL_AUTO}
+
+What the modes mean:
+  calm      asks rarely; good if notifications annoy you
+  friendly  balanced; good default
+  active    reacts faster when gaming/rendering
+  quiet     no suggestions, only safety changes when very hot
+  off       auto mode is disabled until you run auto start or auto mode ...
+
+Advanced values in ${CONF_FILE}:
+  Warm computer: ${TEMP_HOT}
+  Too hot: ${TEMP_CRITICAL}
+  Busy: ${LOAD_HIGH} after $(format_seconds "$LOAD_HIGH_DURATION")
+  Idle: ${LOAD_IDLE} after $(format_seconds "$LOAD_IDLE_DURATION")
+  Minimum time between suggestions: $(format_seconds "$PROMPT_COOLDOWN")
+EOF
+}
+
 case "${1:-start}" in
-    --daemon) : ;;  # fall through to daemon loop
+    --daemon) : ;;
     start)
+        need_root "$@"
+        if [[ "${AUTO_MODE}" == "off" ]]; then
+            set_config_value AUTO_MODE friendly
+            AUTO_MODE=friendly
+            apply_mode_preset
+        fi
         sudo systemctl enable --now "$SERVICE" 2>/dev/null && \
-            echo "[auto] Started. 'auto status' to monitor." || \
-            echo "[auto] Failed to start service. Is boost-auto.service installed?" >&2
+            echo "Auto power helper is running. Use 'auto status' to check it." || \
+            echo "Could not start $SERVICE. Is the service installed?" >&2
         exit $?
         ;;
     stop)
-        sudo systemctl stop "$SERVICE" && echo "[auto] Stopped."
+        sudo systemctl stop "$SERVICE" && echo "Auto power helper stopped."
         exit $?
         ;;
     restart)
-        sudo systemctl restart "$SERVICE" && echo "[auto] Restarted."
+        sudo systemctl restart "$SERVICE" && echo "Auto power helper restarted."
         exit $?
         ;;
     status)
-        echo "Service: $(systemctl is-active $SERVICE 2>/dev/null)"
-        echo "Profile: $(powerprofilesctl get 2>/dev/null)"
+        service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || echo inactive)
+        profile=$(powerprofilesctl get 2>/dev/null || echo unknown)
+        echo "Auto helper: $service_state"
+        echo "Current mode: ${AUTO_MODE}"
+        echo "Power profile: $(friendly_profile "$profile")"
         local_coretemp=$(find /sys/class/hwmon -name 'name' -exec grep -l coretemp {} \; 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
         if [[ -n "$local_coretemp" ]]; then
-            temp=$(cat "${local_coretemp}/temp1_input" 2>/dev/null)
-            echo "CPU Temp: $(( temp / 1000 ))°C"
+            temp=$(cat "${local_coretemp}/temp1_input" 2>/dev/null || echo 0)
+            echo "Computer warmth: $(( temp / 1000 ))"
         fi
-        echo "Thresholds: TEMP_CRITICAL=${TEMP_CRITICAL}°C  TEMP_HOT=${TEMP_HOT}°C  LOAD_HIGH=${LOAD_HIGH}%/${LOAD_HIGH_DURATION}s  LOAD_IDLE=${LOAD_IDLE}%/${LOAD_IDLE_DURATION}s"
+        if [[ -f "$SNOOZE_FILE" ]]; then
+            until_epoch=$(cat "$SNOOZE_FILE" 2>/dev/null || echo 0)
+            now_epoch=$(date +%s)
+            (( until_epoch > now_epoch )) && echo "Snoozed for: $(format_seconds "$(( until_epoch - now_epoch ))")"
+        fi
+        if [[ -f "$SKIP_TODAY_FILE" ]] && [[ "$(cat "$SKIP_TODAY_FILE" 2>/dev/null)" == "$(date +%F)" ]]; then
+            echo "Suggestions: paused for today"
+        fi
+        echo "Quiet hours: ${QUIET_HOURS_START}-${QUIET_HOURS_END}"
         echo "Config: $CONF_FILE"
         exit 0
         ;;
@@ -55,25 +204,76 @@ case "${1:-start}" in
         exit 0
         ;;
     config)
-        echo "Config file: $CONF_FILE"
-        [[ -f "$CONF_FILE" ]] && cat "$CONF_FILE" || echo "(using defaults — create $CONF_FILE to override)"
+        show_config_friendly
         exit 0
         ;;
-    --help|-h)
-        echo "Usage: auto [start|stop|restart|status|logs|config]"
+    mode)
+        [[ $# -eq 1 ]] && { echo "Current mode: ${AUTO_MODE}"; echo "Available: calm, friendly, active, quiet, off, custom"; exit 0; }
+        case "$2" in calm|friendly|active|quiet|off|custom) ;; *) echo "Use: calm, friendly, active, quiet, off, custom" >&2; exit 1 ;; esac
+        need_root "$@"
+        set_config_value AUTO_MODE "$2"
+        if [[ "$2" == "off" ]]; then
+            systemctl stop "$SERVICE" 2>/dev/null || true
+        else
+            systemctl enable --now "$SERVICE" 2>/dev/null || true
+            systemctl restart "$SERVICE" 2>/dev/null || true
+        fi
+        echo "Auto mode set to '$2'."
+        exit 0
+        ;;
+    quiet-hours)
+        if [[ "${2:-}" == "off" ]]; then
+            need_root "$@"
+            set_config_value QUIET_HOURS_START 00:00
+            set_config_value QUIET_HOURS_END 00:00
+            systemctl restart "$SERVICE" 2>/dev/null || true
+            echo "Quiet hours disabled."
+            exit 0
+        fi
+        [[ $# -eq 3 ]] || { echo "Usage: auto quiet-hours 22:00 08:00 | off" >&2; exit 1; }
+        need_root "$@"
+        set_config_value QUIET_HOURS_START "$2"
+        set_config_value QUIET_HOURS_END "$3"
+        systemctl restart "$SERVICE" 2>/dev/null || true
+        echo "Quiet hours set to $2-$3."
+        exit 0
+        ;;
+    snooze)
+        need_root "$@"
+        ensure_state_dir
+        seconds=$(parse_duration "${2:-2h}")
+        echo "$(( $(date +%s) + seconds ))" > "$SNOOZE_FILE"
+        echo "Auto suggestions snoozed for $(format_seconds "$seconds")."
+        exit 0
+        ;;
+    today-off)
+        need_root "$@"
+        ensure_state_dir
+        date +%F > "$SKIP_TODAY_FILE"
+        echo "Auto suggestions paused for today."
+        exit 0
+        ;;
+    resume)
+        need_root "$@"
+        rm -f "$SNOOZE_FILE" "$SKIP_TODAY_FILE"
+        echo "Auto suggestions resumed."
+        exit 0
+        ;;
+    --help|-h|help)
+        show_help
         exit 0
         ;;
     *)
-        echo "Unknown command: $1. Use: start|stop|restart|status|logs|config" >&2
+        echo "Unknown command: $1" >&2
+        show_help >&2
         exit 1
         ;;
 esac
 
-# ── Daemon mode (called by systemd) ───────────────────────────────────────
+ensure_state_dir
 echo $$ > "$PID_FILE"
-logger -t boost-auto "Daemon started (PID=$$)"
+logger -t boost-auto "Daemon started (PID=$$, mode=${AUTO_MODE})"
 
-# Find coretemp hwmon dynamically
 find_coretemp_hwmon() {
     for h in /sys/class/hwmon/hwmon*/; do
         [[ "$(cat "${h}name" 2>/dev/null)" == "coretemp" ]] && echo "${h}" && return
@@ -88,30 +288,35 @@ get_cpu_temp() {
     echo $(( raw / 1000 ))
 }
 
-# CPU load: delta between two /proc/stat snapshots
 _prev_total=0 _prev_idle=0
 get_cpu_load() {
-    local line total idle
-    read -r line < /proc/stat
-    # cpu user nice system idle iowait irq softirq ...
-    set -- $line
-    idle=$5; shift; total=0
+    local total idle
+    read -r _cpu user nice system idle iowait irq softirq steal guest guest_nice < /proc/stat
+    set -- "$user" "$nice" "$system" "$idle" "$iowait" "$irq" "$softirq" "$steal" "$guest" "$guest_nice"
+    idle=$4
+    shift
+    total=0
     for v in "$@"; do (( total += v )); done || true
     local delta_total=$(( total - _prev_total ))
     local delta_idle=$(( idle - _prev_idle ))
-    _prev_total=$total; _prev_idle=$idle
+    _prev_total=$total
+    _prev_idle=$idle
     [[ $delta_total -le 0 ]] && echo 0 && return
     echo $(( (delta_total - delta_idle) * 100 / delta_total ))
 }
 
-# Active user display environment (Wayland + X11 fallback)
 get_user_env() {
     local session user uid wayland x11
     session=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$NF=="active" || NR==1 {print $1; exit}')
     [[ -z "$session" ]] && return 1
     user=$(loginctl show-session "$session" -p Name --value 2>/dev/null)
     uid=$(id -u "$user" 2>/dev/null) || return 1
-    wayland=$(ls "/run/user/$uid/" 2>/dev/null | grep '^wayland-' | head -1)
+    wayland=""
+    for display_socket in "/run/user/$uid"/wayland-*; do
+        [[ -e "$display_socket" ]] || continue
+        wayland=${display_socket##*/}
+        break
+    done
     x11=$(loginctl show-session "$session" -p Display --value 2>/dev/null)
     _ENV_USER="$user"
     _ENV_UID="$uid"
@@ -120,104 +325,159 @@ get_user_env() {
     _ENV_DBUS="unix:path=/run/user/$uid/bus"
 }
 
-notify() {
-    local title="$1" body="$2" urgency="${3:-normal}"
-    get_user_env || return
-    sudo -u "$_ENV_USER" \
-        XDG_RUNTIME_DIR="/run/user/$_ENV_UID" \
-        DBUS_SESSION_BUS_ADDRESS="$_ENV_DBUS" \
-        notify-send -u "$urgency" -a "boost-auto" "$title" "$body" 2>/dev/null || true
-    logger -t boost-auto "NOTIFY [$urgency] $title: $body"
-}
-
-prompt_switch() {
-    local text="$1"
-    get_user_env || return 1
-    local env_args=(
+notify_env_args() {
+    _NOTIFY_ENV=(
         "XDG_RUNTIME_DIR=/run/user/$_ENV_UID"
         "DBUS_SESSION_BUS_ADDRESS=$_ENV_DBUS"
     )
     if [[ -n "$_ENV_WAYLAND" ]]; then
-        env_args+=("WAYLAND_DISPLAY=$_ENV_WAYLAND" "GDK_BACKEND=wayland")
+        _NOTIFY_ENV+=("WAYLAND_DISPLAY=$_ENV_WAYLAND" "GDK_BACKEND=wayland")
     else
-        env_args+=("DISPLAY=$_ENV_X11" "GDK_BACKEND=x11")
+        _NOTIFY_ENV+=("DISPLAY=$_ENV_X11" "GDK_BACKEND=x11")
     fi
-    sudo -u "$_ENV_USER" env "${env_args[@]}" \
-        zenity --question \
-            --title="⚡ Power Profile" \
-            --text="$text" \
-            --ok-label="Yes, switch" \
-            --cancel-label="Keep current" \
-            --timeout=30 2>/dev/null
-    return $?
 }
 
-# ── State machine ──────────────────────────────────────────────────────────
-high_since=0      # epoch when load went above LOAD_HIGH
-idle_since=0      # epoch when load went below LOAD_IDLE
-last_prompt=0     # epoch of last prompt shown
-last_auto=0       # epoch of last auto-switch (avoid flapping)
-now=0
+notify_plain() {
+    local title="$1" body="$2" urgency="${3:-normal}"
+    get_user_env || return
+    notify_env_args
+    sudo -u "$_ENV_USER" env "${_NOTIFY_ENV[@]}" \
+        notify-send -u "$urgency" -a "Auto power helper" "$title" "$body" 2>/dev/null || true
+    logger -t boost-auto "NOTIFY [$urgency] $title: $body"
+}
+
+handle_action() {
+    local action="$1" command="$2" reason="$3"
+    case "$action" in
+        switch)
+            logger -t boost-auto "Action accepted: ${command} (${reason})"
+            AUTO_HELPER_INTERNAL=1 "$command" >/dev/null 2>&1 || true
+            notify_plain "Gata" "Am schimbat pe $(friendly_profile "$(powerprofilesctl get 2>/dev/null || echo unknown)")."
+            ;;
+        snooze)
+            echo "$(( $(date +%s) + 7200 ))" > "$SNOOZE_FILE"
+            logger -t boost-auto "Action snooze 2h (${reason})"
+            ;;
+        today)
+            date +%F > "$SKIP_TODAY_FILE"
+            logger -t boost-auto "Action skip today (${reason})"
+            ;;
+        *) ;;
+    esac
+}
+
+suggest_switch() {
+    local title="$1" body="$2" label="$3" command="$4" reason="$5"
+    get_user_env || return
+    notify_env_args
+    (
+        action=$(sudo -u "$_ENV_USER" env "${_NOTIFY_ENV[@]}" \
+            notify-send --wait -u normal -a "Auto power helper" \
+            --expire-time=45000 \
+            --action=switch="$label" \
+            --action=snooze="Mai tarziu" \
+            --action=today="Nu azi" \
+            "$title" "$body" 2>/dev/null || true)
+handle_action "$action" "$command" "$reason"
+    ) &
+    logger -t boost-auto "SUGGEST $title: $body"
+}
+
+minutes_from_hhmm() {
+    local value="${1:-00:00}"
+    local hour="${value%%:*}" minute="${value##*:}"
+    echo $(( 10#$hour * 60 + 10#$minute ))
+}
+
+in_quiet_hours() {
+    [[ "${QUIET_HOURS_START}" == "${QUIET_HOURS_END}" ]] && return 1
+    local now_m start_m end_m
+    now_m=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
+    start_m=$(minutes_from_hhmm "$QUIET_HOURS_START")
+    end_m=$(minutes_from_hhmm "$QUIET_HOURS_END")
+    if (( start_m < end_m )); then
+        (( now_m >= start_m && now_m < end_m ))
+    else
+        (( now_m >= start_m || now_m < end_m ))
+    fi
+}
+
+suggestions_paused() {
+    [[ "${AUTO_MODE}" == "quiet" || "${AUTO_MODE}" == "off" ]] && return 0
+    in_quiet_hours && return 0
+    if [[ -f "$SKIP_TODAY_FILE" ]] && [[ "$(cat "$SKIP_TODAY_FILE" 2>/dev/null)" == "$(date +%F)" ]]; then
+        return 0
+    fi
+    if [[ -f "$SNOOZE_FILE" ]]; then
+        local until_epoch now_epoch
+        until_epoch=$(cat "$SNOOZE_FILE" 2>/dev/null || echo 0)
+        now_epoch=$(date +%s)
+        (( until_epoch > now_epoch )) && return 0
+        rm -f "$SNOOZE_FILE"
+    fi
+    return 1
+}
+
+high_since=0
+idle_since=0
+last_prompt=0
+last_auto=0
 
 while true; do
     sleep "$POLL_INTERVAL"
     now=$(date +%s)
-
     temp=$(get_cpu_temp)
     load=$(get_cpu_load)
     profile=$(powerprofilesctl get 2>/dev/null || echo "balanced")
     prompt_ok=$(( now - last_prompt > PROMPT_COOLDOWN ? 1 : 0 ))
 
-    # ── CRITICAL TEMP: auto-switch no prompt ───────────────────────────────
-    if (( temp >= TEMP_CRITICAL )) && [[ "$profile" != "power-saver" ]]; then
+    if (( temp >= TEMP_CRITICAL )) && [[ "$profile" == "performance" ]] && [[ "${ALLOW_CRITICAL_AUTO}" == "yes" ]]; then
         if (( now - last_auto > 120 )); then
-            logger -t boost-auto "CRITICAL ${temp}°C → auto powersave"
-            powersave > /dev/null 2>&1 || true
-            notify "Temperature critical: ${temp}°C" "Switched to Powersave automatically." critical
-            last_auto=$now; last_prompt=$now
-        fi
-
-    # ── HOT: prompt powersave ──────────────────────────────────────────────
-    elif (( temp >= TEMP_HOT )) && [[ "$profile" == "performance" ]] && (( prompt_ok )); then
-        logger -t boost-auto "HOT ${temp}°C → prompting powersave"
-        if prompt_switch "CPU temperature is ${temp}°C (threshold: ${TEMP_HOT}°C).\n\nSwitch to <b>Powersave</b>?"; then
-            powersave > /dev/null 2>&1 || true
-            notify "Switched to Powersave" "CPU was ${temp}°C."
+            logger -t boost-auto "critical heat ${temp}: auto powersave"
+            powersave >/dev/null 2>&1 || true
+            notify_plain "Calculatorul s-a incalzit prea tare" "Am trecut temporar pe un mod mai rece ca sa fie protejat." critical
             last_auto=$now
+            last_prompt=$now
         fi
-        last_prompt=$now; high_since=0
-
-    # ── HIGH LOAD: prompt boost ────────────────────────────────────────────
+    elif (( temp >= TEMP_HOT )) && [[ "$profile" == "performance" ]] && (( prompt_ok )) && ! suggestions_paused; then
+        suggest_switch \
+            "Calculatorul e cam cald" \
+            "Pot trece pe un mod mai rece. Jocurile sau randarea pot merge putin mai incet, dar PC-ul se linisteste." \
+            "Raceste-l" \
+            "powersave" \
+            "hot:${temp}"
+        last_prompt=$now
+        high_since=0
     elif (( load >= LOAD_HIGH )); then
         if (( high_since == 0 )); then
             high_since=$now
-        elif (( now - high_since >= LOAD_HIGH_DURATION )) && [[ "$profile" != "performance" ]] && (( prompt_ok )); then
-            logger -t boost-auto "LOAD ${load}% for ${LOAD_HIGH_DURATION}s → prompting boost"
-            if prompt_switch "CPU load is <b>${load}%</b> for over ${LOAD_HIGH_DURATION}s.\n\nSwitch to <b>Boost</b>?"; then
-                boost > /dev/null 2>&1 || true
-                notify "Switched to Boost" "CPU load was ${load}%."
-                last_auto=$now
-            fi
-            last_prompt=$now; high_since=0
+        elif (( now - high_since >= LOAD_HIGH_DURATION )) && [[ "$profile" != "performance" ]] && (( prompt_ok )) && ! suggestions_paused; then
+            suggest_switch \
+                "Pare ca ai nevoie de mai multa putere" \
+                "Pot activa Boost pentru aplicatii grele, jocuri sau randare. Ventilatoarele pot deveni mai zgomotoase." \
+                "Activeaza Boost" \
+                "boost" \
+                "busy:${load}"
+            last_prompt=$now
+            high_since=0
         fi
         idle_since=0
-
-    # ── IDLE: prompt powersave ─────────────────────────────────────────────
     elif (( load <= LOAD_IDLE )); then
         if (( idle_since == 0 )); then
             idle_since=$now
-        elif (( now - idle_since >= LOAD_IDLE_DURATION )) && [[ "$profile" == "performance" ]] && (( prompt_ok )); then
-            logger -t boost-auto "IDLE ${load}% for ${LOAD_IDLE_DURATION}s → prompting powersave"
-            if prompt_switch "CPU has been idle (<b>${load}%</b>) for over $(( LOAD_IDLE_DURATION / 60 )) min.\n\nSwitch to <b>Powersave</b>?"; then
-                powersave > /dev/null 2>&1 || true
-                notify "Switched to Powersave" "CPU was idle at ${load}%."
-                last_auto=$now
-            fi
-            last_prompt=$now; idle_since=0
+        elif (( now - idle_since >= LOAD_IDLE_DURATION )) && [[ "$profile" == "performance" ]] && (( prompt_ok )) && ! suggestions_paused; then
+            suggest_switch \
+                "PC-ul pare linistit acum" \
+                "Pot opri Boost ca sa scada caldura si zgomotul. Il poti porni iar cu comanda 'boost'." \
+                "Treci pe rece" \
+                "powersave" \
+                "idle:${load}"
+            last_prompt=$now
+            idle_since=0
         fi
         high_since=0
-
     else
-        high_since=0; idle_since=0
+        high_since=0
+        idle_since=0
     fi
 done

@@ -2,15 +2,41 @@
 # /usr/local/lib/power-common.sh - shared helpers for boost/powersave/silent/restore
 # Version: 1.1.0
 
-VERSION="1.1.0"
+# shellcheck disable=SC2034 # sourced by profile scripts for --version
+readonly VERSION="1.1.0"
 ORIGINALS_FILE="/var/lib/power-profile/originals.env"
 FAN_BACKUP="/var/lib/power-profile/fan-curve-backup.env"
 HWMON="/sys/class/hwmon/hwmon5"
 PPD_BIN="$(command -v powerprofilesctl 2>/dev/null)"
+AUTO_CONF_FILE="/etc/boost-auto.conf"
+AUTO_SERVICE="boost-auto.service"
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         exec sudo "$0" "$@"
+    fi
+}
+
+set_auto_config_value() {
+    local key="$1" value="$2"
+    touch "$AUTO_CONF_FILE"
+    if grep -qE "^[[:space:]]*${key}=" "$AUTO_CONF_FILE"; then
+        sed -i -E "s|^[[:space:]]*${key}=.*|${key}=${value}|" "$AUTO_CONF_FILE"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$AUTO_CONF_FILE"
+    fi
+}
+
+disable_auto_for_manual_profile() {
+    local profile_name="$1"
+    [[ "${AUTO_HELPER_INTERNAL:-0}" == "1" ]] && return 0
+
+    set_auto_config_value AUTO_MODE off
+    if systemctl is-active --quiet "$AUTO_SERVICE" 2>/dev/null; then
+        systemctl stop "$AUTO_SERVICE" 2>/dev/null || true
+        echo "[AUTO] Disabled auto mode because you chose ${profile_name} manually."
+        echo "[AUTO] Run 'auto start' or 'auto mode calm|friendly|active' to enable it again."
+        logger -t power-profile "auto disabled after manual ${profile_name}"
     fi
 }
 
@@ -41,7 +67,9 @@ save_originals() {
     [[ -f "$ORIGINALS_FILE" ]] && return
     mkdir -p "$(dirname "$ORIGINALS_FILE")"
     local ppd_profile=""
-    [[ -n "$PPD_BIN" ]] && ppd_profile=$("$PPD_BIN" get 2>/dev/null) || true
+    if [[ -n "$PPD_BIN" ]]; then
+        ppd_profile=$("$PPD_BIN" get 2>/dev/null) || true
+    fi
     cat > "$ORIGINALS_FILE" << EOF
 ORIG_GOV=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)
 ORIG_EPP=$(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null)
@@ -50,7 +78,7 @@ ORIG_TURBO=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null)
 ORIG_PL1=$(cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw 2>/dev/null)
 ORIG_PL2=$(cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw 2>/dev/null)
 ORIG_GPU_LIMIT=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits 2>/dev/null | awk '{printf "%d", $1}')
-ORIG_THP=$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null | grep -oP '\[\K[^\]]+')
+ORIG_THP=$(grep -oP '\[\K[^\]]+' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)
 EOF
     logger -t power-profile "Originals saved"
 }
@@ -130,7 +158,9 @@ reset_process_priorities() {
     [[ -z "$user" ]] && return 0
     local count=0
     while IFS= read -r pid; do
-        renice -n 0 -p "$pid" > /dev/null 2>&1 && ((count++)) || true
+        if renice -n 0 -p "$pid" > /dev/null 2>&1; then
+            ((count++))
+        fi
     done < <(ps -u "$user" -o pid= 2>/dev/null)
     [[ $count -gt 0 ]] && echo "[PROC] $count processes -> nice 0"
 }
@@ -152,7 +182,7 @@ show_status() {
     pl1=$(( $(cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw 2>/dev/null || echo 0) / 1000000 ))
     pl2=$(( $(cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw 2>/dev/null || echo 0) / 1000000 ))
     echo "PL1/PL2:  ${pl1}W / ${pl2}W"
-    echo "THP:      $(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null | grep -oP '\[\K[^\]]+')"
+    echo "THP:      $(grep -oP '\[\K[^\]]+' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)"
 }
 
 verify_write() {

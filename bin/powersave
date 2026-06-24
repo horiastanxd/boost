@@ -2,6 +2,7 @@
 # powersave - efficient profile: balanced performance + lower temps
 # Version: 1.1.0
 
+# shellcheck source=/dev/null
 source /usr/local/lib/power-common.sh
 check_root "$@"
 
@@ -9,6 +10,8 @@ if [[ "$1" == "--status" ]]; then show_status; exit 0; fi
 if [[ "$1" == "--version" ]]; then echo "powersave $VERSION"; exit 0; fi
 
 ORIG_USER="${SUDO_USER:-$(logname 2>/dev/null)}"
+
+disable_auto_for_manual_profile "Powersave"
 
 echo "[POWERSAVE] Applying efficient profile..."
 save_originals

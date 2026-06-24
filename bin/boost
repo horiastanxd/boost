@@ -2,6 +2,7 @@
 # boost - maximum performance profile
 # Version: 1.1.0
 
+# shellcheck source=/dev/null
 source /usr/local/lib/power-common.sh
 check_root "$@"
 
@@ -9,6 +10,8 @@ if [[ "$1" == "--status" ]]; then show_status; exit 0; fi
 if [[ "$1" == "--version" ]]; then echo "boost $VERSION"; exit 0; fi
 
 ORIG_USER="${SUDO_USER:-$(logname 2>/dev/null)}"
+
+disable_auto_for_manual_profile "Boost"
 
 echo "[BOOST] Applying performance profile..."
 save_originals
