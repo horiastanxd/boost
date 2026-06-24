@@ -5,6 +5,12 @@
 source /usr/local/lib/power-common.sh
 check_root "$@"
 
+AUTO_SILENT=0
+if [[ "${1:-}" == "--auto" ]]; then
+    AUTO_SILENT=1
+    shift
+fi
+
 if [[ "$1" == "--status" ]]; then show_status; exit 0; fi
 if [[ "$1" == "--version" ]]; then echo "silent $VERSION"; exit 0; fi
 
@@ -23,6 +29,11 @@ apply_quiet_fan_curve() {
 }
 
 select_and_prioritize() {
+    if [[ "$AUTO_SILENT" == "1" ]]; then
+        echo "[PROC] auto mode: skipping interactive process priority selection"
+        return 0
+    fi
+
     echo ""
     echo "Top processes for '$ORIG_USER':"
     echo "---"

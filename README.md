@@ -212,6 +212,7 @@ Restores all settings to the state captured at boot:
 ```bash
 auto setup           # guided menu, easiest option
 auto doctor          # friendly health check
+auto modes           # show all Auto mode thresholds
 auto mode calm       # rare suggestions, best default
 auto mode summer     # hot-room mode, cooler and slower to suggest Boost
 auto mode friendly   # balanced suggestions
@@ -222,6 +223,7 @@ auto stats           # print a current power snapshot
 auto report          # generate and open a local HTML report
 auto web             # realtime web dashboard with controls
 auto dashboard       # same as auto web
+auto summer-nights on  # optional: Summer can apply Silent during quiet hours
 ```
 
 Manual profile commands stay in control: running `boost` or `powersave`
@@ -232,6 +234,20 @@ turns auto mode off, so the daemon will not fight your choice. Run
 profiles sooner, requires longer sustained load before suggesting Boost,
 leaves Boost more quickly when the system is quiet, and will not suggest
 Boost if the CPU is already above the configured Boost temperature limit.
+
+`auto modes` prints the active thresholds for every built-in mode, so you
+can compare `calm`, `summer`, `friendly`, `active`, `quiet`, and `off`
+without reading the config file.
+
+Summer can use local ambient temperature if available. Set
+`AMBIENT_TEMP_C=29`, point `AMBIENT_TEMP_FILE` at a local sensor file, or
+expose an hwmon sensor with an ambient/system/room label. No internet
+weather API is used. In Summer mode, ambient readings at 28°C+ lower the
+thermal thresholds slightly.
+
+`auto summer-nights on` links Summer and Silent only when you opt in.
+When Auto mode is `summer` and quiet hours are active, the daemon may
+apply `silent --auto` without asking for an interactive process priority.
 
 Reports are generated under:
 
@@ -253,7 +269,10 @@ history.
 `auto web` opens a local dashboard at `http://127.0.0.1:8765`.
 It updates live and lets non-CLI users switch Boost/Powersave, change
 Auto mode, snooze suggestions, edit quiet hours, generate reports, and
-open the latest report from the browser.
+open the latest report from the browser. It also shows the current
+snooze/today-off state, local ambient source, active thresholds, all mode
+presets, and the current Auto decision reason such as "Not suggesting
+Boost because CPU is 79 C and the summer Boost limit is 70 C."
 
 `auto doctor` checks the pieces that commonly confuse users:
 GNOME power profile sync, NVIDIA access, CPU power-limit support,
@@ -328,6 +347,9 @@ Loop devices (snap/flatpak mounts) are excluded.
   power-save-originals.service   # one-shot, runs before basic.target
   boost-auto.service             # Auto mode daemon
   boost-web.service              # local dashboard daemon
+
+tests/
+  auto-mode-presets.sh           # preset threshold regression test
 ```
 
 ---
@@ -370,7 +392,9 @@ auto stop       # stop daemon
 auto status     # current metrics + thresholds
 auto logs       # tail journalctl output
 auto config     # show active config
+auto modes      # show every built-in mode threshold
 auto summer     # hot-room mode
+auto summer-nights on|off
 ```
 
 Monitors CPU temperature and load every 5 seconds. Reacts based on configurable thresholds:
@@ -382,6 +406,7 @@ Monitors CPU temperature and load every 5 seconds. Reacts based on configurable 
 | Load ≥ 75% for 120s + profile=powersave | Prompt: *"CPU at 80% load — switch to Boost?"* |
 | Load ≤ 8% for 10 min + profile=boost | Prompt: *"CPU idle — switch to Powersave?"* |
 | Summer mode + CPU above Boost limit | Do not suggest Boost until the system is cooler |
+| Summer mode + quiet hours + `SUMMER_SILENT_NIGHTS=yes` | Apply `silent --auto` at most once per hour |
 
 Prompts appear as desktop notifications with action buttons when supported.
 No answer keeps the current profile. Prompts are throttled by mode.
@@ -392,6 +417,9 @@ No answer keeps the current profile. Prompts are throttled by mode.
 TEMP_CRITICAL=85       # °C: auto-switch threshold
 TEMP_HOT=78            # °C: prompt threshold
 BOOST_TEMP_LIMIT=78    # °C: do not suggest Boost above this temperature
+SUMMER_SILENT_NIGHTS=no # optional: apply silent --auto during summer quiet hours
+AMBIENT_TEMP_C=         # optional local room temperature override
+AMBIENT_TEMP_FILE=      # optional local file containing room temperature
 LOAD_HIGH=75           # %: high load threshold
 LOAD_HIGH_DURATION=120 # seconds of sustained load before prompting
 LOAD_IDLE=8            # %: idle threshold

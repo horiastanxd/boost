@@ -8,6 +8,33 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONF_FILE="/etc/boost-auto.conf"
+
+set_config_value() {
+    local key="$1" value="$2"
+    if grep -qE "^[[:space:]]*${key}=" "$CONF_FILE"; then
+        sed -i -E "s|^[[:space:]]*${key}=.*|${key}=${value}|" "$CONF_FILE"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$CONF_FILE"
+    fi
+}
+
+migrate_config() {
+    local key value backup
+    backup="/etc/boost-auto.conf.backup-$(date +%Y%m%d-%H%M%S)"
+    cp "$CONF_FILE" "$backup"
+    install -m 644 "$REPO_DIR/boost-auto.conf" "$CONF_FILE"
+    for key in \
+        AUTO_MODE QUIET_HOURS_START QUIET_HOURS_END ALLOW_CRITICAL_AUTO \
+        SUMMER_SILENT_NIGHTS AMBIENT_TEMP_C AMBIENT_TEMP_FILE \
+        TEMP_CRITICAL TEMP_HOT BOOST_TEMP_LIMIT LOAD_HIGH LOAD_HIGH_DURATION \
+        LOAD_IDLE LOAD_IDLE_DURATION PROMPT_COOLDOWN POLL_INTERVAL STATS_INTERVAL
+    do
+        value=$(awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1); found=1} END {exit found ? 0 : 1}' "$backup" 2>/dev/null || true)
+        [[ -n "$value" ]] && set_config_value "$key" "$value"
+    done
+    echo "  -> refreshed /etc/boost-auto.conf comments (backup: $backup)"
+}
 
 echo "[install] Copying scripts to /usr/local/bin..."
 for bin in boost powersave silent restore power-save-originals auto power-report boost-web; do
@@ -30,15 +57,11 @@ systemctl daemon-reload
 systemctl enable power-save-originals.service
 
 echo "[install] Installing default config..."
-if [[ ! -f /etc/boost-auto.conf ]]; then
-    install -m 644 "$REPO_DIR/boost-auto.conf" /etc/boost-auto.conf
+if [[ ! -f "$CONF_FILE" ]]; then
+    install -m 644 "$REPO_DIR/boost-auto.conf" "$CONF_FILE"
     echo "  -> /etc/boost-auto.conf (edit to tune thresholds)"
 else
-    echo "  -> /etc/boost-auto.conf already exists, skipping"
-    if ! grep -qE '^[[:space:]]*BOOST_TEMP_LIMIT=' /etc/boost-auto.conf; then
-        printf '\n# Do not suggest Boost above this CPU temperature.\nBOOST_TEMP_LIMIT=78\n' >> /etc/boost-auto.conf
-        echo "  -> added BOOST_TEMP_LIMIT to existing config"
-    fi
+    migrate_config
 fi
 
 mkdir -p /var/lib/power-profile

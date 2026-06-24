@@ -24,6 +24,8 @@ PORT = 8765
 CONF_FILE = Path("/etc/boost-auto.conf")
 STATS_FILE = Path("/var/lib/power-profile/stats.csv")
 LATEST_REPORT = Path("/var/lib/power-profile/reports/latest.html")
+SNOOZE_FILE = Path("/var/lib/power-profile/auto-snooze-until")
+SKIP_TODAY_FILE = Path("/var/lib/power-profile/auto-skip-date")
 
 
 def run(cmd: list[str], timeout: float = 4.0) -> subprocess.CompletedProcess[str]:
@@ -48,6 +50,190 @@ def read_config() -> dict[str, str]:
         key, value = line.split("=", 1)
         config[key.strip()] = value.strip()
     return config
+
+
+DEFAULT_THRESHOLDS = {
+    "tempCritical": 85,
+    "tempHot": 78,
+    "boostTempLimit": 78,
+    "loadHigh": 75,
+    "loadHighDuration": 120,
+    "loadIdle": 8,
+    "loadIdleDuration": 600,
+    "promptCooldown": 900,
+}
+
+
+def number_config(config: dict[str, str], key: str, default: int) -> int:
+    try:
+        return int(float(config.get(key, str(default)) or default))
+    except ValueError:
+        return default
+
+
+def mode_thresholds(mode: str, config: dict[str, str] | None = None) -> dict[str, int | str]:
+    thresholds: dict[str, int | str] = dict(DEFAULT_THRESHOLDS)
+    if mode == "calm":
+        thresholds.update(
+            {
+                "tempHot": 80,
+                "boostTempLimit": 80,
+                "loadHigh": 85,
+                "loadHighDuration": 300,
+                "loadIdle": 5,
+                "loadIdleDuration": 1200,
+                "promptCooldown": 3600,
+            }
+        )
+    elif mode == "summer":
+        thresholds.update(
+            {
+                "tempCritical": 82,
+                "tempHot": 74,
+                "boostTempLimit": 70,
+                "loadHigh": 90,
+                "loadHighDuration": 360,
+                "loadIdle": 15,
+                "loadIdleDuration": 180,
+                "promptCooldown": 1800,
+            }
+        )
+    elif mode == "active":
+        thresholds.update(
+            {
+                "tempHot": 76,
+                "boostTempLimit": 76,
+                "loadHigh": 65,
+                "loadHighDuration": 45,
+                "loadIdle": 12,
+                "loadIdleDuration": 240,
+                "promptCooldown": 300,
+            }
+        )
+    elif mode == "custom" and config:
+        thresholds.update(
+            {
+                "tempCritical": number_config(config, "TEMP_CRITICAL", 85),
+                "tempHot": number_config(config, "TEMP_HOT", 78),
+                "boostTempLimit": number_config(config, "BOOST_TEMP_LIMIT", 78),
+                "loadHigh": number_config(config, "LOAD_HIGH", 75),
+                "loadHighDuration": number_config(config, "LOAD_HIGH_DURATION", 120),
+                "loadIdle": number_config(config, "LOAD_IDLE", 8),
+                "loadIdleDuration": number_config(config, "LOAD_IDLE_DURATION", 600),
+                "promptCooldown": number_config(config, "PROMPT_COOLDOWN", 900),
+            }
+        )
+    thresholds["mode"] = mode
+    return thresholds
+
+
+def ambient_temp(config: dict[str, str]) -> dict[str, Any]:
+    value = config.get("AMBIENT_TEMP_C", "").strip()
+    if value:
+        try:
+            return {"detected": True, "temp": int(float(value)), "source": "AMBIENT_TEMP_C"}
+        except ValueError:
+            pass
+
+    temp_file = config.get("AMBIENT_TEMP_FILE", "").strip()
+    if temp_file and Path(temp_file).is_file():
+        raw = read_text(temp_file, "")
+        try:
+            parsed = int(float(raw))
+            return {"detected": True, "temp": parsed // 1000 if parsed > 200 else parsed, "source": temp_file}
+        except ValueError:
+            pass
+
+    for hwmon in Path("/sys/class/hwmon").glob("hwmon*"):
+        for label_file in hwmon.glob("temp*_label"):
+            label = read_text(label_file, "").lower()
+            if not any(part in label for part in ("ambient", "room", "system", "motherboard", "systin")):
+                continue
+            raw = int(read_text(str(label_file).replace("_label", "_input"), "0") or "0")
+            if raw > 0:
+                return {"detected": True, "temp": raw // 1000, "source": f"{hwmon.name}:{label}"}
+
+    return {"detected": False, "temp": None, "source": "not detected"}
+
+
+def apply_ambient_adjustment(thresholds: dict[str, int | str], ambient: dict[str, Any]) -> dict[str, int | str]:
+    adjusted = dict(thresholds)
+    if adjusted.get("mode") != "summer" or not ambient.get("detected"):
+        return adjusted
+    temp = int(ambient.get("temp") or 0)
+    if temp >= 30:
+        adjusted["tempCritical"] = int(adjusted["tempCritical"]) - 2
+        adjusted["tempHot"] = int(adjusted["tempHot"]) - 2
+        adjusted["boostTempLimit"] = int(adjusted["boostTempLimit"]) - 3
+    elif temp >= 28:
+        adjusted["tempCritical"] = int(adjusted["tempCritical"]) - 1
+        adjusted["tempHot"] = int(adjusted["tempHot"]) - 1
+        adjusted["boostTempLimit"] = int(adjusted["boostTempLimit"]) - 2
+    return adjusted
+
+
+def quiet_active(start: str, end: str) -> bool:
+    if start == end:
+        return False
+    now = time.localtime()
+    now_m = now.tm_hour * 60 + now.tm_min
+    start_h, start_m = [int(part) for part in start.split(":", 1)]
+    end_h, end_m = [int(part) for part in end.split(":", 1)]
+    start_total = start_h * 60 + start_m
+    end_total = end_h * 60 + end_m
+    if start_total < end_total:
+        return start_total <= now_m < end_total
+    return now_m >= start_total or now_m < end_total
+
+
+def pause_payload(config: dict[str, str]) -> dict[str, Any]:
+    now = int(time.time())
+    mode = config.get("AUTO_MODE", "friendly")
+    quiet = quiet_active(config.get("QUIET_HOURS_START", "22:00"), config.get("QUIET_HOURS_END", "08:00"))
+    today_off = SKIP_TODAY_FILE.exists() and read_text(SKIP_TODAY_FILE, "") == time.strftime("%Y-%m-%d")
+    snooze_until = int(read_text(SNOOZE_FILE, "0") or "0") if SNOOZE_FILE.exists() else 0
+    snoozed = snooze_until > now
+    if mode == "off":
+        reason = "Auto mode is off."
+    elif mode == "quiet":
+        reason = "Quiet mode only allows critical heat protection."
+    elif quiet:
+        reason = "Quiet hours are active."
+    elif today_off:
+        reason = "Suggestions are paused for today."
+    elif snoozed:
+        reason = f"Suggestions are snoozed for {snooze_until - now}s."
+    else:
+        reason = "Suggestions are available."
+    return {
+        "quietActive": quiet,
+        "todayOff": today_off,
+        "snoozed": snoozed,
+        "snoozeUntil": snooze_until,
+        "reason": reason,
+    }
+
+
+def decision_reason(
+    mode: str,
+    profile: str,
+    cpu_temp: int,
+    cpu_load: int,
+    thresholds: dict[str, int | str],
+    pause: dict[str, Any],
+) -> str:
+    if pause["reason"] != "Suggestions are available.":
+        return str(pause["reason"])
+    boost_limit = int(thresholds["boostTempLimit"])
+    if cpu_temp >= boost_limit and profile != "performance":
+        return f"Not suggesting Boost because CPU is {cpu_temp} C and the {mode} Boost limit is {boost_limit} C."
+    if cpu_temp >= int(thresholds["tempHot"]) and profile == "performance":
+        return f"A cooler profile is preferred because CPU is {cpu_temp} C."
+    if cpu_load >= int(thresholds["loadHigh"]) and profile != "performance":
+        return f"Boost can be suggested if load stays high and CPU remains below {boost_limit} C."
+    if cpu_load <= int(thresholds["loadIdle"]) and profile == "performance":
+        return "Powersave can be suggested if the system stays idle."
+    return "Current profile looks reasonable for the active mode."
 
 
 def set_config_value(key: str, value: str) -> None:
@@ -162,19 +348,32 @@ def status_payload() -> dict[str, Any]:
     rows = history()
     gpu = gpu_stats()
     profile = power_profile()
+    mode = config.get("AUTO_MODE", "friendly")
+    cpu_load = cpu_load_percent()
+    cpu_temp = cpu_temp_c()
+    ambient = ambient_temp(config)
+    base_thresholds = mode_thresholds(mode, config)
+    thresholds = apply_ambient_adjustment(base_thresholds, ambient)
+    pause = pause_payload(config)
     return {
         "ok": True,
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "auto": {
-            "mode": config.get("AUTO_MODE", "friendly"),
+            "mode": mode,
             "service": active_service("boost-auto.service"),
             "quietStart": config.get("QUIET_HOURS_START", "22:00"),
             "quietEnd": config.get("QUIET_HOURS_END", "08:00"),
+            "summerSilentNights": config.get("SUMMER_SILENT_NIGHTS", "no"),
+            "thresholds": thresholds,
+            "modes": [mode_thresholds(item, config) for item in ("calm", "summer", "friendly", "active", "quiet", "off")],
+            "pause": pause,
+            "ambient": ambient,
+            "decision": decision_reason(mode, profile, cpu_temp, cpu_load, thresholds, pause),
         },
         "web": {"service": active_service("boost-web.service"), "url": f"http://{HOST}:{PORT}"},
         "profile": profile,
         "friendlyProfile": {"performance": "Boost", "balanced": "Balanced", "power-saver": "Maximum savings"}.get(profile, profile),
-        "cpu": {"load": cpu_load_percent(), "temp": cpu_temp_c()},
+        "cpu": {"load": cpu_load, "temp": cpu_temp},
         "gpu": gpu,
         "limits": {"pl1": rapl_w(0), "pl2": rapl_w(1)},
         "system": {
@@ -210,6 +409,8 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
         if not valid_hhmm(start) or not valid_hhmm(end):
             return {"ok": False, "message": "Quiet hours must use HH:MM."}
         result = run(["/usr/local/bin/auto", "quiet-hours", start, end], timeout=10)
+    elif action == "summer-nights" and value in {"on", "off"}:
+        result = run(["/usr/local/bin/auto", "summer-nights", value], timeout=10)
     elif action == "report":
         result = run(["/usr/local/bin/power-report"], timeout=10)
     else:
@@ -242,7 +443,7 @@ h1{margin:0;font-size:28px}.muted{color:var(--muted)}.status-dot{display:inline-
 .section{margin-top:18px}.actions{display:flex;gap:10px;flex-wrap:wrap}.btn{border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:8px;padding:10px 12px;cursor:pointer}.btn:hover,.btn:focus{outline:2px solid var(--accent);outline-offset:1px}.btn.primary{background:#0e7490;border-color:#0891b2}.btn.good{background:#0f766e;border-color:#14b8a6}.btn.warn{background:#854d0e;border-color:#f59e0b}.btn.danger{background:#9f1239;border-color:#fb7185}
 .split{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,360px);gap:12px}@media(max-width:800px){.split{grid-template-columns:1fr}main{padding:16px}.value{font-size:21px}}
 table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--muted);font-size:12px;text-transform:uppercase}tr:last-child td{border-bottom:0}.table-wrap{overflow:auto;border-radius:8px}
-.message{min-height:22px;color:var(--ok);margin-top:10px}.message.error{color:var(--danger)}.field-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.field-row input{width:92px;background:#071120;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px}
+.message{min-height:22px;color:var(--ok);margin-top:10px}.message.error{color:var(--danger)}.field-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.field-row input{width:92px;background:#071120;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px}.reason{border-left:3px solid var(--accent);padding-left:10px}
 </style>
 </head>
 <body>
@@ -265,6 +466,8 @@ table{width:100%;border-collapse:collapse;background:var(--panel);border:1px sol
   <div class="card"><div class="label">GPU</div><div class="value"><span id="gpuPower">-</span> W <small id="gpuTemp">- C</small></div></div>
   <div class="card"><div class="label">CPU limits</div><div class="value"><span id="limits">-</span> W</div></div>
   <div class="card"><div class="label">Turbo</div><div class="value" id="turbo">-</div></div>
+  <div class="card"><div class="label">Ambient</div><div class="value" id="ambient">-</div><div class="muted" id="ambientSource">-</div></div>
+  <div class="card"><div class="label">Pause state</div><div class="value" id="pauseState">-</div><div class="muted" id="pauseReason">-</div></div>
 </section>
 
 <div class="split">
@@ -305,6 +508,15 @@ table{width:100%;border-collapse:collapse;background:var(--panel);border:1px sol
         <button class="btn" id="saveQuiet">Save</button>
       </div>
     </div>
+    <div class="section">
+      <div class="label">Summer nights</div>
+      <p class="muted">Optional link between Summer and Silent: during quiet hours, Auto can apply Silent mode without an interactive prompt.</p>
+      <div class="actions">
+        <button class="btn good" data-action="summer-nights" data-value="on">Enable</button>
+        <button class="btn" data-action="summer-nights" data-value="off">Disable</button>
+      </div>
+      <p class="muted" id="summerNights">-</p>
+    </div>
     <div id="message" class="message" role="status" aria-live="polite"></div>
   </section>
 
@@ -324,6 +536,29 @@ table{width:100%;border-collapse:collapse;background:var(--panel);border:1px sol
   </aside>
 </div>
 
+<section class="section card">
+  <div class="label">Auto decision</div>
+  <p class="reason" id="decisionReason">-</p>
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+    <div><div class="muted">Warm CPU</div><strong id="tempHot">-</strong></div>
+    <div><div class="muted">Critical CPU</div><strong id="tempCritical">-</strong></div>
+    <div><div class="muted">Boost allowed below</div><strong id="boostLimit">-</strong></div>
+    <div><div class="muted">Busy trigger</div><strong id="busyTrigger">-</strong></div>
+    <div><div class="muted">Idle trigger</div><strong id="idleTrigger">-</strong></div>
+    <div><div class="muted">Prompt cooldown</div><strong id="cooldown">-</strong></div>
+  </div>
+</section>
+
+<section class="section">
+  <h2>Auto mode presets</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Mode</th><th>Warm</th><th>Critical</th><th>Boost below</th><th>Busy</th><th>Idle</th><th>Cooldown</th></tr></thead>
+      <tbody id="modes"></tbody>
+    </table>
+  </div>
+</section>
+
 <section class="section">
   <h2>Recent history</h2>
   <div class="table-wrap">
@@ -337,6 +572,12 @@ table{width:100%;border-collapse:collapse;background:var(--panel);border:1px sol
 <script>
 const $ = (id) => document.getElementById(id)
 const message = $('message')
+
+function secondsText(seconds) {
+  if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+  if (seconds >= 60) return `${Math.floor(seconds / 60)}m`
+  return `${seconds}s`
+}
 
 async function fetchStatus() {
   const response = await fetch('/api/status', { cache: 'no-store' })
@@ -361,13 +602,31 @@ function render(data) {
   $('gpuTemp').textContent = `${data.gpu.temp} C`
   $('limits').textContent = `${data.limits.pl1}/${data.limits.pl2}`
   $('turbo').textContent = data.system.turbo
+  $('ambient').textContent = data.auto.ambient.detected ? `${data.auto.ambient.temp} C` : 'Not detected'
+  $('ambientSource').textContent = data.auto.ambient.source
+  $('pauseState').textContent = data.auto.pause.snoozed ? 'Snoozed' : data.auto.pause.todayOff ? 'Today off' : data.auto.pause.quietActive ? 'Quiet hours' : 'Available'
+  $('pauseReason').textContent = data.auto.pause.reason
   $('quietStart').value = data.auto.quietStart
   $('quietEnd').value = data.auto.quietEnd
+  $('summerNights').textContent = `Current: ${data.auto.summerSilentNights}`
+  $('decisionReason').textContent = data.auto.decision
+  $('tempHot').textContent = `${data.auto.thresholds.tempHot} C`
+  $('tempCritical').textContent = `${data.auto.thresholds.tempCritical} C`
+  $('boostLimit').textContent = `${data.auto.thresholds.boostTempLimit} C`
+  $('busyTrigger').textContent = `${data.auto.thresholds.loadHigh}% for ${secondsText(data.auto.thresholds.loadHighDuration)}`
+  $('idleTrigger').textContent = `${data.auto.thresholds.loadIdle}% for ${secondsText(data.auto.thresholds.loadIdleDuration)}`
+  $('cooldown').textContent = secondsText(data.auto.thresholds.promptCooldown)
   $('avgCpu').textContent = `${Math.round(data.summary.avg_cpu)}%`
   $('maxTemp').textContent = `${Math.round(data.summary.max_temp)} C`
   $('avgGpu').textContent = `${Number(data.summary.avg_gpu).toFixed(1)} W`
   $('epp').textContent = data.system.epp
   $('reportPath').textContent = data.report.latestExists ? data.report.path : 'No report yet'
+  $('modes').innerHTML = data.auto.modes.map(mode => `
+    <tr>
+      <td>${mode.mode}</td><td>${mode.tempHot} C</td><td>${mode.tempCritical} C</td>
+      <td>${mode.boostTempLimit} C</td><td>${mode.loadHigh}% / ${secondsText(mode.loadHighDuration)}</td>
+      <td>${mode.loadIdle}% / ${secondsText(mode.loadIdleDuration)}</td><td>${secondsText(mode.promptCooldown)}</td>
+    </tr>`).join('')
   $('history').innerHTML = data.history.slice().reverse().map(row => `
     <tr>
       <td>${row.iso || '-'}</td><td>${row.profile || '-'}</td><td>${row.cpu_load || 0}%</td>

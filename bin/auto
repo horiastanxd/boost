@@ -14,27 +14,51 @@ WEB_URL="http://127.0.0.1:8765"
 SNOOZE_FILE="$STATE_DIR/auto-snooze-until"
 SKIP_TODAY_FILE="$STATE_DIR/auto-skip-date"
 REPORT_BIN="/usr/local/bin/power-report"
+SILENT_BIN="/usr/local/bin/silent"
 
 # Friendly defaults. Use `auto mode calm|summer|friendly|active|quiet|off`.
-AUTO_MODE=friendly
-QUIET_HOURS_START=22:00
-QUIET_HOURS_END=08:00
-ALLOW_CRITICAL_AUTO=yes
-TEMP_CRITICAL=85
-TEMP_HOT=78
-BOOST_TEMP_LIMIT=78
-LOAD_HIGH=75
-LOAD_HIGH_DURATION=120
-LOAD_IDLE=8
-LOAD_IDLE_DURATION=600
-PROMPT_COOLDOWN=900
-POLL_INTERVAL=5
-STATS_INTERVAL=60
+AUTO_MODE="${AUTO_MODE:-friendly}"
+QUIET_HOURS_START="${QUIET_HOURS_START:-22:00}"
+QUIET_HOURS_END="${QUIET_HOURS_END:-08:00}"
+ALLOW_CRITICAL_AUTO="${ALLOW_CRITICAL_AUTO:-yes}"
+SUMMER_SILENT_NIGHTS="${SUMMER_SILENT_NIGHTS:-no}"
+AMBIENT_TEMP_C="${AMBIENT_TEMP_C:-}"
+AMBIENT_TEMP_FILE="${AMBIENT_TEMP_FILE:-}"
+TEMP_CRITICAL="${TEMP_CRITICAL:-85}"
+TEMP_HOT="${TEMP_HOT:-78}"
+BOOST_TEMP_LIMIT="${BOOST_TEMP_LIMIT:-78}"
+LOAD_HIGH="${LOAD_HIGH:-75}"
+LOAD_HIGH_DURATION="${LOAD_HIGH_DURATION:-120}"
+LOAD_IDLE="${LOAD_IDLE:-8}"
+LOAD_IDLE_DURATION="${LOAD_IDLE_DURATION:-600}"
+PROMPT_COOLDOWN="${PROMPT_COOLDOWN:-900}"
+POLL_INTERVAL="${POLL_INTERVAL:-5}"
+STATS_INTERVAL="${STATS_INTERVAL:-60}"
 
-if [[ -f "$CONF_FILE" ]]; then
+reset_threshold_defaults() {
+    TEMP_CRITICAL=85
+    TEMP_HOT=78
+    BOOST_TEMP_LIMIT=78
+    LOAD_HIGH=75
+    LOAD_HIGH_DURATION=120
+    LOAD_IDLE=8
+    LOAD_IDLE_DURATION=600
+    PROMPT_COOLDOWN=900
+}
+
+if [[ "${BOOST_AUTO_NO_CONFIG:-0}" != "1" && -f "$CONF_FILE" ]]; then
     # shellcheck source=/etc/boost-auto.conf
     source /etc/boost-auto.conf
 fi
+
+CUSTOM_TEMP_CRITICAL="${TEMP_CRITICAL}"
+CUSTOM_TEMP_HOT="${TEMP_HOT}"
+CUSTOM_BOOST_TEMP_LIMIT="${BOOST_TEMP_LIMIT}"
+CUSTOM_LOAD_HIGH="${LOAD_HIGH}"
+CUSTOM_LOAD_HIGH_DURATION="${LOAD_HIGH_DURATION}"
+CUSTOM_LOAD_IDLE="${LOAD_IDLE}"
+CUSTOM_LOAD_IDLE_DURATION="${LOAD_IDLE_DURATION}"
+CUSTOM_PROMPT_COOLDOWN="${PROMPT_COOLDOWN}"
 
 if [[ -f /usr/local/lib/power-common.sh ]]; then
     # shellcheck source=/dev/null
@@ -42,6 +66,7 @@ if [[ -f /usr/local/lib/power-common.sh ]]; then
 fi
 
 apply_mode_preset() {
+    reset_threshold_defaults
     case "${AUTO_MODE:-friendly}" in
         calm)
             TEMP_HOT=80
@@ -71,17 +96,131 @@ apply_mode_preset() {
             LOAD_IDLE_DURATION=240
             PROMPT_COOLDOWN=300
             ;;
-        quiet|off|friendly|custom) ;;
+        quiet|off|friendly) ;;
+        custom)
+            [[ -n "${CUSTOM_TEMP_CRITICAL:-}" ]] && TEMP_CRITICAL="$CUSTOM_TEMP_CRITICAL"
+            [[ -n "${CUSTOM_TEMP_HOT:-}" ]] && TEMP_HOT="$CUSTOM_TEMP_HOT"
+            [[ -n "${CUSTOM_BOOST_TEMP_LIMIT:-}" ]] && BOOST_TEMP_LIMIT="$CUSTOM_BOOST_TEMP_LIMIT"
+            [[ -n "${CUSTOM_LOAD_HIGH:-}" ]] && LOAD_HIGH="$CUSTOM_LOAD_HIGH"
+            [[ -n "${CUSTOM_LOAD_HIGH_DURATION:-}" ]] && LOAD_HIGH_DURATION="$CUSTOM_LOAD_HIGH_DURATION"
+            [[ -n "${CUSTOM_LOAD_IDLE:-}" ]] && LOAD_IDLE="$CUSTOM_LOAD_IDLE"
+            [[ -n "${CUSTOM_LOAD_IDLE_DURATION:-}" ]] && LOAD_IDLE_DURATION="$CUSTOM_LOAD_IDLE_DURATION"
+            [[ -n "${CUSTOM_PROMPT_COOLDOWN:-}" ]] && PROMPT_COOLDOWN="$CUSTOM_PROMPT_COOLDOWN"
+            ;;
         *)
             AUTO_MODE=friendly
             ;;
     esac
 }
-apply_mode_preset
 
 ensure_state_dir() {
     mkdir -p "$STATE_DIR"
 }
+
+numeric_temp() {
+    [[ "${1:-}" =~ ^-?[0-9]+([.][0-9]+)?$ ]]
+}
+
+whole_celsius() {
+    local value="$1"
+    value="${value%%.*}"
+    printf '%s\n' "$value"
+}
+
+read_ambient_temp_c() {
+    local raw hwmon label_file label input_file
+    if numeric_temp "${AMBIENT_TEMP_C:-}"; then
+        whole_celsius "$AMBIENT_TEMP_C"
+        return 0
+    fi
+    if [[ -n "${AMBIENT_TEMP_FILE:-}" && -r "$AMBIENT_TEMP_FILE" ]]; then
+        raw=$(tr -cd '0-9.-' < "$AMBIENT_TEMP_FILE" | head -c 8)
+        if numeric_temp "$raw"; then
+            if (( ${raw%%.*} > 200 )); then
+                echo $(( ${raw%%.*} / 1000 ))
+            else
+                whole_celsius "$raw"
+            fi
+            return 0
+        fi
+    fi
+    for hwmon in /sys/class/hwmon/hwmon*; do
+        [[ -d "$hwmon" ]] || continue
+        for label_file in "$hwmon"/temp*_label; do
+            [[ -r "$label_file" ]] || continue
+            label=$(tr '[:upper:]' '[:lower:]' < "$label_file")
+            case "$label" in
+                *ambient*|*room*|*system*|*motherboard*|*systin*)
+                    input_file="${label_file%_label}_input"
+                    raw=$(cat "$input_file" 2>/dev/null || echo 0)
+                    if [[ "$raw" =~ ^[0-9]+$ && "$raw" -gt 0 ]]; then
+                        echo $(( raw / 1000 ))
+                        return 0
+                    fi
+                    ;;
+            esac
+        done
+    done
+    return 1
+}
+
+apply_ambient_adjustment() {
+    local ambient="${1:-}"
+    [[ "${AUTO_MODE:-friendly}" == "summer" ]] || return 0
+    [[ "$ambient" =~ ^[0-9]+$ ]] || return 0
+    if (( ambient >= 30 )); then
+        TEMP_CRITICAL=$(( TEMP_CRITICAL - 2 ))
+        TEMP_HOT=$(( TEMP_HOT - 2 ))
+        BOOST_TEMP_LIMIT=$(( BOOST_TEMP_LIMIT - 3 ))
+    elif (( ambient >= 28 )); then
+        TEMP_CRITICAL=$(( TEMP_CRITICAL - 1 ))
+        TEMP_HOT=$(( TEMP_HOT - 1 ))
+        BOOST_TEMP_LIMIT=$(( BOOST_TEMP_LIMIT - 2 ))
+    fi
+}
+
+refresh_mode_settings() {
+    local ambient=""
+    apply_mode_preset
+    ambient=$(read_ambient_temp_c 2>/dev/null || true)
+    apply_ambient_adjustment "$ambient"
+}
+
+mode_description() {
+    case "$1" in
+        calm) echo "rare suggestions" ;;
+        summer) echo "hot-room thermal headroom" ;;
+        friendly) echo "balanced default" ;;
+        active) echo "fast suggestions" ;;
+        quiet) echo "critical heat protection only" ;;
+        off) echo "auto disabled" ;;
+        custom) echo "advanced config values" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+print_mode_row() {
+    local mode="$1" old_mode="$AUTO_MODE"
+    AUTO_MODE="$mode"
+    apply_mode_preset
+    printf '%-9s hot=%-3s critical=%-3s boost-below=%-3s busy=%s/%s idle=%s/%s cooldown=%-6s %s\n' \
+        "$mode" "$TEMP_HOT" "$TEMP_CRITICAL" "$BOOST_TEMP_LIMIT" \
+        "$LOAD_HIGH%" "$(format_seconds "$LOAD_HIGH_DURATION")" \
+        "$LOAD_IDLE%" "$(format_seconds "$LOAD_IDLE_DURATION")" \
+        "$(format_seconds "$PROMPT_COOLDOWN")" "$(mode_description "$mode")"
+    AUTO_MODE="$old_mode"
+    refresh_mode_settings
+}
+
+show_modes() {
+    echo "Auto mode presets"
+    echo ""
+    for mode in calm summer friendly active quiet off; do
+        print_mode_row "$mode"
+    done
+}
+
+refresh_mode_settings
 
 need_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -132,7 +271,7 @@ format_seconds() {
 
 show_help() {
     cat <<'EOF'
-Usage: auto [web|start|stop|restart|status|stats|report|dashboard|doctor|setup|logs|config|mode|quiet-hours|snooze|today-off|resume]
+Usage: auto [web|start|stop|restart|status|stats|report|dashboard|doctor|setup|logs|config|modes|mode|quiet-hours|summer-nights|snooze|today-off|resume]
 
 Simple controls:
   auto web              start and open the local web dashboard
@@ -141,6 +280,7 @@ Simple controls:
   auto close-web        stop the local web dashboard
   auto setup            guided setup, easiest way to choose behavior
   auto doctor           check if everything needed is installed and healthy
+  auto modes            show thresholds for every Auto mode
   auto on               enable calm auto mode
   auto off              disable auto mode completely
   auto calm             set calm mode
@@ -158,6 +298,8 @@ Simple controls:
 Quiet controls:
   auto quiet-hours 22:00 08:00
   auto quiet-hours off
+  auto summer-nights on
+  auto summer-nights off
   auto snooze 2h
   auto today-off
   auto resume
@@ -170,12 +312,16 @@ EOF
 }
 
 show_config_friendly() {
+    local ambient=""
+    ambient=$(read_ambient_temp_c 2>/dev/null || true)
     cat <<EOF
 Auto power helper
 
 Mode: ${AUTO_MODE}
 Quiet hours: ${QUIET_HOURS_START}-${QUIET_HOURS_END}
 Critical protection: ${ALLOW_CRITICAL_AUTO}
+Summer silent nights: ${SUMMER_SILENT_NIGHTS}
+Ambient source: ${ambient:-not detected}
 
 What the modes mean:
   calm      asks rarely; good if notifications annoy you
@@ -192,7 +338,83 @@ Advanced values in ${CONF_FILE}:
   Busy: ${LOAD_HIGH} after $(format_seconds "$LOAD_HIGH_DURATION")
   Idle: ${LOAD_IDLE} after $(format_seconds "$LOAD_IDLE_DURATION")
   Minimum time between suggestions: $(format_seconds "$PROMPT_COOLDOWN")
+
+All mode presets:
+$(for mode in calm summer friendly active quiet off; do print_mode_row "$mode"; done)
 EOF
+}
+
+minutes_from_hhmm() {
+    local value="${1:-00:00}"
+    local hour="${value%%:*}" minute="${value##*:}"
+    echo $(( 10#$hour * 60 + 10#$minute ))
+}
+
+in_quiet_hours() {
+    [[ "${QUIET_HOURS_START}" == "${QUIET_HOURS_END}" ]] && return 1
+    local now_m start_m end_m
+    now_m=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
+    start_m=$(minutes_from_hhmm "$QUIET_HOURS_START")
+    end_m=$(minutes_from_hhmm "$QUIET_HOURS_END")
+    if (( start_m < end_m )); then
+        (( now_m >= start_m && now_m < end_m ))
+    else
+        (( now_m >= start_m || now_m < end_m ))
+    fi
+}
+
+pause_status() {
+    local until_epoch now_epoch
+    if [[ "${AUTO_MODE}" == "off" ]]; then
+        echo "Auto mode is off."
+        return 0
+    fi
+    if [[ "${AUTO_MODE}" == "quiet" ]]; then
+        echo "Suggestions are disabled in quiet mode; critical heat protection remains active."
+        return 0
+    fi
+    if in_quiet_hours; then
+        echo "Suggestions are paused during quiet hours."
+        return 0
+    fi
+    if [[ -f "$SKIP_TODAY_FILE" ]] && [[ "$(cat "$SKIP_TODAY_FILE" 2>/dev/null)" == "$(date +%F)" ]]; then
+        echo "Suggestions are paused for today."
+        return 0
+    fi
+    if [[ -f "$SNOOZE_FILE" ]]; then
+        until_epoch=$(cat "$SNOOZE_FILE" 2>/dev/null || echo 0)
+        now_epoch=$(date +%s)
+        if (( until_epoch > now_epoch )); then
+            echo "Suggestions are snoozed for $(format_seconds "$(( until_epoch - now_epoch ))")."
+            return 0
+        fi
+    fi
+    echo "Suggestions are available."
+}
+
+decision_reason() {
+    local temp="$1" load="$2" profile="$3"
+    if [[ "${AUTO_MODE}" == "off" ]]; then
+        echo "Auto mode is off; no automatic suggestions."
+    elif [[ "${AUTO_MODE}" == "quiet" ]]; then
+        echo "Quiet mode only protects against critical heat."
+    elif in_quiet_hours; then
+        echo "Quiet hours are active, so suggestions are paused."
+    elif [[ -f "$SKIP_TODAY_FILE" ]] && [[ "$(cat "$SKIP_TODAY_FILE" 2>/dev/null)" == "$(date +%F)" ]]; then
+        echo "Suggestions are paused for today."
+    elif [[ -f "$SNOOZE_FILE" ]] && (( $(cat "$SNOOZE_FILE" 2>/dev/null || echo 0) > $(date +%s) )); then
+        echo "Suggestions are snoozed."
+    elif (( temp >= BOOST_TEMP_LIMIT )) && [[ "$profile" != "performance" ]]; then
+        echo "Not suggesting Boost because CPU is ${temp} C and the ${AUTO_MODE} Boost limit is ${BOOST_TEMP_LIMIT} C."
+    elif (( temp >= TEMP_HOT )) && [[ "$profile" == "performance" ]]; then
+        echo "A cooler profile is preferred because CPU is ${temp} C and the warm threshold is ${TEMP_HOT} C."
+    elif (( load >= LOAD_HIGH )) && [[ "$profile" != "performance" ]]; then
+        echo "Boost can be suggested after sustained load if CPU stays below ${BOOST_TEMP_LIMIT} C."
+    elif (( load <= LOAD_IDLE )) && [[ "$profile" == "performance" ]]; then
+        echo "Powersave can be suggested after sustained idle."
+    else
+        echo "Current profile looks reasonable for the active mode."
+    fi
 }
 
 check_item() {
@@ -292,7 +514,7 @@ EOF
 
     if [[ "$mode" == "off" ]]; then
         systemctl stop "$SERVICE" 2>/dev/null || true
-        echo "Auto mode is off. Run 'auto setup' or 'auto mode calm' to enable it again."
+            echo "Auto mode is off. Run 'auto setup' or 'auto mode calm' to enable it again."
     else
         systemctl enable --now "$SERVICE" 2>/dev/null || true
         systemctl restart "$SERVICE" 2>/dev/null || true
@@ -363,6 +585,7 @@ case "${1:-start}" in
         service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || echo inactive)
         web_state=$(systemctl is-active "$WEB_SERVICE" 2>/dev/null || echo inactive)
         profile=$(powerprofilesctl get 2>/dev/null || echo unknown)
+        ambient=$(read_ambient_temp_c 2>/dev/null || true)
         echo "Auto helper: $service_state"
         echo "Web dashboard: $web_state (${WEB_URL})"
         echo "Current mode: ${AUTO_MODE}"
@@ -372,15 +595,11 @@ case "${1:-start}" in
             temp=$(cat "${local_coretemp}/temp1_input" 2>/dev/null || echo 0)
             echo "Computer warmth: $(( temp / 1000 ))"
         fi
-        if [[ -f "$SNOOZE_FILE" ]]; then
-            until_epoch=$(cat "$SNOOZE_FILE" 2>/dev/null || echo 0)
-            now_epoch=$(date +%s)
-            (( until_epoch > now_epoch )) && echo "Snoozed for: $(format_seconds "$(( until_epoch - now_epoch ))")"
-        fi
-        if [[ -f "$SKIP_TODAY_FILE" ]] && [[ "$(cat "$SKIP_TODAY_FILE" 2>/dev/null)" == "$(date +%F)" ]]; then
-            echo "Suggestions: paused for today"
-        fi
+        echo "Ambient temperature: ${ambient:-not detected}"
+        echo "Suggestions: $(pause_status)"
+        echo "Decision: $(decision_reason "$(( ${temp:-0} / 1000 ))" 0 "$profile")"
         echo "Quiet hours: ${QUIET_HOURS_START}-${QUIET_HOURS_END}"
+        echo "Summer silent nights: ${SUMMER_SILENT_NIGHTS}"
         echo "Config: $CONF_FILE"
         exit 0
         ;;
@@ -406,6 +625,10 @@ case "${1:-start}" in
         ;;
     config)
         show_config_friendly
+        exit 0
+        ;;
+    modes|presets)
+        show_modes
         exit 0
         ;;
     mode)
@@ -437,6 +660,27 @@ case "${1:-start}" in
         set_config_value QUIET_HOURS_END "$3"
         systemctl restart "$SERVICE" 2>/dev/null || true
         echo "Quiet hours set to $2-$3."
+        exit 0
+        ;;
+    summer-nights)
+        case "${2:-}" in
+            on|yes|true|1)
+                need_root "$@"
+                set_config_value SUMMER_SILENT_NIGHTS yes
+                systemctl restart "$SERVICE" 2>/dev/null || true
+                echo "Summer silent nights enabled. In summer mode, quiet hours can apply silent --auto."
+                ;;
+            off|no|false|0)
+                need_root "$@"
+                set_config_value SUMMER_SILENT_NIGHTS no
+                systemctl restart "$SERVICE" 2>/dev/null || true
+                echo "Summer silent nights disabled."
+                ;;
+            *)
+                echo "Usage: auto summer-nights on|off" >&2
+                exit 1
+                ;;
+        esac
         exit 0
         ;;
     snooze)
@@ -584,25 +828,6 @@ handle_action "$action" "$command" "$reason"
     logger -t boost-auto "SUGGEST $title: $body"
 }
 
-minutes_from_hhmm() {
-    local value="${1:-00:00}"
-    local hour="${value%%:*}" minute="${value##*:}"
-    echo $(( 10#$hour * 60 + 10#$minute ))
-}
-
-in_quiet_hours() {
-    [[ "${QUIET_HOURS_START}" == "${QUIET_HOURS_END}" ]] && return 1
-    local now_m start_m end_m
-    now_m=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
-    start_m=$(minutes_from_hhmm "$QUIET_HOURS_START")
-    end_m=$(minutes_from_hhmm "$QUIET_HOURS_END")
-    if (( start_m < end_m )); then
-        (( now_m >= start_m && now_m < end_m ))
-    else
-        (( now_m >= start_m || now_m < end_m ))
-    fi
-}
-
 suggestions_paused() {
     [[ "${AUTO_MODE}" == "quiet" || "${AUTO_MODE}" == "off" ]] && return 0
     in_quiet_hours && return 0
@@ -627,6 +852,7 @@ last_stats=0
 
 while true; do
     sleep "$POLL_INTERVAL"
+    refresh_mode_settings
     now=$(date +%s)
     temp=$(get_cpu_temp)
     load=$(get_cpu_load)
@@ -638,7 +864,15 @@ while true; do
         last_stats=$now
     fi
 
-    if (( temp >= TEMP_CRITICAL )) && [[ "$profile" == "performance" ]] && [[ "${ALLOW_CRITICAL_AUTO}" == "yes" ]]; then
+    if [[ "${AUTO_MODE}" == "summer" && "${SUMMER_SILENT_NIGHTS}" == "yes" ]] && in_quiet_hours && [[ "$profile" != "power-saver" ]]; then
+        if (( now - last_auto > 3600 )) && [[ -x "$SILENT_BIN" ]]; then
+            logger -t boost-auto "summer quiet hours: auto silent"
+            AUTO_HELPER_INTERNAL=1 "$SILENT_BIN" --auto >/dev/null 2>&1 || true
+            notify_plain "Summer night mode" "Quiet hours are active, so Auto applied Silent mode." low
+            last_auto=$now
+            last_prompt=$now
+        fi
+    elif (( temp >= TEMP_CRITICAL )) && [[ "$profile" == "performance" ]] && [[ "${ALLOW_CRITICAL_AUTO}" == "yes" ]]; then
         if (( now - last_auto > 120 )); then
             logger -t boost-auto "critical heat ${temp}: auto powersave"
             AUTO_HELPER_INTERNAL=1 powersave >/dev/null 2>&1 || true

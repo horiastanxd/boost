@@ -16,3 +16,7 @@ jobs:
         with:
           scandir: '.'
           severity: warning
+      - name: Auto mode preset tests
+        run: tests/auto-mode-presets.sh
+      - name: Dashboard status tests
+        run: python3 tests/boost-web-status.py
