@@ -1,6 +1,4 @@
 <div align="center">
-  <img src="assets/header.jpg" alt="Boost Logo" width="100%">
-  
   <br/>
   
   # ⚡ Boost
@@ -43,11 +41,11 @@ We believe system tools should be beautiful. Boost comes with two stunning, mode
 
 ### 🖥️ The Web Dashboard
 A sleek, realtime, glassmorphic local dashboard. Change profiles, tweak smart modes, and view live telemetry (CPU, GPU, RAM) at `http://localhost:8765`.
-<img src="assets/dashboard.jpg" alt="Web Dashboard" width="100%">
+*(Screenshot coming soon)*
 
 ### 💧 The System Tray Applet
 Fast, seamless profile switching right from your desktop environment panel.
-<img src="assets/tray.jpg" alt="Tray Applet" width="100%">
+*(Screenshot coming soon)*
 
 ---
 
