@@ -1,54 +1,54 @@
-# Boost - Linux Power Profile Manager
+<div align="center">
 
-Simple, safe power profile switcher for **Intel + NVIDIA** desktops on Linux.  
+# ⚡ boost
+
+**Linux power profile manager for Intel + NVIDIA desktops**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Shell: Bash](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnubash&logoColor=white)](bin/boost)
+[![Platform: Linux](https://img.shields.io/badge/Platform-Linux-FCC624?logo=linux&logoColor=black)](https://kernel.org)
+[![CPU: Intel](https://img.shields.io/badge/CPU-Intel%20pstate-0071C5?logo=intel&logoColor=white)](https://www.kernel.org/doc/html/latest/admin-guide/pm/intel_pstate.html)
+[![GPU: NVIDIA](https://img.shields.io/badge/GPU-NVIDIA-76B900?logo=nvidia&logoColor=white)](https://developer.nvidia.com/nvidia-system-management-interface)
+
 Four commands. No daemons. No config files. Fully reversible.
 
+</div>
+
 ```
-boost       # Maximum performance
-powersave   # Efficient daily use (~54°C vs 87°C, barely slower)
-silent      # Overnight mode: quiet fans, minimum power, priority process
-restore     # Revert everything to boot-time state
-```
-
----
-
-## Why
-
-Most Linux desktops run at full BIOS power limits all the time.  
-For an i7-14700KF that means **253W burst** and **89°C at idle** with stock settings.
-
-These scripts tune the right knobs — CPU governor, EPP hints, RAPL power limits, GPU wattage, I/O scheduler, transparent hugepages — without disabling turbo or sacrificing responsiveness.
-
-**Real results on i7-14700KF + RTX 5060 Ti:**
-
-| Profile   | Package Temp | PL1   | PL2   | GPU    | Turbo |
-|-----------|-------------|-------|-------|--------|-------|
-| `boost`     | ~63°C       | 125 W | 253 W | 180 W  | ON    |
-| `powersave` | ~54°C       | 125 W | 150 W | 150 W  | ON    |
-| `silent`    | ~50°C       | 65 W  | 75 W  | 150 W  | OFF   |
-| BIOS default| ~89°C       | 135 W | 253 W | 180 W  | ON    |
-
----
-
-## Requirements
-
-- Linux with `intel_pstate` driver (Intel 6th gen+)
-- NVIDIA GPU with `nvidia-smi` installed
-- `lm-sensors` for temperature display
-- `nct6798` or compatible SuperIO for fan curve control (optional)
-- Root / sudo access
-
-Check compatibility:
-
-```bash
-cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver   # should say: intel_pstate
-nvidia-smi --version                                       # should work
-ls /sys/class/powercap/intel-rapl/                         # should exist
+boost       # Maximum performance — gaming, compiling, ML inference
+powersave   # Efficient daily use — barely slower, 15–25°C cooler
+silent      # Overnight — quiet fans, priority process, minimum power
+restore     # Revert everything to your boot-time BIOS state
 ```
 
 ---
 
-## Install
+## The problem
+
+Most Linux desktops run at full BIOS power limits all the time.
+
+On a stock i7-14700KF that means **253 W burst** and **89°C at idle** — the CPU spikes to maximum power on every context switch, fans react, temperatures climb.
+
+`boost` gives you per-use-case control over the knobs that actually matter: CPU governor, energy performance hints (EPP), RAPL power limits, GPU wattage, I/O scheduler, and fan curve — with a single command and full safety guarantees.
+
+---
+
+## Results
+
+Tested on **i7-14700KF + RTX 5060 Ti**, Ubuntu 24.04, one case fan:
+
+| Profile | Package Temp | Fan | PL1 | PL2 | GPU | Turbo |
+|---------|-------------|-----|-----|-----|-----|-------|
+| BIOS default | **89°C** | loud | 135 W | 253 W | 180 W | ON |
+| `boost` | 63°C | moderate | 125 W | 253 W | 180 W | ON |
+| `powersave` | 54°C | quiet | 125 W | 150 W | 150 W | ON |
+| `silent` | ~50°C | near-silent | 65 W | 75 W | 150 W | OFF |
+
+**35°C drop from software alone.** No undervolting, no hardware changes.
+
+---
+
+## Quick start
 
 ```bash
 git clone https://github.com/horiastanxd/boost
@@ -56,157 +56,212 @@ cd boost
 sudo ./install.sh
 ```
 
-This copies scripts to `/usr/local/bin/`, the shared lib to `/usr/local/lib/`,  
-and enables a systemd service that captures your boot-time state before any profile is applied.
+Then:
+
+```bash
+powersave        # start here — good for 95% of daily use
+boost            # switch to when you need full power
+silent           # tonight, before you sleep
+restore          # back to BIOS defaults anytime
+```
+
+All commands auto-elevate via `sudo` — no need to prefix them.
+
+---
+
+## Requirements
+
+| Component | Requirement |
+|-----------|-------------|
+| CPU driver | `intel_pstate` (Intel 6th gen+) |
+| GPU | NVIDIA with `nvidia-smi` |
+| Fan control | `nct6798` or compatible SuperIO *(optional — silent mode)* |
+| Privileges | sudo |
+
+Check in one line:
+
+```bash
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver  # intel_pstate
+nvidia-smi -L                                             # GPU found
+ls /sys/class/powercap/intel-rapl/                        # RAPL available
+```
+
+> **AMD users:** RAPL and fan control work identically. Replace governor/EPP logic with `amd_pstate` equivalents. PRs welcome.
 
 ---
 
 ## Commands
 
-### `boost` — Maximum performance
+### `boost` — Full performance
 
 ```bash
-boost
-boost --status   # show current state without changing anything
+boost [--status]
 ```
 
-- CPU governor: `performance`
-- EPP: `performance`
-- Turbo: ON
-- RAPL PL1: 125 W, PL2: 253 W
-- I/O scheduler: `none` for NVMe/SSD, `mq-deadline` for HDD
-- Transparent hugepages: `always`
-- GPU: max power limit
+| Setting | Value |
+|---------|-------|
+| CPU governor | `performance` |
+| Energy performance hint (EPP) | `performance` |
+| Turbo boost | ON |
+| RAPL PL1 (sustained) | 125 W |
+| RAPL PL2 (burst) | 253 W |
+| I/O scheduler | `none` (NVMe/SSD) · `mq-deadline` (HDD) |
+| Transparent hugepages | `always` |
+| GPU power limit | max (180 W) |
 
-Use for: gaming, video rendering, ML inference, compilation.
+Use for: gaming, video rendering, ML training/inference, large compilations.
 
 ---
 
 ### `powersave` — Efficient daily use
 
 ```bash
-powersave
-powersave --status
+powersave [--status]
 ```
 
-- CPU governor: `powersave` + EPP: `balance_performance`
-- Turbo: ON (CPU still boosts under real load)
-- RAPL PL1: 125 W, PL2: 150 W (burst capped = less heat spikes)
-- Transparent hugepages: `madvise`
-- GPU: hardware minimum power limit
+| Setting | Value |
+|---------|-------|
+| CPU governor | `powersave` |
+| EPP | `balance_performance` |
+| Turbo boost | ON (boosts on real load, idles deep) |
+| RAPL PL1 | 125 W |
+| RAPL PL2 | 150 W *(capped from 253 W — cuts heat spikes)* |
+| Transparent hugepages | `madvise` |
+| GPU power limit | 150 W (hardware minimum) |
 
-Performance impact: ~5% slower on sustained multi-thread workloads.  
-Thermal impact: ~15-20°C cooler than BIOS defaults.  
-Turbo stays active — the CPU still reaches max clocks when the workload demands it.
+With `intel_pstate` active + `balance_performance` EPP, the CPU still reaches maximum turbo frequencies under load — HWP (Hardware P-states) handles scaling. The key difference: burst power is capped at 150 W instead of 253 W, which eliminates the brief thermal spikes that drive fan noise without affecting sustained throughput.
+
+**Typical impact:** ~5% slower on sustained multi-thread, identical on single-thread tasks.
 
 ---
 
-### `silent` — Overnight / background mode
+### `silent` — Overnight mode
 
 ```bash
 silent
 ```
 
-Designed for leaving the PC on overnight (download, processing, etc.) without fan noise.
+Designed for: downloads, background processing, anything you run before sleeping.
 
-On launch it:
-1. Applies minimum power settings (turbo off, PL1=65W, PL2=75W)
-2. Lowers the Smart Fan IV PWM curve: **12% → 31% → 59% → 86% → 100%** (temp thresholds unchanged — full blast at 75°C+, always safe)
-3. Asks which process to keep at high priority
-4. Renices all other user processes to nice +15
+**What it does:**
 
-```
-Top running processes for user 'yourname':
------------------------------------------------
-  PID=12345   CPU=15.2  wget
-  PID=67890   CPU=3.1   aria2c
-  ...
------------------------------------------------
-Process name/PID to keep at HIGH priority (Enter to skip): aria2c
-```
+1. Applies minimum power settings — turbo off, PL1=65 W, PL2=75 W
+2. Lowers the Smart Fan IV PWM curve:
 
-The priority process gets: **nice -5** + **ionice best-effort/high**  
-Everything else: **nice +15** (yields CPU to the priority process)
+   ```
+   Before:  60% at 20°C → 69% at 45°C → 84% at 60°C → 100% at 70°C
+   After:   12% at 20°C → 31% at 45°C → 59% at 60°C → 100% at 75°C
+   ```
 
-Fan curve backup is saved to `/var/lib/power-profile/fan-curve-backup.env` before any modification.  
-Running `boost` or `powersave` in the morning restores it automatically.
+   Temperature thresholds and hardware feedback loop unchanged — full blast at 75°C+ regardless.
+
+3. Asks which process to prioritize:
+
+   ```
+   Top running processes for user 'you':
+   -----------------------------------------------
+     PID=1234    CPU=12.3   aria2c
+     PID=5678    CPU=3.1    chrome
+     ...
+   -----------------------------------------------
+   Process name/PID to keep at HIGH priority (Enter to skip): aria2c
+   ```
+
+4. Sets priority process to **nice -5** + **ionice best-effort/high**
+5. Renices everything else to **nice +15** (yields CPU without blocking)
+
+Fan curve is backed up before modification. Running `boost` or `powersave` in the morning restores it automatically.
 
 ---
 
 ### `restore` — Full revert
 
 ```bash
-restore
-restore --status
+restore [--status]
 ```
 
-Restores:
+Restores all settings to the state captured at boot:
 - CPU governor, EPP, turbo, RAPL limits
 - Fan curve (from backup if `silent` was used)
 - GPU power limit
 - Process nice values → 0 for all user processes
 - Transparent hugepages
 
-Falls back to known Intel/NVIDIA spec values if no backup exists.
-
 ---
 
 ## How it works
 
-### CPU
+### RAPL power limits
 
-Uses `intel_pstate` in active HWP mode. Key levers:
+Intel CPUs expose two power limits via the RAPL (Running Average Power Limit) interface:
 
-- **Governor** (`powersave` vs `performance`): in pstate active mode this doesn't cap frequency — it sets the HWP hint aggressiveness. `powersave` + good EPP = CPU idles deep, boosts when needed.
-- **EPP (Energy Performance Preference)**: the actual knob. `performance` = always boost. `balance_performance` = boost on demand. `power` = minimize energy (used by `silent`).
-- **RAPL PL1/PL2**: hardware power caps. PL2 is the short-burst limit — capping it from 253W to 150W eliminates heat spikes without affecting sustained performance (governed by PL1). All writes are bounds-checked against the hardware maximum reported by the RAPL interface.
+- **PL1** (`long_term`) — sustained limit, ~56-second window. This is the thermal design point.
+- **PL2** (`short_term`) — burst limit, ~2.4ms window. BIOS defaults are often 2× PL1 or higher.
 
-### Fan
+Capping PL2 from 253 W to 150 W means the CPU can't spike above 150 W for burst workloads. This is the single most effective lever for reducing fan noise: the fan reacts to temperature spikes, and spikes come from PL2 bursts. Sustained single-thread and sustained multi-thread performance (governed by PL1) are unaffected.
 
-The `nct6798` SuperIO chip exposes a Smart Fan IV curve via `/sys/class/hwmon/hwmon5/pwm1_auto_point*`.  
-`silent` lowers the PWM values while keeping the temperature thresholds and hardware feedback loop intact — the motherboard still controls the fan based on temperature, just with a quieter curve.  
-Original values are backed up and restored automatically.
+All RAPL writes are bounds-checked against the hardware-reported maximum before writing.
 
-### GPU
+### EPP (Energy Performance Preference)
 
-`nvidia-smi --power-limit` caps GPU TDP. The RTX 5060 Ti hardware minimum is 150 W — `powersave` and `silent` set it there. `boost` restores the card's maximum (180 W on this model).
+With `intel_pstate` in active HWP mode, the CPU's internal P-state selection is driven by EPP hints rather than the OS governor alone. The governor (`performance` vs `powersave`) sets the ceiling; EPP sets the behavior within that ceiling:
 
-### I/O
+| EPP | Behavior |
+|-----|----------|
+| `performance` | Always select the highest P-state |
+| `balance_performance` | Prefer high P-states, allow scaling |
+| `power` | Aggressive frequency reduction, minimum energy |
 
-- NVMe and SSD: scheduler `none` (bypass kernel queue, lower latency)
-- HDD: `mq-deadline` (fair deadline scheduling, prevents starvation)
+`powersave` mode uses `balance_performance` — the CPU still hits maximum turbo when the workload demands it, but drops to low frequencies immediately when idle.
 
-Detection is automatic via `/sys/block/*/queue/rotational`.
+### Fan control
 
-### Boot persistence
+The `nct6798` SuperIO chip exposes Smart Fan IV curve points via sysfs. `silent` modifies only the **PWM values** at each temperature threshold — the temperature points and hardware feedback loop remain intact. The motherboard retains full thermal authority; the quiet curve just shifts the fan response lower at temperatures the CPU won't reach in low-power mode.
 
-A systemd one-shot service (`power-save-originals.service`) captures your BIOS/kernel defaults into `/var/lib/power-profile/originals.env` on first boot, before any profile is applied. This is what `restore` uses as its ground truth.
+### I/O scheduler
+
+Detected automatically via `/sys/block/*/queue/rotational`:
+- `rotational=0` → scheduler `none` (NVMe/SSD: bypass kernel queue, minimum latency)
+- `rotational=1` → scheduler `mq-deadline` (HDD: deadline scheduling, prevents starvation)
+
+Loop devices (snap/flatpak mounts) are excluded.
 
 ---
 
-## Files
+## File layout
 
 ```
-/usr/local/bin/boost
-/usr/local/bin/powersave
-/usr/local/bin/silent
-/usr/local/bin/restore
-/usr/local/bin/power-save-originals
-/usr/local/lib/power-common.sh          # shared helpers
-/var/lib/power-profile/originals.env    # auto-saved boot state
-/var/lib/power-profile/fan-curve-backup.env   # auto-saved fan curve (created by silent)
-/etc/systemd/system/power-save-originals.service
+/usr/local/bin/
+  boost                   # performance profile
+  powersave               # efficient profile
+  silent                  # overnight profile
+  restore                 # revert to boot state
+  power-save-originals    # run by systemd at boot
+
+/usr/local/lib/
+  power-common.sh         # shared: safe_write, set_rapl, set_io_schedulers, show_status
+
+/var/lib/power-profile/
+  originals.env           # boot-time state (captured once by systemd service)
+  fan-curve-backup.env    # fan curve backup (created when silent runs)
+
+/etc/systemd/system/
+  power-save-originals.service   # one-shot, runs before basic.target
 ```
 
 ---
 
 ## Safety
 
-- **RAPL writes are bounds-checked**: the script reads `constraint_*_max_power_uw` and clamps any requested value to the hardware maximum before writing.
-- **Fan curve always has thermal feedback**: `silent` never sets manual PWM mode. Smart Fan IV stays active — the fan goes to 100% at 75°C+ regardless of the quiet curve.
-- **All changes are ephemeral by default**: nothing survives a reboot unless you run `install.sh` (which only installs the scripts, not a profile). Reboot = BIOS defaults restored.
-- **`safe_write` on every /sys write**: warns and continues on failure, never exits mid-profile.
-- **Process renice uses nice +15, not SCHED_IDLE**: processes remain schedulable and responsive; they just yield to anything with default priority.
+| Concern | How it's handled |
+|---------|-----------------|
+| RAPL writes above hardware max | `set_rapl()` reads `constraint_*_max_power_uw` and clamps before writing |
+| Fan stuck at manual speed | `silent` keeps Smart Fan IV mode active — hardware controls the fan |
+| Overheating in silent mode | Fan goes to 100% at 75°C+ regardless of quiet curve |
+| /sys write failure | `safe_write()` warns and continues — profile applies partially rather than failing |
+| Wrong originals | Systemd service captures state at first boot before any profile touches it |
+| Process starvation | `renice +15` not `SCHED_IDLE` — processes remain schedulable |
+| No reboot persistence | Profile changes are ephemeral by default; nothing survives reboot unless you re-run the command |
 
 ---
 
@@ -222,6 +277,16 @@ sudo rm -rf /var/lib/power-profile
 
 ---
 
-## License
+## Contributing
 
-MIT
+See [CONTRIBUTING.md](CONTRIBUTING.md). Hardware compatibility reports especially welcome.
+
+---
+
+<div align="center">
+
+MIT License · [Horia Stan](https://github.com/horiastanxd)
+
+*If this saved your CPU from thermal hell, consider leaving a ⭐*
+
+</div>
