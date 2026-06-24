@@ -84,7 +84,16 @@ def read_text(path, default="unknown"):
     except OSError:
         return default
 
+_cached_temp_file = None
+
 def get_cpu_temp():
+    global _cached_temp_file
+    if _cached_temp_file:
+        try:
+            return int(read_text(_cached_temp_file, "0") or "0") // 1000
+        except ValueError:
+            _cached_temp_file = None
+
     for hwmon in Path("/sys/class/hwmon").glob("hwmon*"):
         name = read_text(hwmon / "name", "")
         if name not in {"coretemp", "k10temp", "zenpower", "amd_energy"}:
@@ -92,10 +101,12 @@ def get_cpu_temp():
         for label_file in hwmon.glob("temp*_label"):
             label = read_text(label_file, "")
             if label in {"Package id 0", "Tctl", "Tdie", "Tccd1", "Tccd2"}:
-                raw = int(read_text(str(label_file).replace("_label", "_input"), "0") or "0")
-                return raw // 1000
-        raw = int(read_text(hwmon / "temp1_input", "0") or "0")
+                _cached_temp_file = str(label_file).replace("_label", "_input")
+                return int(read_text(_cached_temp_file, "0") or "0") // 1000
+        input_file = hwmon / "temp1_input"
+        raw = int(read_text(input_file, "0") or "0")
         if raw > 0:
+            _cached_temp_file = str(input_file)
             return raw // 1000
     return 0
 
