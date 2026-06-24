@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# boost-web - launch the local boost web dashboard
+
+set -e
+
+exec python3 /usr/local/lib/boost-web.py "$@"

@@ -25,6 +25,7 @@ restore     # Revert everything to your boot-time BIOS state
 auto        # Intelligent daemon — monitors load & temp, prompts when switching makes sense
 auto stats  # Current power statistics in terminal
 auto report # Local HTML report with recent samples
+auto web    # Realtime local web dashboard with controls
 auto setup  # Guided setup for non-technical users
 auto doctor # Health check with plain-language hints
 ```
@@ -73,6 +74,7 @@ silent           # tonight, before you sleep
 restore          # back to BIOS defaults anytime
 auto mode calm   # optional: enable gentle automatic suggestions
 auto report      # generate and open a local web report
+auto web         # open realtime web controls
 auto doctor      # check whether sensors, GPU stats, reports, and notifications work
 ```
 
@@ -215,7 +217,8 @@ auto mode quiet      # no suggestions, only critical heat protection
 auto mode off        # disable auto mode completely
 auto stats           # print a current power snapshot
 auto report          # generate and open a local HTML report
-auto dashboard       # same as auto report
+auto web             # realtime web dashboard with controls
+auto dashboard       # same as auto web
 ```
 
 Manual profile commands stay in control: running `boost` or `powersave`
@@ -238,6 +241,11 @@ it is running:
 The report includes current profile, CPU load, CPU temperature, GPU
 temperature/power, RAPL limits, governor, EPP, turbo state, and recent
 history.
+
+`auto web` opens a local dashboard at `http://127.0.0.1:8765`.
+It updates live and lets non-CLI users switch Boost/Powersave, change
+Auto mode, snooze suggestions, edit quiet hours, generate reports, and
+open the latest report from the browser.
 
 `auto doctor` checks the pieces that commonly confuse users:
 GNOME power profile sync, NVIDIA access, CPU power-limit support,
@@ -296,6 +304,7 @@ Loop devices (snap/flatpak mounts) are excluded.
   power-save-originals    # run by systemd at boot
   auto                    # gentle automatic helper
   power-report            # text/HTML power statistics
+  boost-web               # local realtime dashboard
 
 /usr/local/lib/
   power-common.sh         # shared: safe_write, set_rapl, set_io_schedulers, show_status

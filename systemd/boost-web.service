@@ -1,0 +1,16 @@
+[Unit]
+Description=boost local web dashboard
+After=network.target power-profiles-daemon.service
+Wants=power-profiles-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/boost-web --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=boost-web
+
+[Install]
+WantedBy=multi-user.target

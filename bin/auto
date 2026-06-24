@@ -9,6 +9,8 @@ CONF_FILE="/etc/boost-auto.conf"
 STATE_DIR="/var/lib/power-profile"
 PID_FILE="$STATE_DIR/auto.pid"
 SERVICE="boost-auto.service"
+WEB_SERVICE="boost-web.service"
+WEB_URL="http://127.0.0.1:8765"
 SNOOZE_FILE="$STATE_DIR/auto-snooze-until"
 SKIP_TODAY_FILE="$STATE_DIR/auto-skip-date"
 REPORT_BIN="/usr/local/bin/power-report"
@@ -117,11 +119,21 @@ format_seconds() {
 
 show_help() {
     cat <<'EOF'
-Usage: auto [start|stop|restart|status|stats|report|dashboard|doctor|setup|logs|config|mode|quiet-hours|snooze|today-off|resume]
+Usage: auto [web|start|stop|restart|status|stats|report|dashboard|doctor|setup|logs|config|mode|quiet-hours|snooze|today-off|resume]
 
 Simple controls:
+  auto web              start and open the local web dashboard
+  auto dashboard        same as auto web
+  auto open             same as auto web
+  auto close-web        stop the local web dashboard
   auto setup            guided setup, easiest way to choose behavior
   auto doctor           check if everything needed is installed and healthy
+  auto on               enable calm auto mode
+  auto off              disable auto mode completely
+  auto calm             set calm mode
+  auto friendly         set friendly mode
+  auto active           set active mode
+  auto quiet            set quiet mode
   auto mode calm        fewer suggestions, best for non-technical users
   auto mode friendly    balanced suggestions, default
   auto mode active      more responsive suggestions
@@ -271,8 +283,43 @@ EOF
     "$0" status
 }
 
+open_as_user() {
+    local url="$1"
+    local user="${SUDO_USER:-$(logname 2>/dev/null || true)}"
+    if [[ -n "$user" ]]; then
+        sudo -u "$user" xdg-open "$url" >/dev/null 2>&1 || true
+    else
+        xdg-open "$url" >/dev/null 2>&1 || true
+    fi
+}
+
+start_web() {
+    need_root "$@"
+    systemctl enable --now "$WEB_SERVICE" 2>/dev/null || true
+    echo "Boost web dashboard: ${WEB_URL}"
+    open_as_user "$WEB_URL"
+}
+
 case "${1:-start}" in
     --daemon) : ;;
+    web|open|dashboard|dashboard-ui)
+        start_web "$@"
+        exit 0
+        ;;
+    close-web|web-stop)
+        need_root "$@"
+        systemctl stop "$WEB_SERVICE" 2>/dev/null || true
+        echo "Boost web dashboard stopped."
+        exit 0
+        ;;
+    on)
+        "$0" mode calm
+        exit 0
+        ;;
+    off|calm|friendly|active|quiet)
+        "$0" mode "$1"
+        exit 0
+        ;;
     start)
         need_root "$@"
         if [[ "${AUTO_MODE}" == "off" ]]; then
@@ -295,8 +342,10 @@ case "${1:-start}" in
         ;;
     status)
         service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || echo inactive)
+        web_state=$(systemctl is-active "$WEB_SERVICE" 2>/dev/null || echo inactive)
         profile=$(powerprofilesctl get 2>/dev/null || echo unknown)
         echo "Auto helper: $service_state"
+        echo "Web dashboard: $web_state (${WEB_URL})"
         echo "Current mode: ${AUTO_MODE}"
         echo "Power profile: $(friendly_profile "$profile")"
         local_coretemp=$(find /sys/class/hwmon -name 'name' -exec grep -l coretemp {} \; 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
@@ -325,10 +374,6 @@ case "${1:-start}" in
         exit 0
         ;;
     report)
-        "$REPORT_BIN" --open
-        exit 0
-        ;;
-    dashboard)
         "$REPORT_BIN" --open
         exit 0
         ;;
