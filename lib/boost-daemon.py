@@ -24,7 +24,7 @@ GAME_PROCESSES = ['wine-preloader', 'wine64-preloader', 'proton', 'steam', 'cs2'
 class BoostDaemon:
     def __init__(self):
         syslog.openlog("boost-auto", syslog.LOG_PID, syslog.LOG_USER)
-        self.mode = "friendly"
+        self.mode = "dynamic"
         self.poll_interval = 5
         self.stats_interval = 60
         self.temp_hot = 78
@@ -91,26 +91,24 @@ class BoostDaemon:
         except Exception: pass
 
     def apply_preset(self):
-        if self.mode == "calm":
-            self.temp_hot, self.boost_temp_limit = 80, 80
-            self.load_high, self.load_high_duration = 85, 300
-            self.load_idle, self.load_idle_duration = 5, 1200
-            self.prompt_cooldown = 3600
-        elif self.mode == "summer":
-            self.temp_critical, self.temp_hot, self.boost_temp_limit = 82, 74, 70
-            self.load_high, self.load_high_duration = 90, 360
-            self.load_idle, self.load_idle_duration = 15, 180
-            self.prompt_cooldown = 1800
-        elif self.mode == "active":
-            self.temp_hot, self.boost_temp_limit = 76, 76
-            self.load_high, self.load_high_duration = 65, 45
-            self.load_idle, self.load_idle_duration = 12, 240
-            self.prompt_cooldown = 300
-        elif self.mode == "friendly":
+        if self.mode == "dynamic":
             self.temp_hot, self.boost_temp_limit = 78, 78
             self.load_high, self.load_high_duration = 75, 120
             self.load_idle, self.load_idle_duration = 8, 600
             self.prompt_cooldown = 900
+        elif self.mode == "creator":
+            # For AI training / rendering: high sustained load required before boosting,
+            # high temp limits, very long idle required before cooling down.
+            self.temp_hot, self.boost_temp_limit = 82, 82
+            self.load_high, self.load_high_duration = 85, 30
+            self.load_idle, self.load_idle_duration = 15, 1200
+            self.prompt_cooldown = 300
+        elif self.mode == "quiet":
+            # Strict limits for meetings/library
+            self.temp_hot, self.boost_temp_limit = 70, 70
+            self.load_high, self.load_high_duration = 90, 600
+            self.load_idle, self.load_idle_duration = 5, 120
+            self.prompt_cooldown = 3600
 
     def read_cpu_temp(self):
         if not self.cpu_temp_path: return 0
@@ -301,7 +299,7 @@ class BoostDaemon:
                 continue
                 
             # Summer Night Mode Auto-Silent
-            if self.mode == "summer" and self.summer_nights == "yes" and self.in_quiet_hours() and profile != "power-saver":
+            if self.summer_nights == "yes" and self.in_quiet_hours() and profile != "power-saver":
                 if now - self.last_auto > 3600:
                     self.log("Summer quiet hours: auto silent")
                     self.run_command("/usr/local/bin/silent --auto")

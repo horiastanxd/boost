@@ -73,41 +73,40 @@ def number_config(config: dict[str, str], key: str, default: int) -> int:
 
 def mode_thresholds(mode: str, config: dict[str, str] | None = None) -> dict[str, int | str]:
     thresholds: dict[str, int | str] = dict(DEFAULT_THRESHOLDS)
-    if mode == "calm":
+    if mode == "dynamic":
         thresholds.update(
             {
-                "tempHot": 80,
-                "boostTempLimit": 80,
-                "loadHigh": 85,
-                "loadHighDuration": 300,
-                "loadIdle": 5,
-                "loadIdleDuration": 1200,
-                "promptCooldown": 3600,
+                "tempHot": 78,
+                "boostTempLimit": 78,
+                "loadHigh": 75,
+                "loadHighDuration": 120,
+                "loadIdle": 8,
+                "loadIdleDuration": 600,
+                "promptCooldown": 900,
             }
         )
-    elif mode == "summer":
+    elif mode == "creator":
         thresholds.update(
             {
-                "tempCritical": 82,
-                "tempHot": 74,
+                "tempHot": 82,
+                "boostTempLimit": 82,
+                "loadHigh": 85,
+                "loadHighDuration": 30,
+                "loadIdle": 15,
+                "loadIdleDuration": 1200,
+                "promptCooldown": 300,
+            }
+        )
+    elif mode == "quiet":
+        thresholds.update(
+            {
+                "tempHot": 70,
                 "boostTempLimit": 70,
                 "loadHigh": 90,
-                "loadHighDuration": 360,
-                "loadIdle": 15,
-                "loadIdleDuration": 180,
-                "promptCooldown": 1800,
-            }
-        )
-    elif mode == "active":
-        thresholds.update(
-            {
-                "tempHot": 76,
-                "boostTempLimit": 76,
-                "loadHigh": 65,
-                "loadHighDuration": 45,
-                "loadIdle": 12,
-                "loadIdleDuration": 240,
-                "promptCooldown": 300,
+                "loadHighDuration": 600,
+                "loadIdle": 5,
+                "loadIdleDuration": 120,
+                "promptCooldown": 3600,
             }
         )
     elif mode == "custom" and config:
@@ -188,7 +187,7 @@ def quiet_active(start: str, end: str) -> bool:
 
 def pause_payload(config: dict[str, str]) -> dict[str, Any]:
     now = int(time.time())
-    mode = config.get("AUTO_MODE", "friendly")
+    mode = config.get("AUTO_MODE", "dynamic")
     quiet = quiet_active(config.get("QUIET_HOURS_START", "22:00"), config.get("QUIET_HOURS_END", "08:00"))
     today_off = SKIP_TODAY_FILE.exists() and read_text(SKIP_TODAY_FILE, "") == time.strftime("%Y-%m-%d")
     snooze_until = int(read_text(SNOOZE_FILE, "0") or "0") if SNOOZE_FILE.exists() else 0
@@ -348,7 +347,7 @@ def status_payload() -> dict[str, Any]:
     rows = history()
     gpu = gpu_stats()
     profile = power_profile()
-    mode = config.get("AUTO_MODE", "friendly")
+    mode = config.get("AUTO_MODE", "dynamic")
     cpu_load = cpu_load_percent()
     cpu_temp = cpu_temp_c()
     ambient = ambient_temp(config)
@@ -365,7 +364,7 @@ def status_payload() -> dict[str, Any]:
             "quietEnd": config.get("QUIET_HOURS_END", "08:00"),
             "summerSilentNights": config.get("SUMMER_SILENT_NIGHTS", "no"),
             "thresholds": thresholds,
-            "modes": [mode_thresholds(item, config) for item in ("calm", "summer", "friendly", "active", "quiet", "off")],
+            "modes": [mode_thresholds(item, config) for item in ("dynamic", "creator", "quiet", "off")],
             "pause": pause,
             "ambient": ambient,
             "decision": decision_reason(mode, profile, cpu_temp, cpu_load, thresholds, pause),
@@ -388,7 +387,7 @@ def status_payload() -> dict[str, Any]:
 
 
 def run_action(action: str, value: str | None = None) -> dict[str, Any]:
-    allowed_modes = {"calm", "summer", "friendly", "active", "quiet", "off"}
+    allowed_modes = {"dynamic", "creator", "quiet", "off"}
     allowed_durations = {"30m", "1h", "2h", "4h"}
     if action == "boost":
         result = run(["/usr/local/bin/boost"], timeout=30)
@@ -778,23 +777,21 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
         <div class="control-label">Manual Profile Override</div>
         <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Selecting a manual profile disables Auto mode</div>
         <div class="actions">
-          <button class="btn primary-boost" id="btn-boost" data-action="boost">🚀 Boost <span class="kbd">1</span></button>
-          <button class="btn good-save" id="btn-powersave" data-action="powersave">🍃 Powersave <span class="kbd">2</span></button>
-          <button class="btn silent-mode" id="btn-silent" data-action="silent">🌙 Silent <span class="kbd">3</span></button>
-          <button class="btn restore-bios" id="btn-restore" data-action="restore">♻️ Restore <span class="kbd">4</span></button>
+          <button class="btn primary-boost" id="btn-boost" data-action="boost">🚀 Performance <span class="kbd">1</span></button>
+          <button class="btn good-save" id="btn-powersave" data-action="powersave">⚖️ Balanced <span class="kbd">2</span></button>
+          <button class="btn silent-mode" id="btn-silent" data-action="silent">🍃 Eco Mode <span class="kbd">3</span></button>
+          <button class="btn restore-bios" id="btn-restore" data-action="restore">♻️ Default <span class="kbd">4</span></button>
         </div>
       </div>
 
       <div class="control-group">
-        <div class="control-label">Auto Switching Level</div>
-        <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Summer mode lowers thermal limits for warm environments</div>
+        <div class="control-label">Smart Auto Modes</div>
+        <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Let AI dynamically manage thermals based on workload</div>
         <div class="actions">
-          <button class="btn" id="mode-calm" data-action="auto-mode" data-value="calm">Calm</button>
-          <button class="btn" id="mode-summer" data-action="auto-mode" data-value="summer" style="color:var(--color-warn)">☀️ Summer</button>
-          <button class="btn" id="mode-friendly" data-action="auto-mode" data-value="friendly">Friendly</button>
-          <button class="btn" id="mode-active" data-action="auto-mode" data-value="active">Active</button>
-          <button class="btn" id="mode-quiet" data-action="auto-mode" data-value="quiet">Quiet</button>
-          <button class="btn" id="mode-off" data-action="auto-mode" data-value="off" style="color:var(--color-danger)">Off</button>
+          <button class="btn" id="mode-dynamic" data-action="auto-mode" data-value="dynamic">🧠 Dynamic</button>
+          <button class="btn" id="mode-creator" data-action="auto-mode" data-value="creator">🎬 Creator (AI/Render)</button>
+          <button class="btn" id="mode-quiet" data-action="auto-mode" data-value="quiet">🤫 Quiet</button>
+          <button class="btn" id="mode-off" data-action="auto-mode" data-value="off" style="color:var(--color-danger)">🚫 Off</button>
         </div>
       </div>
     </section>
@@ -1078,7 +1075,7 @@ function render(data) {
   else if (data.profile === 'power-saver') $('btn-silent')?.classList.add('active-preset');
 
   // Active auto mode highlight
-  ['calm','summer','friendly','active','quiet','off'].forEach(m => { const b = $(`mode-${m}`); if(b) b.classList.remove('active-preset'); });
+  ['dynamic','creator','quiet','off'].forEach(m => { const b = $(`mode-${m}`); if(b) b.classList.remove('active-preset'); });
   $(`mode-${data.auto.mode}`)?.classList.add('active-preset');
 
   // Summer nights
@@ -1135,7 +1132,7 @@ async function sendAction(action, value = null) {
       if ($('profile')) $('profile').textContent = profileNames[action] || action;
     }
   } else if (action === 'auto-mode') {
-    ['calm','summer','friendly','active','quiet','off'].forEach(m => { const b = $(`mode-${m}`); if(b) b.classList.remove('active-preset'); });
+    ['dynamic','creator','quiet','off'].forEach(m => { const b = $(`mode-${m}`); if(b) b.classList.remove('active-preset'); });
     $(`mode-${value}`)?.classList.add('active-preset');
     if ($('autoMode')) $('autoMode').textContent = value;
     // Also update table row highlight

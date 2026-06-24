@@ -185,7 +185,7 @@ class BoostTray:
         self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
         self._last_state = {
             "temp": 0, "load": 0, "prof": "balanced",
-            "amode": "friendly", "snooze_mins": 0, "today_skip": False
+            "amode": "dynamic", "snooze_mins": 0, "today_skip": False
         }
 
         # Build Menu
@@ -201,10 +201,10 @@ class BoostTray:
 
         self.menu.append(Gtk.SeparatorMenuItem())
 
-        self.add_profile_item("🚀 Boost (Max Performance)", "boost", "performance")
-        self.add_profile_item("🍃 Powersave (Cool & Quiet)", "powersave", "power-saver")
-        self.add_profile_item("🌙 Silent (Overnight)", "silent", "power-saver")
-        self.add_profile_item("♻️ Restore BIOS Defaults", "restore", "balanced")
+        self.add_profile_item("🚀 Performance", "boost", "performance")
+        self.add_profile_item("⚖️ Balanced", "powersave", "power-saver")
+        self.add_profile_item("🍃 Eco Mode", "silent", "power-saver")
+        self.add_profile_item("♻️ Default", "restore", "balanced")
 
         self.menu.append(Gtk.SeparatorMenuItem())
 
@@ -215,11 +215,11 @@ class BoostTray:
         self.menu.append(auto_item)
 
         self.auto_mode_items = {}
-        for m in ["Calm", "Summer", "Friendly", "Active", "Quiet", "Off"]:
-            item = Gtk.MenuItem(label=m)
-            item.connect("activate", self.on_auto_mode, m.lower())
+        for m, label in [("dynamic", "Dynamic"), ("creator", "Creator"), ("quiet", "Quiet"), ("off", "Off")]:
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", self.on_auto_mode, m)
             self.auto_menu.append(item)
-            self.auto_mode_items[m.lower()] = item
+            self.auto_mode_items[m] = item
 
         # Snooze
         snooze_menu = Gtk.Menu()

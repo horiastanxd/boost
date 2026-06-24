@@ -16,8 +16,8 @@ SKIP_TODAY_FILE="$STATE_DIR/auto-skip-date"
 REPORT_BIN="/usr/local/bin/power-report"
 
 
-# Friendly defaults. Use `auto mode calm|summer|friendly|active|quiet|off`.
-AUTO_MODE="${AUTO_MODE:-friendly}"
+# Friendly defaults. Use `auto mode dynamic|creator|quiet|off`.
+AUTO_MODE="${AUTO_MODE:-dynamic}"
 QUIET_HOURS_START="${QUIET_HOURS_START:-22:00}"
 QUIET_HOURS_END="${QUIET_HOURS_END:-08:00}"
 ALLOW_CRITICAL_AUTO="${ALLOW_CRITICAL_AUTO:-yes}"
@@ -67,36 +67,8 @@ fi
 
 apply_mode_preset() {
     reset_threshold_defaults
-    case "${AUTO_MODE:-friendly}" in
-        calm)
-            TEMP_HOT=80
-            BOOST_TEMP_LIMIT=80
-            LOAD_HIGH=85
-            LOAD_HIGH_DURATION=300
-            LOAD_IDLE=5
-            LOAD_IDLE_DURATION=1200
-            PROMPT_COOLDOWN=3600
-            ;;
-        summer)
-            TEMP_CRITICAL=82
-            TEMP_HOT=74
-            BOOST_TEMP_LIMIT=70
-            LOAD_HIGH=90
-            LOAD_HIGH_DURATION=360
-            LOAD_IDLE=15
-            LOAD_IDLE_DURATION=180
-            PROMPT_COOLDOWN=1800
-            ;;
-        active)
-            TEMP_HOT=76
-            BOOST_TEMP_LIMIT=76
-            LOAD_HIGH=65
-            LOAD_HIGH_DURATION=45
-            LOAD_IDLE=12
-            LOAD_IDLE_DURATION=240
-            PROMPT_COOLDOWN=300
-            ;;
-        quiet|off|friendly) ;;
+    case "${AUTO_MODE:-dynamic}" in
+        quiet|off|dynamic) ;;
         custom)
             [[ -n "${CUSTOM_TEMP_CRITICAL:-}" ]] && TEMP_CRITICAL="$CUSTOM_TEMP_CRITICAL"
             [[ -n "${CUSTOM_TEMP_HOT:-}" ]] && TEMP_HOT="$CUSTOM_TEMP_HOT"
@@ -108,7 +80,7 @@ apply_mode_preset() {
             [[ -n "${CUSTOM_PROMPT_COOLDOWN:-}" ]] && PROMPT_COOLDOWN="$CUSTOM_PROMPT_COOLDOWN"
             ;;
         *)
-            AUTO_MODE=friendly
+            AUTO_MODE=dynamic
             ;;
     esac
 }
@@ -166,7 +138,7 @@ read_ambient_temp_c() {
 
 apply_ambient_adjustment() {
     local ambient="${1:-}"
-    [[ "${AUTO_MODE:-friendly}" == "summer" ]] || return 0
+    return 0
     [[ "$ambient" =~ ^[0-9]+$ ]] || return 0
     if (( ambient >= 30 )); then
         TEMP_CRITICAL=$(( TEMP_CRITICAL - 2 ))
@@ -188,12 +160,10 @@ refresh_mode_settings() {
 
 mode_description() {
     case "$1" in
-        calm) echo "rare suggestions" ;;
-        summer) echo "hot-room thermal headroom" ;;
-        friendly) echo "balanced default" ;;
-        active) echo "fast suggestions" ;;
-        quiet) echo "critical heat protection only" ;;
-        off) echo "auto disabled" ;;
+        dynamic) echo "balanced everyday" ;;
+        creator) echo "gaming/rendering limits" ;;
+        quiet) echo "strictly low noise/heat" ;;
+        off) echo "disabled" ;;
         custom) echo "advanced config values" ;;
         *) echo "unknown" ;;
     esac
@@ -215,7 +185,7 @@ print_mode_row() {
 show_modes() {
     echo "Auto mode presets"
     echo ""
-    for mode in calm summer friendly active quiet off; do
+    for mode in dynamic creator quiet off; do
         print_mode_row "$mode"
     done
 }
@@ -251,8 +221,8 @@ parse_duration() {
 
 friendly_profile() {
     case "${1:-unknown}" in
-        performance) echo "Boost" ;;
-        power-saver) echo "Maximum savings" ;;
+        performance) echo "Performance" ;;
+        power-saver) echo "Eco Mode" ;;
         balanced) echo "Balanced" ;;
         *) echo "${1:-unknown}" ;;
     esac
@@ -281,18 +251,11 @@ Simple controls:
   auto setup            guided setup, easiest way to choose behavior
   auto doctor           check if everything needed is installed and healthy
   auto modes            show thresholds for every Auto mode
-  auto on               enable calm auto mode
-  auto off              disable auto mode completely
-  auto calm             set calm mode
-  auto summer           set summer mode for hot rooms
-  auto friendly         set friendly mode
-  auto active           set active mode
-  auto quiet            set quiet mode
-  auto mode calm        fewer suggestions, best for non-technical users
-  auto mode summer      hot-room mode: cooler, quieter, slower to suggest Boost
-  auto mode friendly    balanced suggestions, default
-  auto mode active      more responsive suggestions
-  auto mode quiet       only protect the PC when it gets too hot
+  auto on               enable dynamic auto mode
+  auto off              disable auto mode
+  auto mode dynamic     balanced suggestions, adapts to everyday workloads
+  auto mode creator     gaming/rendering limits, prioritizes performance
+  auto mode quiet       strict thermal/noise limits, best for meetings/library
   auto mode off         turn auto mode off completely
 
 Quiet controls:
@@ -324,11 +287,9 @@ Summer silent nights: ${SUMMER_SILENT_NIGHTS}
 Ambient source: ${ambient:-not detected}
 
 What the modes mean:
-  calm      asks rarely; good if notifications annoy you
-  summer    cooler hot-room behavior; avoids Boost when already warm
-  friendly  balanced; good default
-  active    reacts faster when gaming/rendering
-  quiet     no suggestions, only safety changes when very hot
+  dynamic   balanced everyday defaults
+  creator   gaming/rendering limits, prioritizes performance
+  quiet     strict thermal limits, stays quiet
   off       auto mode is disabled until you run auto start or auto mode ...
 
 Advanced values in ${CONF_FILE}:
@@ -340,7 +301,7 @@ Advanced values in ${CONF_FILE}:
   Minimum time between suggestions: $(format_seconds "$PROMPT_COOLDOWN")
 
 All mode presets:
-$(for mode in calm summer friendly active quiet off; do print_mode_row "$mode"; done)
+$(for mode in dynamic creator quiet off; do print_mode_row "$mode"; done)
 EOF
 }
 
@@ -477,23 +438,19 @@ run_setup() {
 Auto setup
 
 Choose how Auto should behave:
-  1) Calm      - asks rarely, recommended
-  2) Summer    - hot-room mode, cooler and slower to suggest Boost
-  3) Friendly  - balanced suggestions
-  4) Active    - reacts faster for heavy work
-  5) Quiet     - no suggestions, only critical heat protection
-  6) Off       - disable auto mode completely
+  1) Dynamic   - balanced suggestions, adapts to everyday workloads
+  2) Creator   - gaming/rendering limits, prioritizes performance
+  3) Quiet     - strict thermal/noise limits, best for meetings/library
+  4) Off       - disable auto mode completely
 EOF
     printf 'Choice [1]: '
     read -r choice
     case "${choice:-1}" in
-        1) mode=calm ;;
-        2) mode=summer ;;
-        3) mode=friendly ;;
-        4) mode=active ;;
-        5) mode=quiet ;;
-        6) mode=off ;;
-        *) echo "Unknown choice, using calm."; mode=calm ;;
+        1) mode=dynamic ;;
+        2) mode=creator ;;
+        3) mode=quiet ;;
+        4) mode=off ;;
+        *) echo "Unknown choice, using dynamic."; mode=dynamic ;;
     esac
 
     set_config_value AUTO_MODE "$mode"
@@ -514,7 +471,7 @@ EOF
 
     if [[ "$mode" == "off" ]]; then
         systemctl stop "$SERVICE" 2>/dev/null || true
-            echo "Auto mode is off. Run 'auto setup' or 'auto mode calm' to enable it again."
+            echo "Auto mode is off. Run 'auto setup' or 'auto mode dynamic' to enable it again."
     else
         systemctl enable --now "$SERVICE" 2>/dev/null || true
         systemctl restart "$SERVICE" 2>/dev/null || true
@@ -566,18 +523,18 @@ case "${1:-start}" in
         exit 0
         ;;
     on)
-        "$0" mode calm
+        "$0" mode dynamic
         exit 0
         ;;
-    off|calm|summer|friendly|active|quiet)
+    off|dynamic|creator|quiet)
         "$0" mode "$1"
         exit 0
         ;;
     start)
         need_root "$@"
         if [[ "${AUTO_MODE}" == "off" ]]; then
-            set_config_value AUTO_MODE friendly
-            AUTO_MODE=friendly
+            set_config_value AUTO_MODE dynamic
+            AUTO_MODE=dynamic
             apply_mode_preset
         fi
         sudo systemctl enable --now "$SERVICE" 2>/dev/null && \
@@ -647,8 +604,8 @@ case "${1:-start}" in
         exit 0
         ;;
     mode)
-        [[ $# -eq 1 ]] && { echo "Current mode: ${AUTO_MODE}"; echo "Available: calm, summer, friendly, active, quiet, off, custom"; exit 0; }
-        case "$2" in calm|summer|friendly|active|quiet|off|custom) ;; *) echo "Use: calm, summer, friendly, active, quiet, off, custom" >&2; exit 1 ;; esac
+        [[ $# -eq 1 ]] && { echo "Current mode: ${AUTO_MODE}"; echo "Available: dynamic, creator, quiet, off, custom"; exit 0; }
+        case "$2" in dynamic|creator|quiet|off) ;; *) echo "Use: dynamic, creator, quiet, off" >&2; exit 1 ;; esac
         need_root "$@"
         set_config_value AUTO_MODE "$2"
         if [[ "$2" == "off" ]]; then
@@ -683,7 +640,7 @@ case "${1:-start}" in
                 need_root "$@"
                 set_config_value SUMMER_SILENT_NIGHTS yes
                 systemctl restart "$SERVICE" 2>/dev/null || true
-                echo "Summer silent nights enabled. In summer mode, quiet hours can apply silent --auto."
+                echo "Summer silent nights enabled. Quiet hours will enforce Eco Mode."
                 ;;
             off|no|false|0)
                 need_root "$@"
