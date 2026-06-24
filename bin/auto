@@ -164,18 +164,7 @@ read_ambient_temp_c() {
 }
 
 apply_ambient_adjustment() {
-    local ambient="${1:-}"
     return 0
-    [[ "$ambient" =~ ^[0-9]+$ ]] || return 0
-    if (( ambient >= 30 )); then
-        TEMP_CRITICAL=$(( TEMP_CRITICAL - 2 ))
-        TEMP_HOT=$(( TEMP_HOT - 2 ))
-        BOOST_TEMP_LIMIT=$(( BOOST_TEMP_LIMIT - 3 ))
-    elif (( ambient >= 28 )); then
-        TEMP_CRITICAL=$(( TEMP_CRITICAL - 1 ))
-        TEMP_HOT=$(( TEMP_HOT - 1 ))
-        BOOST_TEMP_LIMIT=$(( BOOST_TEMP_LIMIT - 2 ))
-    fi
 }
 
 refresh_mode_settings() {
