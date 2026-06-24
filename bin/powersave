@@ -4,10 +4,10 @@
 
 # shellcheck source=/dev/null
 source /usr/local/lib/power-common.sh
-check_root "$@"
-
 if [[ "$1" == "--status" ]]; then show_status; exit 0; fi
 if [[ "$1" == "--version" ]]; then echo "powersave $VERSION"; exit 0; fi
+
+check_root "$@"
 
 ORIG_USER="${SUDO_USER:-$(logname 2>/dev/null)}"
 
@@ -19,20 +19,13 @@ save_originals
 # balanced -> ppd sets governor=powersave, EPP=balance_performance
 set_cpu_profile "balanced" "powersave" "balance_performance"
 
-set_turbo on
-
-set_rapl 0 125000000
-set_rapl 1 150000000
-echo "[CPU]  PL1=125W, PL2=150W"
-
+set_turbo off
+apply_hardware_limits powersave
 set_io_schedulers
 
 safe_write madvise /sys/kernel/mm/transparent_hugepage/enabled
 echo "[VM]   THP=madvise"
 
-nvidia-smi -pm 1 -i 0 > /dev/null 2>&1
-nvidia-smi --power-limit=150 -i 0 > /dev/null 2>&1
-echo "[GPU]  power-limit=150W"
 
 restore_fan_curve
 reset_process_priorities "$ORIG_USER"

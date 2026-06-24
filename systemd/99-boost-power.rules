@@ -1,0 +1,2 @@
+# Boost Power Management - AC/Battery events
+SUBSYSTEM=="power_supply", ATTR{type}=="Mains", ACTION=="change", RUN+="/usr/local/bin/ac-event"

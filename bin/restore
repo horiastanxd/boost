@@ -2,11 +2,13 @@
 # restore - revert to boot-time state
 # Version: 1.1.0
 
+# shellcheck source=/usr/local/lib/power-common.sh disable=SC1091
 source /usr/local/lib/power-common.sh
-check_root "$@"
 
 if [[ "$1" == "--status" ]]; then show_status; exit 0; fi
 if [[ "$1" == "--version" ]]; then echo "restore $VERSION"; exit 0; fi
+
+check_root "$@"
 
 ORIG_USER="${SUDO_USER:-$(logname 2>/dev/null)}"
 
@@ -28,20 +30,12 @@ fi
 safe_write "${ORIG_TURBO:-0}" /sys/devices/system/cpu/intel_pstate/no_turbo
 echo "[CPU]  turbo=$([ "${ORIG_TURBO:-0}" = "0" ] && echo ON || echo OFF)"
 
-set_rapl 0 "${ORIG_PL1:-125000000}"
-set_rapl 1 "${ORIG_PL2:-253000000}"
-echo "[CPU]  PL1=$(( ${ORIG_PL1:-125000000} / 1000000 ))W, PL2=$(( ${ORIG_PL2:-253000000} / 1000000 ))W"
-
+apply_hardware_limits restore
 set_io_schedulers
 
 safe_write "${ORIG_THP:-madvise}" /sys/kernel/mm/transparent_hugepage/enabled
 echo "[VM]   THP=${ORIG_THP}"
 
-if [[ -n "${ORIG_GPU_LIMIT}" ]]; then
-    nvidia-smi -pm 1 -i 0 > /dev/null 2>&1
-    nvidia-smi --power-limit="${ORIG_GPU_LIMIT}" -i 0 > /dev/null 2>&1
-    echo "[GPU]  power-limit=${ORIG_GPU_LIMIT}W"
-fi
 
 restore_fan_curve
 reset_process_priorities "$ORIG_USER"

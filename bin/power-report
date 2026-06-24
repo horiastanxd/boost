@@ -118,21 +118,28 @@ cat <<EOF
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Boost Power Report</title>
 <style>
-:root{color-scheme:dark;--bg:#08111f;--panel:#0f1b2d;--muted:#8fa3bd;--text:#e7eef8;--line:#1f3350;--accent:#38bdf8;--ok:#2dd4bf;--warn:#fbbf24}
-body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
-main{max-width:1120px;margin:0 auto;padding:28px}
-h1{font-size:28px;margin:0 0 4px}
-.muted{color:var(--muted)}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:22px 0}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
-.label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
-.value{font-size:24px;font-weight:700;margin-top:6px}
-.value small{font-size:13px;color:var(--muted);font-weight:500}
-table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
-th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
-th{color:var(--muted);font-size:12px;text-transform:uppercase}
-tr:last-child td{border-bottom:0}
-.pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#12324a;color:var(--accent)}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;600;700;800&display=swap');
+:root{color-scheme:dark;--bg-gradient:radial-gradient(circle at 10% 20%, rgba(12,20,39,1) 0%, rgba(5,9,18,1) 90%);--panel-bg:rgba(13,24,45,0.6);--panel-border:rgba(255,255,255,0.07);--text-main:#f1f5f9;--text-muted:#94a3b8;--accent:#0ea5e9;--accent-glow:rgba(14,165,233,0.35);--color-boost:#f43f5e;--color-powersave:#10b981;--font-title:'Outfit',-apple-system,BlinkMacSystemFont,sans-serif;--font-body:'Inter',-apple-system,BlinkMacSystemFont,sans-serif}
+body{margin:0;background:var(--bg-gradient);background-attachment:fixed;color:var(--text-main);font-family:var(--font-body);line-height:1.5;-webkit-font-smoothing:antialiased}
+main{max-width:1120px;margin:0 auto;padding:40px 24px}
+h1{font-family:var(--font-title);font-weight:800;font-size:32px;margin:0 0 4px;background:linear-gradient(to right,#38bdf8,#818cf8,#f43f5e);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:-0.02em}
+.muted{color:var(--text-muted);font-size:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin:24px 0}
+.card{background:var(--panel-bg);border:1px solid var(--panel-border);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-radius:14px;padding:18px;box-shadow:0 8px 24px rgba(0,0,0,0.2)}
+.label{color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.value{font-size:22px;font-weight:750;margin-top:6px}
+.value small{font-size:13px;color:var(--text-muted);font-weight:500}
+.pill{display:inline-block;padding:2px 10px;border-radius:999px;background:rgba(14,165,233,0.15);color:var(--accent);border:1px solid rgba(14,165,233,0.2);font-weight:500;font-size:13px}
+.chart-container{background:rgba(13,24,45,0.4);border:1px solid rgba(255,255,255,0.05);border-radius:12px;padding:16px;margin:20px 0}
+.chart-svg{width:100%;height:180px;display:block}
+.chart-legend{display:flex;gap:16px;justify-content:center;margin-top:8px;font-size:12px}
+.legend-item{display:flex;align-items:center;gap:6px}
+.legend-dot{width:10px;height:10px;border-radius:2px}
+.table-wrap{overflow-x:auto;border-radius:12px;border:1px solid rgba(255,255,255,0.05);margin-top:16px}
+table{width:100%;border-collapse:collapse;background:rgba(15,23,42,0.3)}
+th,td{text-align:left;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.05);white-space:nowrap}
+th{color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:0.06em;background:rgba(255,255,255,0.02)}
+tr:last-child td{border-bottom:0}tr:hover td{background:rgba(255,255,255,0.01)}
 </style>
 </head>
 <body>
@@ -149,7 +156,21 @@ tr:last-child td{border-bottom:0}
 <div class="card"><div class="label">Average GPU power</div><div class="value">${avg_gpu} W</div></div>
 <div class="card"><div class="label">Turbo</div><div class="value">${turbo}</div></div>
 </section>
+
+<div class="card" style="padding: 20px; margin-bottom: 24px;">
+  <div class="label" style="margin-bottom: 12px;">Power & Thermal History</div>
+  <svg id="historyChart" class="chart-svg" viewBox="0 0 1000 180" preserveAspectRatio="none">
+    <text x="50%" y="50%" text-anchor="middle" fill="#94a3b8">Drawing chart...</text>
+  </svg>
+  <div class="chart-legend">
+    <div class="legend-item"><span class="legend-dot" style="background:#0ea5e9;"></span><span>CPU Load (%)</span></div>
+    <div class="legend-item"><span class="legend-dot" style="background:#f59e0b;"></span><span>CPU Temp (°C)</span></div>
+    <div class="legend-item"><span class="legend-dot" style="background:#ec4899;"></span><span>GPU Power (W / 200)</span></div>
+  </div>
+</div>
+
 <h2>Recent Samples</h2>
+<div class="table-wrap">
 <table>
 <thead><tr><th>Time</th><th>Profile</th><th>CPU</th><th>CPU temp</th><th>GPU</th><th>Limits</th><th>Governor</th><th>EPP</th><th>Turbo</th></tr></thead>
 <tbody>
@@ -159,10 +180,84 @@ tail -n "$HISTORY_ROWS" "$STATS_FILE" | awk -F, 'NR > 1 {
     printf "<tr><td>%s</td><td>%s</td><td>%s%%</td><td>%s C</td><td>%s C / %s W</td><td>%s/%s W</td><td>%s</td><td>%s</td><td>%s</td></tr>\n", $2, $3, $4, $5, $6, $7, $9, $10, $11, $12, $13
 }'
 
-cat <<EOF
+cat <<'EOF'
 </tbody>
 </table>
+</div>
 </main>
+
+<script>
+const history = [
+EOF
+
+tail -n "$HISTORY_ROWS" "$STATS_FILE" | awk -F, 'NR > 1 {
+    printf "{iso:\"%s\",profile:\"%s\",cpu_load:%d,cpu_temp:%d,gpu_temp:%d,gpu_power:%d,pl1:%d,pl2:%d},\n", $2, $3, $4, $5, $6, $7, $9, $10
+}'
+
+cat <<'EOF'
+];
+
+function drawHistoryChart(history) {
+  const svg = document.getElementById('historyChart');
+  if (!history || history.length === 0) {
+    svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#94a3b8">No history data available</text>';
+    return;
+  }
+  
+  const width = 1000;
+  const height = 180;
+  const paddingLeft = 40;
+  const paddingRight = 20;
+  const paddingTop = 20;
+  const paddingBottom = 25;
+  
+  const chartWidth = width - paddingLeft - paddingRight;
+  const chartHeight = height - paddingTop - paddingBottom;
+  
+  const pointsCount = history.length;
+  let loadPoints = [];
+  let tempPoints = [];
+  let gpuPoints = [];
+  
+  for (let i = 0; i < pointsCount; i++) {
+    const x = paddingLeft + (i / (pointsCount - 1)) * chartWidth;
+    const loadVal = parseFloat(history[i].cpu_load || 0);
+    const tempVal = parseFloat(history[i].cpu_temp || 0);
+    const gpuVal = parseFloat(history[i].gpu_power || 0);
+    const gpuPct = (gpuVal / 200) * 100;
+    
+    const loadY = height - paddingBottom - (loadVal / 100) * chartHeight;
+    const tempY = height - paddingBottom - (tempVal / 100) * chartHeight;
+    const gpuY = height - paddingBottom - (Math.min(gpuPct, 100) / 100) * chartHeight;
+    
+    loadPoints.push(`${x},${loadY}`);
+    tempPoints.push(`${x},${tempY}`);
+    gpuPoints.push(`${x},${gpuY}`);
+  }
+  
+  let gridLines = '';
+  for (let pct = 0; pct <= 100; pct += 25) {
+    const y = height - paddingBottom - (pct / 100) * chartHeight;
+    gridLines += `<line x1="${paddingLeft}" y1="${y}" x2="${width - paddingRight}" y2="${y}" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>`;
+    gridLines += `<text x="${paddingLeft - 10}" y="${y + 4}" fill="#64748b" font-size="10" font-family="sans-serif" text-anchor="end">${pct}%</text>`;
+  }
+  
+  const loadPath = `<path d="M ${loadPoints.join(' L ')}" fill="none" stroke="#0ea5e9" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />`;
+  const tempPath = `<path d="M ${tempPoints.join(' L ')}" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />`;
+  const gpuPath = `<path d="M ${gpuPoints.join(' L ')}" fill="none" stroke="#ec4899" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />`;
+  
+  svg.innerHTML = `
+    <g class="grid-lines">${gridLines}</g>
+    <g class="chart-paths">
+      ${loadPath}
+      ${tempPath}
+      ${gpuPath}
+    </g>
+  `;
+}
+
+drawHistoryChart(history);
+</script>
 </body>
 </html>
 EOF

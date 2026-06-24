@@ -37,7 +37,7 @@ migrate_config() {
 }
 
 echo "[install] Copying scripts to /usr/local/bin..."
-for bin in boost powersave silent summer restore power-save-originals auto power-report boost-web; do
+for bin in boost powersave silent summer restore power-save-originals auto power-report boost-web ac-event; do
     install -m 755 "$REPO_DIR/bin/$bin" /usr/local/bin/"$bin"
     echo "  -> /usr/local/bin/$bin"
 done
@@ -45,6 +45,20 @@ done
 echo "[install] Copying lib to /usr/local/lib..."
 install -m 644 "$REPO_DIR/lib/power-common.sh" /usr/local/lib/power-common.sh
 install -m 644 "$REPO_DIR/lib/boost-web.py" /usr/local/lib/boost-web.py
+
+echo "[install] Copying shell autocompletions..."
+mkdir -p /usr/share/bash-completion/completions
+install -m 644 "$REPO_DIR/boost-completion.bash" /usr/share/bash-completion/completions/auto
+for cmd in boost powersave silent restore summer; do
+    ln -sf auto /usr/share/bash-completion/completions/"$cmd"
+done
+
+echo "[install] Installing desktop app launcher..."
+mkdir -p /usr/local/share/applications
+install -m 644 "$REPO_DIR/boost-dashboard.desktop" /usr/local/share/applications/boost-dashboard.desktop
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/local/share/applications >/dev/null 2>&1 || true
+fi
 
 echo "[install] Installing systemd services..."
 install -m 644 "$REPO_DIR/systemd/power-save-originals.service" \
@@ -55,6 +69,14 @@ install -m 644 "$REPO_DIR/systemd/boost-web.service" \
     /etc/systemd/system/boost-web.service
 systemctl daemon-reload
 systemctl enable power-save-originals.service
+
+echo "[install] Installing udev rules..."
+install -m 644 "$REPO_DIR/systemd/99-boost-power.rules" \
+    /etc/udev/rules.d/99-boost-power.rules
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules
+    udevadm trigger
+fi
 
 echo "[install] Installing default config..."
 if [[ ! -f "$CONF_FILE" ]]; then

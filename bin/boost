@@ -4,10 +4,10 @@
 
 # shellcheck source=/dev/null
 source /usr/local/lib/power-common.sh
-check_root "$@"
-
 if [[ "$1" == "--status" ]]; then show_status; exit 0; fi
 if [[ "$1" == "--version" ]]; then echo "boost $VERSION"; exit 0; fi
+
+check_root "$@"
 
 ORIG_USER="${SUDO_USER:-$(logname 2>/dev/null)}"
 
@@ -20,19 +20,11 @@ save_originals
 set_cpu_profile "performance" "performance" "performance"
 
 set_turbo on
-
-set_rapl 0 125000000
-set_rapl 1 253000000
-echo "[CPU]  PL1=125W, PL2=253W"
-
+apply_hardware_limits boost
 set_io_schedulers
 
 safe_write always /sys/kernel/mm/transparent_hugepage/enabled
 echo "[VM]   THP=always"
-
-nvidia-smi -pm 1 -i 0 > /dev/null 2>&1
-nvidia-smi --power-limit=180 -i 0 > /dev/null 2>&1
-echo "[GPU]  power-limit=180W"
 
 restore_fan_curve
 reset_process_priorities "$ORIG_USER"

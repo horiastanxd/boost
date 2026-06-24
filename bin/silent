@@ -2,7 +2,12 @@
 # silent - overnight mode: minimum power, quiet fans, priority process
 # Version: 1.1.0
 
+# shellcheck source=/usr/local/lib/power-common.sh disable=SC1091
 source /usr/local/lib/power-common.sh
+
+if [[ "$1" == "--status" ]]; then show_status; exit 0; fi
+if [[ "$1" == "--version" ]]; then echo "silent $VERSION"; exit 0; fi
+
 check_root "$@"
 
 AUTO_SILENT=0
@@ -10,9 +15,6 @@ if [[ "${1:-}" == "--auto" ]]; then
     AUTO_SILENT=1
     shift
 fi
-
-if [[ "$1" == "--status" ]]; then show_status; exit 0; fi
-if [[ "$1" == "--version" ]]; then echo "silent $VERSION"; exit 0; fi
 
 ORIG_USER="${SUDO_USER:-$(logname 2>/dev/null)}"
 
@@ -47,7 +49,7 @@ select_and_prioritize() {
 
     local count=0
     while IFS= read -r pid; do
-        renice -n 15 -p "$pid" > /dev/null 2>&1 && ((count++)) || true
+        if renice -n 15 -p "$pid" > /dev/null 2>&1; then ((count++)); fi
     done < <(ps -u "$ORIG_USER" -o pid= 2>/dev/null)
     echo "[PROC] $count processes -> nice +15"
 
@@ -77,19 +79,11 @@ save_originals
 set_cpu_profile "power-saver" "powersave" "power"
 
 set_turbo off
-
-set_rapl 0 65000000
-set_rapl 1 75000000
-echo "[CPU]  PL1=65W, PL2=75W"
-
+apply_hardware_limits silent
 set_io_schedulers
 
 safe_write never /sys/kernel/mm/transparent_hugepage/enabled
 echo "[VM]   THP=never"
-
-nvidia-smi -pm 1 -i 0 > /dev/null 2>&1
-nvidia-smi --power-limit=150 -i 0 > /dev/null 2>&1
-echo "[GPU]  power-limit=150W"
 
 apply_quiet_fan_curve
 select_and_prioritize

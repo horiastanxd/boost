@@ -266,11 +266,11 @@ def power_profile() -> str:
 def cpu_temp_c() -> int:
     for hwmon in Path("/sys/class/hwmon").glob("hwmon*"):
         name = read_text(hwmon / "name", "")
-        if name not in {"coretemp", "k10temp"}:
+        if name not in {"coretemp", "k10temp", "zenpower", "amd_energy"}:
             continue
         for label_file in hwmon.glob("temp*_label"):
             label = read_text(label_file, "")
-            if label in {"Package id 0", "Tctl", "Tdie"}:
+            if label in {"Package id 0", "Tctl", "Tdie", "Tccd1", "Tccd2"}:
                 raw = int(read_text(str(label_file).replace("_label", "_input"), "0") or "0")
                 return raw // 1000
         raw = int(read_text(hwmon / "temp1_input", "0") or "0")
@@ -394,6 +394,10 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
         result = run(["/usr/local/bin/boost"], timeout=30)
     elif action == "powersave":
         result = run(["/usr/local/bin/powersave"], timeout=30)
+    elif action == "silent":
+        result = run(["/usr/local/bin/silent", "--auto"], timeout=30)
+    elif action == "restore":
+        result = run(["/usr/local/bin/restore"], timeout=30)
     elif action == "auto-mode" and value in allowed_modes:
         result = run(["/usr/local/bin/auto", "mode", value], timeout=10)
     elif action == "snooze" and value in allowed_durations:
@@ -433,142 +437,312 @@ INDEX_HTML = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Boost Control</title>
+<title>Boost Control Dashboard</title>
 <style>
-:root{color-scheme:dark;--bg:#08111f;--panel:#0f1b2d;--panel2:#12223a;--text:#e7eef8;--muted:#8fa3bd;--line:#223852;--accent:#38bdf8;--ok:#2dd4bf;--warn:#fbbf24;--danger:#fb7185}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}button,input{font:inherit}
-main{max-width:1180px;margin:0 auto;padding:24px}.top{display:flex;gap:16px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;margin-bottom:18px}
-h1{margin:0;font-size:28px}.muted{color:var(--muted)}.status-dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--ok);margin-right:8px}.status-dot.off{background:var(--danger)}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:16px 0}.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;min-width:0}.label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}.value{font-size:24px;font-weight:750;margin-top:5px}.value small{font-size:13px;color:var(--muted);font-weight:500}
-.section{margin-top:18px}.actions{display:flex;gap:10px;flex-wrap:wrap}.btn{border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:8px;padding:10px 12px;cursor:pointer}.btn:hover,.btn:focus{outline:2px solid var(--accent);outline-offset:1px}.btn.primary{background:#0e7490;border-color:#0891b2}.btn.good{background:#0f766e;border-color:#14b8a6}.btn.warn{background:#854d0e;border-color:#f59e0b}.btn.danger{background:#9f1239;border-color:#fb7185}
-.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,360px);gap:12px}@media(max-width:800px){.split{grid-template-columns:1fr}main{padding:16px}.value{font-size:21px}}
-table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--muted);font-size:12px;text-transform:uppercase}tr:last-child td{border-bottom:0}.table-wrap{overflow:auto;border-radius:8px}
-.message{min-height:22px;color:var(--ok);margin-top:10px}.message.error{color:var(--danger)}.field-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.field-row input{width:92px;background:#071120;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px}.reason{border-left:3px solid var(--accent);padding-left:10px}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;600;700;800&display=swap');
+:root{color-scheme:dark;--bg-gradient:radial-gradient(circle at 10% 20%, rgba(12,20,39,1) 0%, rgba(5,9,18,1) 90%);--panel-bg:rgba(13,24,45,0.6);--panel-border:rgba(255,255,255,0.07);--text-main:#f1f5f9;--text-muted:#94a3b8;--accent:#0ea5e9;--accent-glow:rgba(14,165,233,0.35);--color-boost:#f43f5e;--color-boost-glow:rgba(244,63,94,0.4);--color-powersave:#10b981;--color-powersave-glow:rgba(16,185,129,0.4);--color-silent:#8b5cf6;--color-silent-glow:rgba(139,92,246,0.4);--color-restore:#6b7280;--color-warn:#f59e0b;--color-danger:#ef4444;--color-ok:#10b981;--font-title:'Outfit',-apple-system,BlinkMacSystemFont,sans-serif;--font-body:'Inter',-apple-system,BlinkMacSystemFont,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg-gradient);background-attachment:fixed;color:var(--text-main);font-family:var(--font-body);line-height:1.5;-webkit-font-smoothing:antialiased}button,input{font:inherit}
+main{max-width:1200px;margin:0 auto;padding:40px 24px}.top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:24px;margin-bottom:32px}
+h1{font-family:var(--font-title);font-weight:800;font-size:36px;margin:0;background:linear-gradient(to right,#38bdf8,#818cf8,#f43f5e);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:-0.02em}
+.subtitle{color:var(--text-muted);margin-top:4px;font-size:15px}
+.card{background:var(--panel-bg);border:1px solid var(--panel-border);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-radius:16px;padding:24px;box-shadow:0 10px 30px rgba(0,0,0,0.25);transition:transform 0.3s ease,box-shadow 0.3s ease}
+.card:hover{box-shadow:0 15px 35px rgba(0,0,0,0.3)}.status-dot{width:10px;height:10px;border-radius:50%;background:var(--color-powersave);box-shadow:0 0 12px var(--color-powersave);margin-right:8px;display:inline-block;animation:pulse 2s infinite}
+.status-dot.off{background:var(--color-boost);box-shadow:0 0 12px var(--color-boost)}
+@keyframes pulse{0%{transform:scale(0.95);opacity:0.8}50%{transform:scale(1.1);opacity:1}100%{transform:scale(0.95);opacity:0.8}}
+.gauges-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px;margin-bottom:32px}
+.gauge-card{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:20px}
+.gauge-wrapper{position:relative;width:120px;height:120px;margin-bottom:12px}
+.gauge-svg{transform:rotate(-90deg);width:120px;height:120px}
+.gauge-bg{fill:none;stroke:rgba(255,255,255,0.05);stroke-width:8}
+.gauge-fill{fill:none;stroke:var(--accent);stroke-width:8;stroke-linecap:round;transition:stroke-dashoffset 0.6s cubic-bezier(0.4,0,0.2,1);filter:drop-shadow(0 0 6px var(--accent-glow))}
+.gauge-value{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:var(--font-title);font-weight:700;font-size:22px}
+.gauge-value small{font-size:12px;font-weight:500;color:var(--text-muted)}
+.gauge-label{color:var(--text-muted);font-size:12px;text-transform:uppercase;letter-spacing:0.06em;font-weight:600}
+.stats-details{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:16px;width:100%;margin-top:16px;border-top:1px solid rgba(255,255,255,0.05);padding-top:16px}
+.detail-item{display:flex;flex-direction:column}.detail-lbl{font-size:11px;text-transform:uppercase;color:var(--text-muted);letter-spacing:0.04em}
+.detail-val{font-size:15px;font-weight:600;margin-top:4px}
+.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,380px);gap:24px}
+@media(max-width:900px){.split{grid-template-columns:1fr}}
+.section-title{font-family:var(--font-title);font-weight:700;font-size:20px;margin:0 0 16px;display:flex;align-items:center;gap:8px}
+.control-group{margin-bottom:24px}.control-group:last-child{margin-bottom:0}
+.control-label{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:8px;font-weight:600}
+.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.btn{border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);color:var(--text-main);border-radius:10px;padding:10px 16px;font-weight:500;cursor:pointer;transition:all 0.2s ease;font-size:14px}
+.btn:hover{background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);transform:translateY(-1px)}
+.btn:active{transform:translateY(1px)}
+.btn.primary-boost{background:var(--color-boost);border-color:transparent;box-shadow:0 4px 12px var(--color-boost-glow)}
+.btn.primary-boost:hover{background:#ff5277;box-shadow:0 6px 16px var(--color-boost-glow)}
+.btn.good-save{background:var(--color-powersave);border-color:transparent;box-shadow:0 4px 12px var(--color-powersave-glow)}
+.btn.good-save:hover{background:#14d496;box-shadow:0 6px 16px var(--color-powersave-glow)}
+.btn.silent-mode{background:var(--color-silent);border-color:transparent;box-shadow:0 4px 12px var(--color-silent-glow)}
+.btn.silent-mode:hover{background:#a78bfa;box-shadow:0 6px 16px var(--color-silent-glow)}
+.btn.restore-bios{background:rgba(30,41,59,0.8);border-color:rgba(75,85,99,0.3)}
+.btn.restore-bios:hover{background:rgba(51,65,85,0.8)}
+.btn.active-preset{border-color:var(--accent);box-shadow:0 0 10px var(--accent-glow);background:rgba(14,165,233,0.15)}
+.field-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05);padding:12px;border-radius:12px}
+.field-row label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--text-muted);text-transform:uppercase}
+.field-row input{width:90px;background:#090f1d;color:var(--text-main);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:8px;text-align:center;transition:border-color 0.2s ease}
+.field-row input:focus{outline:none;border-color:var(--accent)}
+.message{min-height:24px;color:var(--color-ok);margin-top:14px;font-weight:500;font-size:13px;display:flex;align-items:center;gap:6px}
+.message.error{color:var(--color-danger)}
+.reason{border-left:4px solid var(--accent);background:rgba(14,165,233,0.04);padding:12px 16px;border-radius:0 12px 12px 0;margin:0 0 16px;font-size:14px}
+.chart-container{background:rgba(13,24,45,0.4);border:1px solid rgba(255,255,255,0.05);border-radius:12px;padding:16px;margin-top:12px}
+.chart-svg{width:100%;height:180px;display:block}
+.chart-legend{display:flex;gap:16px;justify-content:center;margin-top:8px;font-size:12px}
+.legend-item{display:flex;align-items:center;gap:6px}
+.legend-dot{width:10px;height:10px;border-radius:2px}
+.table-wrap{overflow-x:auto;border-radius:12px;border:1px solid rgba(255,255,255,0.05);margin-top:12px}
+table{width:100%;border-collapse:collapse;background:rgba(15,23,42,0.3)}
+th,td{text-align:left;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.05);white-space:nowrap}
+th{color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:0.06em;background:rgba(255,255,255,0.02)}
+tr:last-child td{border-bottom:0}tr:hover td{background:rgba(255,255,255,0.01)}
 </style>
 </head>
 <body>
 <main>
 <div class="top">
   <div>
-    <h1>Boost Control</h1>
-    <div class="muted">Local controls for profiles, Auto mode, live statistics, and reports. Updates automatically.</div>
+    <h1>Boost Control Panel</h1>
+    <div class="subtitle">Linux power profile manager dashboard for Intel/AMD + NVIDIA desktops</div>
   </div>
-  <div class="card">
-    <div><span id="serviceDot" class="status-dot"></span><strong id="serviceText">Checking...</strong></div>
-    <div class="muted" id="updatedText">-</div>
+  <div class="card" style="padding: 14px 20px;">
+    <div style="display:flex; align-items:center;"><span id="serviceDot" class="status-dot"></span><strong id="serviceText">Checking...</strong></div>
+    <div class="subtitle" style="font-size:12px; text-align:right;" id="updatedText">-</div>
   </div>
 </div>
 
-<section class="grid" aria-label="Live status">
-  <div class="card"><div class="label">Current profile</div><div class="value" id="profile">-</div></div>
-  <div class="card"><div class="label">Auto mode</div><div class="value" id="autoMode">-</div></div>
-  <div class="card"><div class="label">CPU</div><div class="value"><span id="cpuLoad">-</span>% <small id="cpuTemp">- C</small></div></div>
-  <div class="card"><div class="label">GPU</div><div class="value"><span id="gpuPower">-</span> W <small id="gpuTemp">- C</small></div></div>
-  <div class="card"><div class="label">CPU limits</div><div class="value"><span id="limits">-</span> W</div></div>
-  <div class="card"><div class="label">Turbo</div><div class="value" id="turbo">-</div></div>
-  <div class="card"><div class="label">Ambient</div><div class="value" id="ambient">-</div><div class="muted" id="ambientSource">-</div></div>
-  <div class="card"><div class="label">Pause state</div><div class="value" id="pauseState">-</div><div class="muted" id="pauseReason">-</div></div>
+<section class="gauges-grid" aria-label="Live status">
+  <div class="card gauge-card">
+    <div class="gauge-wrapper">
+      <svg class="gauge-svg" viewBox="0 0 120 120">
+        <circle class="gauge-bg" cx="60" cy="60" r="50" />
+        <circle id="cpuLoadCircle" class="gauge-fill" cx="60" cy="60" r="50" style="stroke: #0ea5e9; filter: drop-shadow(0 0 4px rgba(14,165,233,0.4));" />
+      </svg>
+      <div class="gauge-value"><span id="cpuLoadText">-</span><small>%</small></div>
+    </div>
+    <div class="gauge-label">CPU Load</div>
+  </div>
+  
+  <div class="card gauge-card">
+    <div class="gauge-wrapper">
+      <svg class="gauge-svg" viewBox="0 0 120 120">
+        <circle class="gauge-bg" cx="60" cy="60" r="50" />
+        <circle id="cpuTempCircle" class="gauge-fill" cx="60" cy="60" r="50" style="stroke: #f59e0b; filter: drop-shadow(0 0 4px rgba(245,158,11,0.4));" />
+      </svg>
+      <div class="gauge-value"><span id="cpuTempText">-</span><small>°C</small></div>
+    </div>
+    <div class="gauge-label">CPU Temperature</div>
+  </div>
+
+  <div class="card" style="display:flex; flex-direction:column; justify-content:center;">
+    <div class="gauge-label" style="margin-bottom:8px;">GPU Metrics</div>
+    <div class="detail-val" style="font-size:22px; font-weight:700;"><span id="gpuPowerText">-</span> W <span style="font-size:14px; color:var(--text-muted); font-weight:500;">/ <span id="gpuLimitText">-</span> W limit</span></div>
+    <div class="subtitle" style="font-size:14px; margin-top:2px;">GPU Temp: <strong id="gpuTempText" style="color:var(--text-main);">-</strong></div>
+  </div>
+
+  <div class="card" style="display:flex; flex-direction:column; justify-content:center;">
+    <div class="gauge-label" style="margin-bottom:6px;">Current Configuration</div>
+    <div class="stats-details" style="margin-top:0; border:none; padding:0; grid-template-columns:1fr 1fr;">
+      <div class="detail-item">
+        <div class="detail-lbl">Active Profile</div>
+        <div class="detail-val" id="profile">-</div>
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Auto Mode</div>
+        <div class="detail-val" id="autoMode">-</div>
+      </div>
+      <div class="detail-item" style="margin-top:8px;">
+        <div class="detail-lbl">Turbo Boost</div>
+        <div class="detail-val" id="turbo">-</div>
+      </div>
+      <div class="detail-item" style="margin-top:8px;">
+        <div class="detail-lbl">RAPL PL1/PL2</div>
+        <div class="detail-val" id="limits">-</div>
+      </div>
+    </div>
+  </div>
 </section>
 
 <div class="split">
-  <section class="section card">
-    <div class="label">Manual profiles</div>
-    <p class="muted">Manual choices disable Auto mode so the system does not fight your decision.</p>
-    <div class="actions">
-      <button class="btn primary" data-action="boost">Boost - performance</button>
-      <button class="btn good" data-action="powersave">Powersave - cool and efficient</button>
-    </div>
-    <div class="section">
-      <div class="label">Auto mode</div>
-      <p class="muted">Use Summer when the room is hot and the PC needs more thermal headroom.</p>
-      <div class="actions">
-        <button class="btn good" data-action="auto-mode" data-value="calm">Calm</button>
-        <button class="btn warn" data-action="auto-mode" data-value="summer">Summer</button>
-        <button class="btn" data-action="auto-mode" data-value="friendly">Friendly</button>
-        <button class="btn" data-action="auto-mode" data-value="active">Active</button>
-        <button class="btn" data-action="auto-mode" data-value="quiet">Quiet</button>
-        <button class="btn danger" data-action="auto-mode" data-value="off">Off</button>
+  <div style="display:flex; flex-direction:column; gap:24px;">
+    <section class="card">
+      <div class="section-title">⚡ Power Profiles & Auto Modes</div>
+      
+      <div class="control-group">
+        <div class="control-label">Manual Mode Profile Override</div>
+        <div class="subtitle" style="margin-bottom:12px;">Selecting a manual profile disables Auto mode, ensuring they do not conflict.</div>
+        <div class="actions">
+          <button class="btn primary-boost" id="btn-boost" data-action="boost">Boost</button>
+          <button class="btn good-save" id="btn-powersave" data-action="powersave">Powersave</button>
+          <button class="btn silent-mode" id="btn-silent" data-action="silent">Silent (Overnight)</button>
+          <button class="btn restore-bios" id="btn-restore" data-action="restore">Restore BIOS Defaults</button>
+        </div>
       </div>
-    </div>
-    <div class="section">
-      <div class="label">Pause</div>
-      <div class="actions">
-        <button class="btn" data-action="snooze" data-value="30m">30 min</button>
-        <button class="btn" data-action="snooze" data-value="1h">1 hour</button>
-        <button class="btn" data-action="snooze" data-value="2h">2 hours</button>
-        <button class="btn" data-action="today-off">Not today</button>
-        <button class="btn good" data-action="resume">Resume</button>
-      </div>
-    </div>
-    <div class="section">
-      <div class="label">Quiet hours</div>
-      <div class="field-row">
-        <label>Start <input id="quietStart" value="22:00" inputmode="numeric"></label>
-        <label>End <input id="quietEnd" value="08:00" inputmode="numeric"></label>
-        <button class="btn" id="saveQuiet">Save</button>
-      </div>
-    </div>
-    <div class="section">
-      <div class="label">Summer nights</div>
-      <p class="muted">Optional link between Summer and Silent: during quiet hours, Auto can apply Silent mode without an interactive prompt.</p>
-      <div class="actions">
-        <button class="btn good" data-action="summer-nights" data-value="on">Enable</button>
-        <button class="btn" data-action="summer-nights" data-value="off">Disable</button>
-      </div>
-      <p class="muted" id="summerNights">-</p>
-    </div>
-    <div id="message" class="message" role="status" aria-live="polite"></div>
-  </section>
 
-  <aside class="section card">
-    <div class="label">Summary</div>
-    <div class="grid" style="grid-template-columns:1fr 1fr">
-      <div><div class="muted">Average CPU</div><strong id="avgCpu">-</strong></div>
-      <div><div class="muted">Max temp</div><strong id="maxTemp">-</strong></div>
-      <div><div class="muted">Average GPU</div><strong id="avgGpu">-</strong></div>
-      <div><div class="muted">EPP</div><strong id="epp">-</strong></div>
-    </div>
-    <div class="actions">
-      <button class="btn" data-action="report">Generate report</button>
-      <a class="btn" href="/report" target="_blank" rel="noreferrer">Open latest</a>
-    </div>
-    <p class="muted" id="reportPath">-</p>
+      <div class="control-group">
+        <div class="control-label">Auto Switching Level</div>
+        <div class="subtitle" style="margin-bottom:12px;">Choose Summer mode in warm rooms to lower thermal limits and reduce noise.</div>
+        <div class="actions">
+          <button class="btn" id="mode-calm" data-action="auto-mode" data-value="calm">Calm</button>
+          <button class="btn" id="mode-summer" data-action="auto-mode" data-value="summer" style="color:var(--color-warn);">Summer</button>
+          <button class="btn" id="mode-friendly" data-action="auto-mode" data-value="friendly">Friendly</button>
+          <button class="btn" id="mode-active" data-action="auto-mode" data-value="active">Active</button>
+          <button class="btn" id="mode-quiet" data-action="auto-mode" data-value="quiet">Quiet</button>
+          <button class="btn danger" id="mode-off" data-action="auto-mode" data-value="off">Off</button>
+        </div>
+      </div>
+
+      <div id="message" class="message" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">📊 Live Power Telemetry (Last 30 samples)</div>
+      <div class="chart-container">
+        <svg id="historyChart" class="chart-svg" viewBox="0 0 1000 180" preserveAspectRatio="none">
+          <text x="50%" y="50%" text-anchor="middle" fill="#94a3b8">Collecting history data...</text>
+        </svg>
+        <div class="chart-legend">
+          <div class="legend-item"><span class="legend-dot" style="background:#0ea5e9;"></span><span>CPU Load (%)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background:#f59e0b;"></span><span>CPU Temp (°C)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background:#ec4899;"></span><span>GPU Power (W / 200)</span></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <aside style="display:flex; flex-direction:column; gap:24px;">
+    <section class="card">
+      <div class="section-title">⏳ Auto Pause & Snooze</div>
+      <div class="control-group">
+        <div class="control-label">Snooze suggestions for:</div>
+        <div class="actions" style="margin-bottom:16px;">
+          <button class="btn" data-action="snooze" data-value="30m">30m</button>
+          <button class="btn" data-action="snooze" data-value="1h">1h</button>
+          <button class="btn" data-action="snooze" data-value="2h">2h</button>
+          <button class="btn" data-action="today-off">All Today</button>
+        </div>
+        <div class="actions">
+          <button class="btn good-save" style="width:100%; text-align:center;" data-action="resume">Resume Auto Mode</button>
+        </div>
+      </div>
+
+      <div class="stats-details" style="margin-top:16px;">
+        <div class="detail-item">
+          <div class="detail-lbl">Status</div>
+          <div class="detail-val" id="pauseState">-</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-lbl">Reason</div>
+          <div class="detail-val" style="font-size:13px; color:var(--text-muted);" id="pauseReason">-</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">🌙 Quiet Hours & Summer Nights</div>
+      <div class="control-group">
+        <div class="control-label">Quiet hours schedule</div>
+        <div class="subtitle" style="margin-bottom:12px;">No prompts will be shown during quiet hours.</div>
+        <div class="field-row">
+          <label>Start <input id="quietStart" value="22:00" placeholder="HH:MM"></label>
+          <label>End <input id="quietEnd" value="08:00" placeholder="HH:MM"></label>
+          <button class="btn active-preset" id="saveQuiet" style="margin-top: 14px; width: 100%;">Save</button>
+        </div>
+      </div>
+
+      <div class="control-group" style="margin-top:20px;">
+        <div class="control-label">Summer Nights Switch</div>
+        <div class="subtitle" style="margin-bottom:12px;">Allows Summer mode to automatically enable Silent mode overnight without prompting.</div>
+        <div class="actions">
+          <button class="btn good-save" id="summer-nights-on" data-action="summer-nights" data-value="on">Enable</button>
+          <button class="btn" id="summer-nights-off" data-action="summer-nights" data-value="off">Disable</button>
+        </div>
+        <div class="subtitle" style="font-size:12px; margin-top:8px;">Current State: <strong id="summerNights" style="color:var(--text-main);">-</strong></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">📋 Reports & History</div>
+      <div class="gauge-label" style="margin-bottom:8px;">Power averages</div>
+      <div class="stats-details" style="margin-top:0; border:none; padding:0; grid-template-columns:1fr 1fr; gap:12px;">
+        <div class="detail-item">
+          <div class="detail-lbl">Average CPU</div>
+          <div class="detail-val" id="avgCpu">-</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-lbl">Max CPU Temp</div>
+          <div class="detail-val" id="maxTemp">-</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-lbl">Average GPU</div>
+          <div class="detail-val" id="avgGpu">-</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-lbl">Governor EPP</div>
+          <div class="detail-val" id="epp">-</div>
+        </div>
+      </div>
+      <div class="actions" style="margin-top:20px; width:100%; flex-direction:column; gap:8px;">
+        <button class="btn" style="width:100%;" data-action="report">Generate Full HTML Report</button>
+        <a class="btn" style="width:100%; text-align:center; text-decoration:none;" href="/report" target="_blank" rel="noreferrer">Open Latest Report ↗</a>
+      </div>
+      <p class="subtitle" style="font-size:11px; word-break:break-all;" id="reportPath">-</p>
+    </section>
   </aside>
 </div>
 
-<section class="section card">
-  <div class="label">Auto decision</div>
+<section class="card" style="margin-top:24px;">
+  <div class="section-title">🧠 Auto Switch Decision Reason</div>
   <p class="reason" id="decisionReason">-</p>
-  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
-    <div><div class="muted">Warm CPU</div><strong id="tempHot">-</strong></div>
-    <div><div class="muted">Critical CPU</div><strong id="tempCritical">-</strong></div>
-    <div><div class="muted">Boost allowed below</div><strong id="boostLimit">-</strong></div>
-    <div><div class="muted">Busy trigger</div><strong id="busyTrigger">-</strong></div>
-    <div><div class="muted">Idle trigger</div><strong id="idleTrigger">-</strong></div>
-    <div><div class="muted">Prompt cooldown</div><strong id="cooldown">-</strong></div>
+  <div class="stats-details" style="grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); border-top:none; padding-top:0;">
+    <div class="detail-item">
+      <div class="detail-lbl">Warm Threshold</div>
+      <div class="detail-val" id="tempHot">-</div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-lbl">Critical Temp</div>
+      <div class="detail-val" id="tempCritical">-</div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-lbl">Boost Below</div>
+      <div class="detail-val" id="boostLimit">-</div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-lbl">Busy Trigger</div>
+      <div class="detail-val" id="busyTrigger">-</div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-lbl">Idle Trigger</div>
+      <div class="detail-val" id="idleTrigger">-</div>
+    </div>
+    <div class="detail-item">
+      <div class="detail-lbl">Cooldown</div>
+      <div class="detail-val" id="cooldown">-</div>
+    </div>
   </div>
 </section>
 
-<section class="section">
-  <h2>Auto mode presets</h2>
+<section class="section" style="margin-top:32px;">
+  <h2 style="font-family:var(--font-title); font-size:24px; font-weight:700;">Preset Threshold Reference</h2>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Mode</th><th>Warm</th><th>Critical</th><th>Boost below</th><th>Busy</th><th>Idle</th><th>Cooldown</th></tr></thead>
+      <thead><tr><th>Mode</th><th>Warm Limit</th><th>Critical Limit</th><th>Boost Allowed Below</th><th>Busy Trigger</th><th>Idle Trigger</th><th>Prompt Cooldown</th></tr></thead>
       <tbody id="modes"></tbody>
     </table>
   </div>
 </section>
 
-<section class="section">
-  <h2>Recent history</h2>
+<section class="section" style="margin-top:32px; margin-bottom:40px;">
+  <h2 style="font-family:var(--font-title); font-size:24px; font-weight:700;">Live Sensor History</h2>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Time</th><th>Profile</th><th>CPU</th><th>CPU temp</th><th>GPU</th><th>Limits</th></tr></thead>
+      <thead><tr><th>Time</th><th>Applied Profile</th><th>CPU Load</th><th>CPU Temp</th><th>GPU Load & Power</th><th>RAPL Limits</th></tr></thead>
       <tbody id="history"></tbody>
     </table>
   </div>
 </section>
 </main>
+
 <script>
 const $ = (id) => document.getElementById(id)
 const message = $('message')
@@ -579,36 +753,108 @@ function secondsText(seconds) {
   return `${seconds}s`
 }
 
-async function fetchStatus() {
-  const response = await fetch('/api/status', { cache: 'no-store' })
-  if (!response.ok) throw new Error('Cannot read status')
-  return response.json()
-}
-
 function setMessage(text, isError = false) {
   message.textContent = text
   message.className = isError ? 'message error' : 'message'
+  setTimeout(() => { message.textContent = '' }, 4000)
+}
+
+function setGauge(id, value, max = 100) {
+  const circle = document.getElementById(`${id}Circle`);
+  const text = document.getElementById(`${id}Text`);
+  if (!circle || !text) return;
+  
+  const radius = 50;
+  const circumference = 2 * Math.PI * radius;
+  
+  circle.style.strokeDasharray = circumference;
+  const pct = Math.min(Math.max(value, 0), max) / max;
+  const offset = circumference - (pct * circumference);
+  circle.style.strokeDashoffset = offset;
+  text.textContent = Math.round(value);
+}
+
+function drawHistoryChart(history) {
+  const svg = document.getElementById('historyChart');
+  if (!history || history.length === 0) {
+    svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#94a3b8">No history data available yet</text>';
+    return;
+  }
+  
+  const width = 1000;
+  const height = 180;
+  const paddingLeft = 40;
+  const paddingRight = 20;
+  const paddingTop = 20;
+  const paddingBottom = 25;
+  
+  const chartWidth = width - paddingLeft - paddingRight;
+  const chartHeight = height - paddingTop - paddingBottom;
+  
+  const pointsCount = history.length;
+  let loadPoints = [];
+  let tempPoints = [];
+  let gpuPoints = [];
+  
+  for (let i = 0; i < pointsCount; i++) {
+    const x = paddingLeft + (i / (pointsCount - 1)) * chartWidth;
+    const loadVal = parseFloat(history[i].cpu_load || 0);
+    const tempVal = parseFloat(history[i].cpu_temp || 0);
+    const gpuVal = parseFloat(history[i].gpu_power || 0);
+    const gpuPct = (gpuVal / 200) * 100;
+    
+    const loadY = height - paddingBottom - (loadVal / 100) * chartHeight;
+    const tempY = height - paddingBottom - (tempVal / 100) * chartHeight;
+    const gpuY = height - paddingBottom - (Math.min(gpuPct, 100) / 100) * chartHeight;
+    
+    loadPoints.push(`${x},${loadY}`);
+    tempPoints.push(`${x},${tempY}`);
+    gpuPoints.push(`${x},${gpuY}`);
+  }
+  
+  let gridLines = '';
+  for (let pct = 0; pct <= 100; pct += 25) {
+    const y = height - paddingBottom - (pct / 100) * chartHeight;
+    gridLines += `<line x1="${paddingLeft}" y1="${y}" x2="${width - paddingRight}" y2="${y}" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>`;
+    gridLines += `<text x="${paddingLeft - 10}" y="${y + 4}" fill="#64748b" font-size="10" font-family="sans-serif" text-anchor="end">${pct}%</text>`;
+  }
+  
+  const loadPath = `<path d="M ${loadPoints.join(' L ')}" fill="none" stroke="#0ea5e9" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />`;
+  const tempPath = `<path d="M ${tempPoints.join(' L ')}" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />`;
+  const gpuPath = `<path d="M ${gpuPoints.join(' L ')}" fill="none" stroke="#ec4899" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />`;
+  
+  svg.innerHTML = `
+    <g class="grid-lines">${gridLines}</g>
+    <g class="chart-paths">
+      ${loadPath}
+      ${tempPath}
+      ${gpuPath}
+    </g>
+  `;
 }
 
 function render(data) {
   $('serviceDot').className = data.auto.service === 'active' ? 'status-dot' : 'status-dot off'
-  $('serviceText').textContent = `Auto: ${data.auto.service} | Web: ${data.web.service}`
-  $('updatedText').textContent = `Updated: ${data.time}`
+  $('serviceText').textContent = `Daemon Auto: ${data.auto.service} | Web Dashboard: ${data.web.service}`
+  $('updatedText').textContent = `Telemetry Live Status • Refreshed: ${data.time}`
   $('profile').textContent = data.friendlyProfile
   $('autoMode').textContent = data.auto.mode
-  $('cpuLoad').textContent = data.cpu.load
-  $('cpuTemp').textContent = `${data.cpu.temp} C`
-  $('gpuPower').textContent = data.gpu.power
-  $('gpuTemp').textContent = `${data.gpu.temp} C`
-  $('limits').textContent = `${data.limits.pl1}/${data.limits.pl2}`
+  
+  // Update circular gauges
+  setGauge('cpuLoad', data.cpu.load);
+  setGauge('cpuTemp', data.cpu.temp);
+  
+  $('gpuPowerText').textContent = data.gpu.power
+  $('gpuLimitText').textContent = data.gpu.limit
+  $('gpuTempText').textContent = `${data.gpu.temp} C`
+  
+  $('limits').textContent = `${data.limits.pl1}/${data.limits.pl2} W`
   $('turbo').textContent = data.system.turbo
-  $('ambient').textContent = data.auto.ambient.detected ? `${data.auto.ambient.temp} C` : 'Not detected'
-  $('ambientSource').textContent = data.auto.ambient.source
   $('pauseState').textContent = data.auto.pause.snoozed ? 'Snoozed' : data.auto.pause.todayOff ? 'Today off' : data.auto.pause.quietActive ? 'Quiet hours' : 'Available'
   $('pauseReason').textContent = data.auto.pause.reason
   $('quietStart').value = data.auto.quietStart
   $('quietEnd').value = data.auto.quietEnd
-  $('summerNights').textContent = `Current: ${data.auto.summerSilentNights}`
+  $('summerNights').textContent = data.auto.summerSilentNights.toUpperCase()
   $('decisionReason').textContent = data.auto.decision
   $('tempHot').textContent = `${data.auto.thresholds.tempHot} C`
   $('tempCritical').textContent = `${data.auto.thresholds.tempCritical} C`
@@ -619,18 +865,56 @@ function render(data) {
   $('avgCpu').textContent = `${Math.round(data.summary.avg_cpu)}%`
   $('maxTemp').textContent = `${Math.round(data.summary.max_temp)} C`
   $('avgGpu').textContent = `${Number(data.summary.avg_gpu).toFixed(1)} W`
-  $('epp').textContent = data.system.epp
-  $('reportPath').textContent = data.report.latestExists ? data.report.path : 'No report yet'
+  $('epp').textContent = `${data.system.governor} (${data.system.epp})`
+  $('reportPath').textContent = data.report.latestExists ? 'Saved to: ' + data.report.path : 'No HTML report generated yet.'
+  
+  // Render history chart
+  drawHistoryChart(data.history);
+  
+  // Highlight active profile buttons
+  ['boost', 'powersave', 'silent'].forEach(act => {
+    const btn = document.getElementById(`btn-${act}`);
+    if (btn) btn.classList.remove('active-preset');
+  });
+  if (data.profile === 'performance') $('btn-boost').classList.add('active-preset');
+  else if (data.profile === 'balanced') $('btn-powersave').classList.add('active-preset');
+  else if (data.profile === 'power-saver') $('btn-silent').classList.add('active-preset');
+  
+  // Highlight active auto mode buttons
+  ['calm', 'summer', 'friendly', 'active', 'quiet', 'off'].forEach(m => {
+    const btn = document.getElementById(`mode-${m}`);
+    if (btn) btn.classList.remove('active-preset');
+  });
+  const activeModeBtn = document.getElementById(`mode-${data.auto.mode}`);
+  if (activeModeBtn) activeModeBtn.classList.add('active-preset');
+
+  // Highlight Summer Nights
+  if (data.auto.summerSilentNights === 'yes') {
+    $('summer-nights-on').classList.add('active-preset');
+    $('summer-nights-off').classList.remove('active-preset');
+  } else {
+    $('summer-nights-on').classList.remove('active-preset');
+    $('summer-nights-off').classList.add('active-preset');
+  }
+
   $('modes').innerHTML = data.auto.modes.map(mode => `
-    <tr>
-      <td>${mode.mode}</td><td>${mode.tempHot} C</td><td>${mode.tempCritical} C</td>
-      <td>${mode.boostTempLimit} C</td><td>${mode.loadHigh}% / ${secondsText(mode.loadHighDuration)}</td>
-      <td>${mode.loadIdle}% / ${secondsText(mode.loadIdleDuration)}</td><td>${secondsText(mode.promptCooldown)}</td>
+    <tr class="${data.auto.mode === mode.mode ? 'active-preset' : ''}">
+      <td style="font-weight:600; text-transform:capitalize;">${mode.mode}</td>
+      <td>${mode.tempHot} C</td>
+      <td>${mode.tempCritical} C</td>
+      <td>${mode.boostTempLimit} C</td>
+      <td>${mode.loadHigh}% / ${secondsText(mode.loadHighDuration)}</td>
+      <td>${mode.loadIdle}% / ${secondsText(mode.loadIdleDuration)}</td>
+      <td>${secondsText(mode.promptCooldown)}</td>
     </tr>`).join('')
+    
   $('history').innerHTML = data.history.slice().reverse().map(row => `
     <tr>
-      <td>${row.iso || '-'}</td><td>${row.profile || '-'}</td><td>${row.cpu_load || 0}%</td>
-      <td>${row.cpu_temp || 0} C</td><td>${row.gpu_temp || 0} C / ${row.gpu_power || 0} W</td>
+      <td>${row.iso ? row.iso.split('T')[1].substring(0,8) : '-'}</td>
+      <td style="text-transform:capitalize;">${row.profile === 'performance' ? 'Boost' : row.profile === 'balanced' ? 'Powersave' : row.profile === 'power-saver' ? 'Silent' : row.profile}</td>
+      <td><span style="display:inline-block; width:45px; font-weight:600;">${row.cpu_load || 0}%</span></td>
+      <td>${row.cpu_temp || 0} C</td>
+      <td>${row.gpu_temp || 0} C / ${row.gpu_power || 0} W</td>
       <td>${row.pl1 || 0}/${row.pl2 || 0} W</td>
     </tr>`).join('')
 }
@@ -644,15 +928,18 @@ async function refresh() {
 }
 
 async function sendAction(action, value = null) {
-  setMessage('Working...')
-  const response = await fetch('/api/action', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, value })
-  })
-  const result = await response.json()
-  setMessage(result.message || (result.ok ? 'Done' : 'Error'), !result.ok)
-  await refresh()
+  try {
+    const response = await fetch('/api/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, value })
+    })
+    const result = await response.json()
+    setMessage(result.message || (result.ok ? 'Action Applied' : 'Execution Error'), !result.ok)
+    await refresh()
+  } catch (e) {
+    setMessage(e.message, true)
+  }
 }
 
 document.addEventListener('click', (event) => {

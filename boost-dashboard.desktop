@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Boost Control Panel
+Comment=Linux power profile manager dashboard
+Exec=auto web
+Icon=preferences-system-power
+Terminal=false
+Categories=System;Settings;
+Keywords=power;performance;battery;boost;nvidia;intel;amd;

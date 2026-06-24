@@ -47,7 +47,7 @@ reset_threshold_defaults() {
 }
 
 if [[ "${BOOST_AUTO_NO_CONFIG:-0}" != "1" && -f "$CONF_FILE" ]]; then
-    # shellcheck source=/etc/boost-auto.conf
+    # shellcheck source=/etc/boost-auto.conf disable=SC1091
     source /etc/boost-auto.conf
 fi
 
@@ -61,7 +61,7 @@ CUSTOM_LOAD_IDLE_DURATION="${LOAD_IDLE_DURATION}"
 CUSTOM_PROMPT_COOLDOWN="${PROMPT_COOLDOWN}"
 
 if [[ -f /usr/local/lib/power-common.sh ]]; then
-    # shellcheck source=/dev/null
+    # shellcheck source=/usr/local/lib/power-common.sh disable=SC1091
     source /usr/local/lib/power-common.sh
 fi
 
@@ -535,10 +535,15 @@ open_as_user() {
 }
 
 start_web() {
-    need_root "$@"
-    systemctl enable --now "$WEB_SERVICE" 2>/dev/null || true
-    echo "Boost web dashboard: ${WEB_URL}"
-    open_as_user "$WEB_URL"
+    if systemctl is-active --quiet "$WEB_SERVICE" 2>/dev/null; then
+        echo "Boost web dashboard is already running: ${WEB_URL}"
+        open_as_user "$WEB_URL"
+    else
+        need_root "$@"
+        systemctl enable --now "$WEB_SERVICE" 2>/dev/null || true
+        echo "Boost web dashboard started: ${WEB_URL}"
+        open_as_user "$WEB_URL"
+    fi
 }
 
 case "${1:-start}" in
@@ -582,8 +587,11 @@ case "${1:-start}" in
         exit $?
         ;;
     status)
-        service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || echo inactive)
-        web_state=$(systemctl is-active "$WEB_SERVICE" 2>/dev/null || echo inactive)
+        service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
+        [[ -z "$service_state" || "$service_state" == "inactive" ]] && service_state="inactive"
+        web_state=$(systemctl is-active "$WEB_SERVICE" 2>/dev/null || true)
+        [[ -z "$web_state" || "$web_state" == "inactive" ]] && web_state="inactive"
+
         profile=$(powerprofilesctl get 2>/dev/null || echo unknown)
         ambient=$(read_ambient_temp_c 2>/dev/null || true)
         echo "Auto helper: $service_state"
@@ -719,18 +727,8 @@ ensure_state_dir
 echo $$ > "$PID_FILE"
 logger -t boost-auto "Daemon started (PID=$$, mode=${AUTO_MODE})"
 
-find_coretemp_hwmon() {
-    for h in /sys/class/hwmon/hwmon*/; do
-        [[ "$(cat "${h}name" 2>/dev/null)" == "coretemp" ]] && echo "${h}" && return
-    done
-}
-CORETEMP_HWMON=$(find_coretemp_hwmon)
-
 get_cpu_temp() {
-    [[ -z "$CORETEMP_HWMON" ]] && echo 0 && return
-    local raw
-    raw=$(cat "${CORETEMP_HWMON}temp1_input" 2>/dev/null || echo 0)
-    echo $(( raw / 1000 ))
+    get_cpu_temp_c 2>/dev/null || echo 0
 }
 
 _prev_total=0 _prev_idle=0
@@ -892,7 +890,7 @@ while true; do
     elif (( load >= LOAD_HIGH )); then
         if (( high_since == 0 )); then
             high_since=$now
-        elif (( now - high_since >= LOAD_HIGH_DURATION )) && [[ "$profile" != "performance" ]] && (( temp < BOOST_TEMP_LIMIT )) && (( prompt_ok )) && ! suggestions_paused; then
+        elif (( now - high_since >= LOAD_HIGH_DURATION )) && [[ "$profile" != "performance" ]] && (( temp > 0 && temp < BOOST_TEMP_LIMIT )) && (( prompt_ok )) && ! suggestions_paused; then
             suggest_switch \
                 "It looks like you need more power" \
                 "I can enable Boost for heavy apps, games, or rendering. Fans may get louder." \

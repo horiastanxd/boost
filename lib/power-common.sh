@@ -13,6 +13,25 @@ AUTO_CONF_FILE="/etc/boost-auto.conf"
 AUTO_SERVICE="boost-auto.service"
 STATS_FILE="/var/lib/power-profile/stats.csv"
 
+# Colors for CLI styling
+if [[ -t 1 ]]; then
+    readonly C_RESET="\e[0m"
+    readonly C_BOLD="\e[1m"
+    readonly C_CYAN="\e[36m"
+    readonly C_GREEN="\e[32m"
+    readonly C_YELLOW="\e[33m"
+    readonly C_RED="\e[31m"
+    readonly C_GRAY="\e[90m"
+else
+    readonly C_RESET=""
+    readonly C_BOLD=""
+    readonly C_CYAN=""
+    readonly C_GREEN=""
+    readonly C_YELLOW=""
+    readonly C_RED=""
+    readonly C_GRAY=""
+fi
+
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         exec sudo "$0" "$@"
@@ -75,28 +94,44 @@ find_hwmon_by_name() {
     return 1
 }
 
+_CACHED_CPU_TEMP_FILE=""
 get_cpu_temp_c() {
-    local hwmon label_file input_file label raw
-    hwmon=$(find_hwmon_by_name '^(coretemp|k10temp)$' 2>/dev/null || true)
+    local raw
+    if [[ -n "$_CACHED_CPU_TEMP_FILE" && -r "$_CACHED_CPU_TEMP_FILE" ]]; then
+        raw=$(cat "$_CACHED_CPU_TEMP_FILE" 2>/dev/null || echo 0)
+        if [[ "$raw" -gt 0 ]]; then
+            echo $(( raw / 1000 ))
+            return 0
+        fi
+    fi
+
+    local hwmon label_file input_file label
+    hwmon=$(find_hwmon_by_name '^(coretemp|k10temp|zenpower|amd_energy)$' 2>/dev/null || true)
     [[ -z "$hwmon" ]] && return 1
 
     for label_file in "$hwmon"/temp*_label; do
         [[ -r "$label_file" ]] || continue
         label=$(cat "$label_file" 2>/dev/null)
         case "$label" in
-            "Package id 0"|"Tctl"|"Tdie")
+            "Package id 0"|"Tctl"|"Tdie"|"Tccd1"|"Tccd2")
                 input_file="${label_file%_label}_input"
                 raw=$(cat "$input_file" 2>/dev/null || echo 0)
-                echo $(( raw / 1000 ))
-                return 0
+                if [[ "$raw" -gt 0 ]]; then
+                    _CACHED_CPU_TEMP_FILE="$input_file"
+                    echo $(( raw / 1000 ))
+                    return 0
+                fi
                 ;;
         esac
     done
 
-    raw=$(cat "$hwmon/temp1_input" 2>/dev/null || echo 0)
+    input_file="$hwmon/temp1_input"
+    raw=$(cat "$input_file" 2>/dev/null || echo 0)
     [[ "$raw" -gt 0 ]] || return 1
+    _CACHED_CPU_TEMP_FILE="$input_file"
     echo $(( raw / 1000 ))
 }
+
 
 read_cpu_totals() {
     local cpu user nice system idle iowait irq softirq steal guest guest_nice
@@ -136,7 +171,15 @@ get_epp() {
 }
 
 get_turbo_state() {
-    [[ "$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null)" = "0" ]] && echo ON || echo OFF
+    if [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+        [[ "$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null)" = "0" ]] && echo ON || echo OFF
+    elif [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then
+        [[ "$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null)" = "1" ]] && echo ON || echo OFF
+    elif [[ -f /sys/devices/system/cpu/amd_pstate/boost ]]; then
+        [[ "$(cat /sys/devices/system/cpu/amd_pstate/boost 2>/dev/null)" = "1" ]] && echo ON || echo OFF
+    else
+        echo "OFF"
+    fi
 }
 
 get_gpu_csv() {
@@ -209,17 +252,87 @@ set_rapl() {
     local max_uw
     max_uw=$(cat "${base}/constraint_${constraint}_max_power_uw" 2>/dev/null || echo 0)
     if [[ "$max_uw" -gt 0 && "$limit_uw" -gt "$max_uw" ]]; then
-        echo "  [WARN] PL${constraint}: clamped to hw max $(( max_uw / 1000000 ))W"
         limit_uw="$max_uw"
     fi
-    safe_write "$limit_uw" "${base}/constraint_${constraint}_power_limit_uw"
+    safe_write "$limit_uw" "${base}/constraint_${constraint}_power_limit_uw" 2>/dev/null || true
+}
+
+apply_hardware_limits() {
+    local mode="$1" # boost, powersave, silent, restore
+    
+    if [[ -f "$ORIGINALS_FILE" ]]; then
+        # shellcheck disable=SC1090
+        source "$ORIGINALS_FILE"
+    fi
+    
+    # Intel RAPL dynamic scaling
+    local pl1="${ORIG_PL1:-}" pl2="${ORIG_PL2:-}"
+    if [[ -n "$pl1" && -n "$pl2" && "$pl1" -gt 0 ]]; then
+        local t_pl1 t_pl2
+        case "$mode" in
+            boost|restore)
+                t_pl1=$pl1; t_pl2=$pl2
+                ;;
+            powersave)
+                t_pl1=$(( pl1 * 60 / 100 )); t_pl2=$(( pl2 * 60 / 100 ))
+                ;;
+            silent)
+                t_pl1=$(( pl1 * 40 / 100 )); t_pl2=$(( pl2 * 40 / 100 ))
+                ;;
+        esac
+        # Safety floor
+        (( t_pl1 < 10000000 )) && t_pl1=10000000
+        (( t_pl2 < 15000000 )) && t_pl2=15000000
+        
+        set_rapl 0 "$t_pl1"
+        set_rapl 1 "$t_pl2"
+        echo "[CPU]  RAPL PL1=$((t_pl1 / 1000000))W, PL2=$((t_pl2 / 1000000))W (scaled for $mode)"
+    fi
+    
+    # NVIDIA dynamic scaling
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        nvidia-smi -pm 1 -i 0 >/dev/null 2>&1 || true
+        local def_gpu="${ORIG_GPU_LIMIT:-}"
+        local limits min_l max_l t_gpu
+        limits=$(nvidia-smi --query-gpu=power.min_limit,power.max_limit --format=csv,noheader,nounits -i 0 2>/dev/null | head -1)
+        if [[ -n "$limits" ]]; then
+            IFS=',' read -r min_l max_l <<< "$limits"
+            min_l=$(echo "$min_l" | awk '{print int($1)}')
+            max_l=$(echo "$max_l" | awk '{print int($1)}')
+            
+            [[ -z "$def_gpu" || "$def_gpu" -eq 0 ]] && def_gpu=$(( min_l + (max_l - min_l) / 2 ))
+            
+            case "$mode" in
+                boost) t_gpu=$max_l ;;
+                restore) t_gpu=$def_gpu ;;
+                powersave) t_gpu=$(( min_l + (def_gpu - min_l) / 2 )) ;;
+                silent) t_gpu=$min_l ;;
+            esac
+            
+            (( t_gpu < min_l )) && t_gpu=$min_l
+            (( t_gpu > max_l )) && t_gpu=$max_l
+            
+            nvidia-smi --power-limit="${t_gpu}" -i 0 >/dev/null 2>&1 || true
+            echo "[GPU]  NVIDIA limit=${t_gpu}W (scaled for $mode)"
+        fi
+    fi
 }
 
 set_turbo() {
     local state="$1"  # on | off
-    local val=0
-    [[ "$state" == "off" ]] && val=1
-    safe_write "$val" /sys/devices/system/cpu/intel_pstate/no_turbo
+    if [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+        local val=0
+        [[ "$state" == "off" ]] && val=1
+        safe_write "$val" /sys/devices/system/cpu/intel_pstate/no_turbo
+    elif [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then
+        local val=1
+        [[ "$state" == "off" ]] && val=0
+        safe_write "$val" /sys/devices/system/cpu/cpufreq/boost
+    elif [[ -f /sys/devices/system/cpu/amd_pstate/boost ]]; then
+        local val=1
+        [[ "$state" == "off" ]] && val=0
+        safe_write "$val" /sys/devices/system/cpu/amd_pstate/boost
+    fi
     echo "[CPU]  turbo=${state^^}"
 }
 
@@ -275,23 +388,76 @@ reset_process_priorities() {
     [[ $count -gt 0 ]] && echo "[PROC] $count processes -> nice 0"
 }
 
+draw_bar() {
+    local val="$1" max="${2:-100}" color="${3:-$C_GREEN}"
+    local pct=$(( val * 100 / max ))
+    (( pct > 100 )) && pct=100
+    (( pct < 0 )) && pct=0
+    local width=10
+    local filled=$(( pct * width / 100 ))
+    local empty=$(( width - filled ))
+    local bar=""
+    local i
+    for ((i=0; i<filled; i++)); do bar+="█"; done
+    for ((i=0; i<empty; i++)); do bar+="░"; done
+    printf "${color}%s${C_RESET}" "$bar"
+}
+
 show_status() {
-    echo ""
-    echo "--- Status ---"
-    local gpu_csv gpu_temp gpu_power gpu_limit pl1 pl2
+    echo -e "\n${C_CYAN}${C_BOLD}┌────────────────── Boost Status ──────────────────┐${C_RESET}"
+    local gpu_csv gpu_temp gpu_power gpu_limit pl1 pl2 cpu_load cpu_temp ppd gov epp turbo thp
     gpu_csv=$(get_gpu_csv)
     IFS=',' read -r gpu_temp gpu_power gpu_limit <<< "$gpu_csv"
-    echo "CPU load: $(get_cpu_load_percent)%"
-    echo "CPU temp: $(get_cpu_temp_c 2>/dev/null || echo 0) C"
-    [[ -n "$gpu_csv" ]] && echo "GPU:      ${gpu_temp} C, ${gpu_power} W / ${gpu_limit} W"
-    echo "PPD:      $(get_power_profile)"
-    echo "Governor: $(get_governor)"
-    echo "EPP:      $(get_epp)"
-    echo "Turbo:    $(get_turbo_state)"
+    
+    cpu_load=$(get_cpu_load_percent)
+    cpu_temp=$(get_cpu_temp_c 2>/dev/null || echo 0)
+    ppd=$(get_power_profile)
+    gov=$(get_governor)
+    epp=$(get_epp)
+    turbo=$(get_turbo_state)
     pl1=$(get_rapl_limit_w 0)
     pl2=$(get_rapl_limit_w 1)
-    echo "PL1/PL2:  ${pl1}W / ${pl2}W"
-    echo "THP:      $(grep -oP '\[\K[^\]]+' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)"
+    thp=$(grep -oP '\[\K[^\]]+' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)
+    
+    # Load color
+    local load_color=$C_GREEN
+    if (( cpu_load > 80 )); then load_color=$C_RED; elif (( cpu_load > 50 )); then load_color=$C_YELLOW; fi
+    
+    # Temp color
+    local temp_color=$C_GREEN
+    if (( cpu_temp >= 80 )); then temp_color=$C_RED; elif (( cpu_temp >= 70 )); then temp_color=$C_YELLOW; fi
+    
+    printf "  ${C_BOLD}%-13s${C_RESET} %3d%%  [%-10b]\n" "CPU Load:" "$cpu_load" "$(draw_bar "$cpu_load" 100 "$load_color")"
+    printf "  ${C_BOLD}%-13s${C_RESET} %3d°C  [%-10b]\n" "CPU Temp:" "$cpu_temp" "$(draw_bar "$cpu_temp" 100 "$temp_color")"
+    
+    if [[ -n "$gpu_csv" && "$gpu_temp" -gt 0 ]]; then
+        local gpu_p_val=${gpu_power%%.*}
+        local gpu_l_val=${gpu_limit%%.*}
+        [[ -z "$gpu_p_val" ]] && gpu_p_val=0
+        [[ -z "$gpu_l_val" || "$gpu_l_val" -eq 0 ]] && gpu_l_val=150
+        local gpu_color=$C_GREEN
+        if (( gpu_temp >= 80 )); then gpu_color=$C_RED; elif (( gpu_temp >= 70 )); then gpu_color=$C_YELLOW; fi
+        printf "  ${C_BOLD}%-13s${C_RESET} %3d°C  [%-10b]  %3dW / %3dW limit\n" "GPU:" "$gpu_temp" "$(draw_bar "$gpu_temp" 100 "$gpu_color")" "$gpu_p_val" "$gpu_l_val"
+    fi
+    
+    # PPD color
+    local ppd_disp="$ppd"
+    if [[ "$ppd" == "performance" ]]; then ppd_disp="${C_RED}Performance (Boost)${C_RESET}"
+    elif [[ "$ppd" == "balanced" ]]; then ppd_disp="${C_GREEN}Balanced (Powersave)${C_RESET}"
+    elif [[ "$ppd" == "power-saver" ]]; then ppd_disp="${C_CYAN}Power Saver (Silent)${C_RESET}"; fi
+    
+    # Turbo color
+    local turbo_disp="$turbo"
+    if [[ "$turbo" == "ON" ]]; then turbo_disp="${C_RED}ON (Boost enabled)${C_RESET}"
+    elif [[ "$turbo" == "OFF" ]]; then turbo_disp="${C_CYAN}OFF (Disabled)${C_RESET}"; fi
+    
+    echo -e "  ${C_GRAY}──────────────────────────────────────────────────${C_RESET}"
+    printf "  %-13s %b\n" "Profile (PPD):" "$ppd_disp"
+    printf "  %-13s %s (epp: %s)\n" "Governor:" "$gov" "$epp"
+    printf "  %-13s %b\n" "Turbo Boost:" "$turbo_disp"
+    printf "  %-13s %sW / %sW\n" "RAPL PL1/PL2:" "$pl1" "$pl2"
+    printf "  %-13s %s\n" "THP (Hugepgs):" "$thp"
+    echo -e "${C_CYAN}${C_BOLD}└──────────────────────────────────────────────────┘${C_RESET}"
 }
 
 verify_write() {
