@@ -252,14 +252,26 @@ def set_config_value(key: str, value: str) -> None:
     CONF_FILE.write_text("\n".join(next_lines) + "\n", encoding="utf-8")
 
 
+_CACHE = {}
+
+def cached_run(key: str, cmd: list[str], ttl: int) -> str:
+    now = time.time()
+    if key in _CACHE and now - _CACHE[key]['time'] < ttl:
+        return _CACHE[key]['val']
+    try:
+        res = run(cmd, timeout=3).stdout.strip()
+    except Exception:
+        res = ""
+    _CACHE[key] = {'time': now, 'val': res}
+    return res
+
+
 def active_service(name: str) -> str:
-    result = run(["systemctl", "is-active", name], timeout=2)
-    return result.stdout.strip() or "inactive"
+    return cached_run(f"service_{name}", ["systemctl", "is-active", name], 5) or "inactive"
 
 
 def power_profile() -> str:
-    result = run(["powerprofilesctl", "get"], timeout=2)
-    return result.stdout.strip() or "unknown"
+    return cached_run("powerprofile", ["powerprofilesctl", "get"], 2) or "unknown"
 
 
 def cpu_temp_c() -> int:
@@ -297,17 +309,14 @@ def cpu_load_percent() -> int:
 
 
 def gpu_stats() -> dict[str, str]:
-    result = run(
-        [
-            "nvidia-smi",
-            "--query-gpu=temperature.gpu,power.draw,power.limit",
-            "--format=csv,noheader,nounits",
-        ],
-        timeout=3,
-    )
-    if result.returncode != 0 or not result.stdout.strip():
+    out = cached_run("gpu", [
+        "nvidia-smi",
+        "--query-gpu=temperature.gpu,power.draw,power.limit",
+        "--format=csv,noheader,nounits"
+    ], 5)
+    if not out:
         return {"temp": "0", "power": "0", "limit": "0"}
-    temp, power, limit = [part.strip() for part in result.stdout.splitlines()[0].split(",")]
+    temp, power, limit = [part.strip() for part in out.splitlines()[0].split(",")]
     return {"temp": temp, "power": power, "limit": limit}
 
 
@@ -371,7 +380,7 @@ def status_payload() -> dict[str, Any]:
         },
         "web": {"service": active_service("boost-web.service"), "url": f"http://{HOST}:{PORT}"},
         "profile": profile,
-        "friendlyProfile": {"performance": "Boost", "balanced": "Balanced", "power-saver": "Maximum savings"}.get(profile, profile),
+        "friendlyProfile": {"performance": "Performance", "balanced": "Balanced", "power-saver": "Eco Mode"}.get(profile, profile),
         "cpu": {"load": cpu_load, "temp": cpu_temp},
         "gpu": gpu,
         "limits": {"pl1": rapl_w(0), "pl2": rapl_w(1)},
@@ -777,21 +786,23 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
         <div class="control-label">Manual Profile Override</div>
         <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Selecting a manual profile disables Auto mode</div>
         <div class="actions">
-          <button class="btn primary-boost" id="btn-boost" data-action="boost">🚀 Performance <span class="kbd">1</span></button>
-          <button class="btn good-save" id="btn-powersave" data-action="powersave">⚖️ Balanced <span class="kbd">2</span></button>
-          <button class="btn silent-mode" id="btn-silent" data-action="silent">🍃 Eco Mode <span class="kbd">3</span></button>
-          <button class="btn restore-bios" id="btn-restore" data-action="restore">♻️ Default <span class="kbd">4</span></button>
+          <button class="btn primary-boost" id="btn-boost" data-action="boost" aria-label="Activate Performance Profile" title="Switch to maximum power limit for demanding tasks">🚀 Performance <span class="kbd">1</span></button>
+          <button class="btn good-save" id="btn-powersave" data-action="powersave" aria-label="Activate Balanced Profile" title="Switch to balanced power, ideal for 95% of daily use">⚖️ Balanced <span class="kbd">2</span></button>
+          <button class="btn silent-mode" id="btn-silent" data-action="silent" aria-label="Activate Eco Mode" title="Strict thermal and noise constraints, best for night time">🍃 Eco Mode <span class="kbd">3</span></button>
+          <button class="btn restore-bios" id="btn-restore" data-action="restore" aria-label="Restore BIOS Defaults" title="Reset all changes back to BIOS defaults">♻️ Default <span class="kbd">4</span></button>
         </div>
       </div>
 
-      <div class="control-group">
-        <div class="control-label">Smart Auto Modes</div>
-        <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Let AI dynamically manage thermals based on workload</div>
+      <div class="control-group" aria-labelledby="heading-auto-modes">
+        <h2 id="heading-auto-modes" class="control-label" style="font-size:14px;color:var(--text-main);margin-bottom:4px;">🤖 Smart Auto Modes</h2>
+        <div class="reason">
+          <strong style="color:var(--text-main);display:block;margin-bottom:4px;font-size:14px" id="decisionReason">Loading...</strong>
+        </div>
         <div class="actions">
-          <button class="btn" id="mode-dynamic" data-action="auto-mode" data-value="dynamic">🧠 Dynamic</button>
-          <button class="btn" id="mode-creator" data-action="auto-mode" data-value="creator">🎬 Creator (AI/Render)</button>
-          <button class="btn" id="mode-quiet" data-action="auto-mode" data-value="quiet">🤫 Quiet</button>
-          <button class="btn" id="mode-off" data-action="auto-mode" data-value="off" style="color:var(--color-danger)">🚫 Off</button>
+          <button class="btn" id="mode-dynamic" data-action="auto-mode" data-value="dynamic" aria-label="Enable Dynamic Mode" title="Balanced suggestions adapted to everyday workloads">🧠 Dynamic</button>
+          <button class="btn" id="mode-creator" data-action="auto-mode" data-value="creator" aria-label="Enable Creator Mode" title="Optimized for gaming, 3D rendering, and AI training limits">🎬 Creator (AI/Render)</button>
+          <button class="btn" id="mode-quiet" data-action="auto-mode" data-value="quiet" aria-label="Enable Quiet Mode" title="Strict low noise and heat profile">🤫 Quiet</button>
+          <button class="btn" id="mode-off" data-action="auto-mode" data-value="off" style="color:var(--color-danger)" aria-label="Disable Auto Mode" title="Disable background automation daemon completely">🚫 Off</button>
         </div>
       </div>
     </section>
@@ -1194,7 +1205,9 @@ document.addEventListener('keydown', e => {
 
 // Start polling
 refresh();
-setInterval(refresh, 2000);
+setInterval(() => {
+  if (!document.hidden) refresh();
+}, 2000);
 </script>
 </body>
 </html>"""

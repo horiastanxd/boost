@@ -47,11 +47,9 @@ select_and_prioritize() {
     local priority_proc=""
     read -r priority_proc < /dev/tty 2>/dev/null || priority_proc=""
 
-    local count=0
-    while IFS= read -r pid; do
-        if renice -n 15 -p "$pid" > /dev/null 2>&1; then ((count++)); fi
-    done < <(ps -u "$ORIG_USER" -o pid= 2>/dev/null)
-    echo "[PROC] $count processes -> nice +15"
+    # Removed dangerous bulk renice of all user processes to +15.
+    # By prioritizing the chosen process to -5, it automatically gets CPU priority
+    # over standard nice 0 processes, without breaking the desktop environment or causing mouse lag.
 
     if [[ -n "$priority_proc" ]]; then
         local pids
