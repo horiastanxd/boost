@@ -971,18 +971,26 @@ function drawChart(history) {
   const n = history.length;
 
   function makePath(data, key, max, color) {
-    let pts = [], areaPts = [];
+    let pts = [], areaPts = [], circles = [];
     for (let i = 0; i < n; i++) {
       const x = pL + (n > 1 ? (i/(n-1)) * cW : cW/2);
       const v = Math.min(parseFloat(data[i][key] || 0), max);
       const y = H - pB - (v/max) * cH;
       pts.push(`${x},${y}`);
       areaPts.push(`${x},${y}`);
+      const timeStr = data[i].iso ? data[i].iso.split('T')[1].substring(0,5) : '';
+      circles.push(`<circle cx="${x}" cy="${y}" r="3" fill="${color}" opacity="0">
+                      <title>${timeStr} | ${key}: ${parseFloat(data[i][key]||0).toFixed(1)}</title>
+                    </circle>`);
     }
     const lineD = `M ${pts.join(' L ')}`;
     const areaD = `${lineD} L ${pL + cW},${H - pB} L ${pL},${H - pB} Z`;
     return `<path d="${areaD}" fill="url(#grad-${color})" opacity="0.15"/>
-            <path d="${lineD}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+            <path d="${lineD}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <g class="chart-points" style="pointer-events:all;cursor:crosshair">
+              ${circles.join('')}
+              <style>.chart-points circle:hover { opacity: 1 !important; stroke: #fff; stroke-width: 1px; }</style>
+            </g>`;
   }
 
   let grid = '';
@@ -1215,6 +1223,7 @@ setInterval(() => {
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "BoostWeb/1.0"
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"{self.client_address[0]} - {fmt % args}")

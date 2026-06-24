@@ -154,6 +154,9 @@ class BoostDaemon:
         try:
             if not os.path.exists(STATE_DIR): os.makedirs(STATE_DIR)
             subprocess.Popen(['bash', '-c', f'source /usr/local/lib/power-common.sh >/dev/null 2>&1 && record_power_sample {load}'])
+            # Prevent infinite growth: if file > 250KB, keep only last 2000 lines (~1.5 days at 1 min interval)
+            if os.path.exists(STATS_FILE) and os.path.getsize(STATS_FILE) > 250 * 1024:
+                subprocess.Popen(['bash', '-c', f'tail -n 2000 {STATS_FILE} > {STATS_FILE}.tmp && mv {STATS_FILE}.tmp {STATS_FILE}'])
         except Exception:
             pass
 
