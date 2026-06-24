@@ -41,11 +41,11 @@ We believe system tools should be beautiful. Boost comes with two stunning, mode
 
 ### 🖥️ The Web Dashboard
 A sleek, realtime, glassmorphic local dashboard. Change profiles, tweak smart modes, and view live telemetry (CPU, GPU, RAM) at `http://localhost:8765`.
-*(Screenshot coming soon)*
+<img src="assets/dashboard.png" alt="Web Dashboard" width="100%">
 
 ### 💧 The System Tray Applet
 Fast, seamless profile switching right from your desktop environment panel.
-*(Screenshot coming soon)*
+<img src="assets/tray.png" alt="Tray Applet" width="100%">
 
 ---
 
