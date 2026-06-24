@@ -2,7 +2,8 @@
 # /usr/local/lib/power-common.sh - shared helpers for boost/powersave/silent/restore
 # Version: 1.1.0
 
-# shellcheck disable=SC2034 # sourced by profile scripts for --version
+# shellcheck disable=SC2034
+# Sourced by profile scripts for --version.
 readonly VERSION="1.1.0"
 ORIGINALS_FILE="/var/lib/power-profile/originals.env"
 FAN_BACKUP="/var/lib/power-profile/fan-curve-backup.env"

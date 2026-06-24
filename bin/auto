@@ -27,8 +27,8 @@ PROMPT_COOLDOWN=900
 POLL_INTERVAL=5
 
 if [[ -f "$CONF_FILE" ]]; then
-    # shellcheck source=/dev/null
-    source "$CONF_FILE"
+    # shellcheck source=/etc/boost-auto.conf
+    source /etc/boost-auto.conf
 fi
 
 apply_mode_preset() {
