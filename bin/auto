@@ -68,7 +68,34 @@ fi
 apply_mode_preset() {
     reset_threshold_defaults
     case "${AUTO_MODE:-dynamic}" in
-        quiet|off|dynamic) ;;
+        dynamic)
+            TEMP_HOT=78
+            BOOST_TEMP_LIMIT=78
+            LOAD_HIGH=75
+            LOAD_HIGH_DURATION=120
+            LOAD_IDLE=8
+            LOAD_IDLE_DURATION=600
+            PROMPT_COOLDOWN=900
+            ;;
+        creator)
+            TEMP_HOT=82
+            BOOST_TEMP_LIMIT=82
+            LOAD_HIGH=85
+            LOAD_HIGH_DURATION=30
+            LOAD_IDLE=15
+            LOAD_IDLE_DURATION=1200
+            PROMPT_COOLDOWN=300
+            ;;
+        quiet)
+            TEMP_HOT=70
+            BOOST_TEMP_LIMIT=70
+            LOAD_HIGH=90
+            LOAD_HIGH_DURATION=600
+            LOAD_IDLE=5
+            LOAD_IDLE_DURATION=120
+            PROMPT_COOLDOWN=3600
+            ;;
+        off) ;;
         custom)
             [[ -n "${CUSTOM_TEMP_CRITICAL:-}" ]] && TEMP_CRITICAL="$CUSTOM_TEMP_CRITICAL"
             [[ -n "${CUSTOM_TEMP_HOT:-}" ]] && TEMP_HOT="$CUSTOM_TEMP_HOT"
