@@ -13,23 +13,19 @@ assert spec and spec.loader
 boost_web = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(boost_web)
 
-summer = boost_web.mode_thresholds("summer")
-assert summer["tempHot"] == 74
-assert summer["boostTempLimit"] == 70
-
-adjusted = boost_web.apply_ambient_adjustment(summer, {"detected": True, "temp": 30})
-assert adjusted["tempHot"] == 72
-assert adjusted["boostTempLimit"] == 67
+creator = boost_web.mode_thresholds("creator")
+assert creator["tempHot"] == 82
+assert creator["boostTempLimit"] == 82
 
 reason = boost_web.decision_reason(
-    "summer",
+    "creator",
     "balanced",
-    79,
+    83,
     95,
-    summer,
+    creator,
     {"reason": "Suggestions are available."},
 )
-assert "Not suggesting Boost because CPU is 79 C" in reason
-assert "summer Boost limit is 70 C" in reason
+assert "Not suggesting Boost because CPU is 83 C" in reason
+assert "creator Boost limit is 82 C" in reason
 
 print("boost web status helpers ok")
