@@ -155,8 +155,7 @@ class BoostDaemon:
     def record_stats(self, load, temp, profile):
         try:
             if not os.path.exists(STATE_DIR): os.makedirs(STATE_DIR)
-            with open(STATS_FILE, 'a') as f:
-                f.write(f"{int(time.time())},{profile},{load},{temp}\n")
+            subprocess.Popen(['bash', '-c', f'source /usr/local/lib/power-common.sh >/dev/null 2>&1 && record_power_sample {load}'])
         except Exception:
             pass
 
