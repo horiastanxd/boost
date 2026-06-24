@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Install Boost
+Comment=Dublu-click pentru a instala Boost Power Manager
+Exec=bash -c 'cd "$(dirname "%k")" && ./install-gui.sh'
+Icon=system-software-install
+Terminal=false
+Type=Application
