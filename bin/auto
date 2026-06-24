@@ -7,14 +7,14 @@ set -u
 
 CONF_FILE="/etc/boost-auto.conf"
 STATE_DIR="/var/lib/power-profile"
-PID_FILE="$STATE_DIR/auto.pid"
+
 SERVICE="boost-auto.service"
 WEB_SERVICE="boost-web.service"
 WEB_URL="http://127.0.0.1:8765"
 SNOOZE_FILE="$STATE_DIR/auto-snooze-until"
 SKIP_TODAY_FILE="$STATE_DIR/auto-skip-date"
 REPORT_BIN="/usr/local/bin/power-report"
-SILENT_BIN="/usr/local/bin/silent"
+
 
 # Friendly defaults. Use `auto mode calm|summer|friendly|active|quiet|off`.
 AUTO_MODE="${AUTO_MODE:-friendly}"
