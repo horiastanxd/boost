@@ -25,6 +25,8 @@ restore     # Revert everything to your boot-time BIOS state
 auto        # Intelligent daemon — monitors load & temp, prompts when switching makes sense
 auto stats  # Current power statistics in terminal
 auto report # Local HTML report with recent samples
+auto setup  # Guided setup for non-technical users
+auto doctor # Health check with plain-language hints
 ```
 
 ---
@@ -71,6 +73,7 @@ silent           # tonight, before you sleep
 restore          # back to BIOS defaults anytime
 auto mode calm   # optional: enable gentle automatic suggestions
 auto report      # generate and open a local web report
+auto doctor      # check whether sensors, GPU stats, reports, and notifications work
 ```
 
 All commands auto-elevate via `sudo` — no need to prefix them.
@@ -203,6 +206,8 @@ Restores all settings to the state captured at boot:
 ### `auto` — Gentle helper + reports
 
 ```bash
+auto setup           # guided menu, easiest option
+auto doctor          # friendly health check
 auto mode calm       # rare suggestions, best default
 auto mode friendly   # balanced suggestions
 auto mode active     # faster suggestions for heavy work
@@ -210,6 +215,7 @@ auto mode quiet      # no suggestions, only critical heat protection
 auto mode off        # disable auto mode completely
 auto stats           # print a current power snapshot
 auto report          # generate and open a local HTML report
+auto dashboard       # same as auto report
 ```
 
 Manual profile commands stay in control: running `boost` or `powersave`
@@ -232,6 +238,11 @@ it is running:
 The report includes current profile, CPU load, CPU temperature, GPU
 temperature/power, RAPL limits, governor, EPP, turbo state, and recent
 history.
+
+`auto doctor` checks the pieces that commonly confuse users:
+GNOME power profile sync, NVIDIA access, CPU power-limit support,
+temperature sensor access, notification buttons, stats history, and
+whether a web report exists.
 
 ---
 

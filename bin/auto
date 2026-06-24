@@ -117,9 +117,11 @@ format_seconds() {
 
 show_help() {
     cat <<'EOF'
-Usage: auto [start|stop|restart|status|stats|report|logs|config|mode|quiet-hours|snooze|today-off|resume]
+Usage: auto [start|stop|restart|status|stats|report|dashboard|doctor|setup|logs|config|mode|quiet-hours|snooze|today-off|resume]
 
 Simple controls:
+  auto setup            guided setup, easiest way to choose behavior
+  auto doctor           check if everything needed is installed and healthy
   auto mode calm        fewer suggestions, best for non-technical users
   auto mode friendly    balanced suggestions, default
   auto mode active      more responsive suggestions
@@ -134,6 +136,7 @@ Quiet controls:
   auto resume
   auto stats
   auto report
+  auto dashboard
 
 Advanced users can still edit /etc/boost-auto.conf.
 EOF
@@ -161,6 +164,111 @@ Advanced values in ${CONF_FILE}:
   Idle: ${LOAD_IDLE} after $(format_seconds "$LOAD_IDLE_DURATION")
   Minimum time between suggestions: $(format_seconds "$PROMPT_COOLDOWN")
 EOF
+}
+
+check_item() {
+    local ok="$1" label="$2" hint="${3:-}"
+    if [[ "$ok" == "yes" ]]; then
+        printf 'OK   %s\n' "$label"
+    else
+        printf 'WARN %s\n' "$label"
+        [[ -n "$hint" ]] && printf '     %s\n' "$hint"
+    fi
+}
+
+show_doctor() {
+    local service_state profile notify_actions temp_ok rapl_ok gpu_ok ppd_ok report_ok stats_ok
+    service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || echo inactive)
+    profile=$(powerprofilesctl get 2>/dev/null || echo unknown)
+    command -v powerprofilesctl >/dev/null 2>&1 && ppd_ok=yes || ppd_ok=no
+    command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1 && gpu_ok=yes || gpu_ok=no
+    [[ -r /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw ]] && rapl_ok=yes || rapl_ok=no
+    if declare -F get_cpu_temp_c >/dev/null && [[ "$(get_cpu_temp_c 2>/dev/null || echo 0)" -gt 0 ]]; then
+        temp_ok=yes
+    else
+        temp_ok=no
+    fi
+    notify-send --help 2>/dev/null | grep -q -- '--action' && notify_actions=yes || notify_actions=no
+    [[ -e /var/lib/power-profile/reports/latest.html ]] && report_ok=yes || report_ok=no
+    [[ -s /var/lib/power-profile/stats.csv ]] && stats_ok=yes || stats_ok=no
+
+    cat <<EOF
+Auto doctor
+
+Mode:        ${AUTO_MODE}
+Service:     ${service_state}
+Profile:     $(friendly_profile "$profile")
+Quiet hours: ${QUIET_HOURS_START}-${QUIET_HOURS_END}
+
+EOF
+    check_item "$ppd_ok" "GNOME power profile sync" "Install power-profiles-daemon for GNOME indicator sync."
+    check_item "$gpu_ok" "NVIDIA stats and power limit" "nvidia-smi is missing or cannot see the GPU."
+    check_item "$rapl_ok" "CPU power limits" "RAPL path missing; CPU PL1/PL2 tuning may not work on this machine."
+    check_item "$temp_ok" "CPU temperature sensor" "Install/configure lm-sensors if temperature is missing."
+    check_item "$notify_actions" "Notification buttons" "Your notify-send may not support action buttons."
+    check_item "$stats_ok" "Statistics history" "Run 'auto stats' once, or keep auto mode running for a minute."
+    check_item "$report_ok" "Latest web report" "Run 'auto report' to generate it."
+
+    cat <<'EOF'
+
+Helpful commands:
+  auto setup     choose behavior with a guided menu
+  auto stats     see current stats
+  auto report    open the web report
+EOF
+}
+
+run_setup() {
+    need_root "$@"
+    local choice mode quiet_choice start end
+
+    cat <<'EOF'
+Auto setup
+
+Choose how Auto should behave:
+  1) Calm      - asks rarely, recommended
+  2) Friendly  - balanced suggestions
+  3) Active    - reacts faster for heavy work
+  4) Quiet     - no suggestions, only critical heat protection
+  5) Off       - disable auto mode completely
+EOF
+    printf 'Choice [1]: '
+    read -r choice
+    case "${choice:-1}" in
+        1) mode=calm ;;
+        2) mode=friendly ;;
+        3) mode=active ;;
+        4) mode=quiet ;;
+        5) mode=off ;;
+        *) echo "Unknown choice, using calm."; mode=calm ;;
+    esac
+
+    set_config_value AUTO_MODE "$mode"
+
+    printf 'Use quiet hours 22:00-08:00? [Y/n]: '
+    read -r quiet_choice
+    if [[ ! "${quiet_choice:-Y}" =~ ^[Nn]$ ]]; then
+        printf 'Quiet starts [22:00]: '
+        read -r start
+        printf 'Quiet ends [08:00]: '
+        read -r end
+        set_config_value QUIET_HOURS_START "${start:-22:00}"
+        set_config_value QUIET_HOURS_END "${end:-08:00}"
+    else
+        set_config_value QUIET_HOURS_START 00:00
+        set_config_value QUIET_HOURS_END 00:00
+    fi
+
+    if [[ "$mode" == "off" ]]; then
+        systemctl stop "$SERVICE" 2>/dev/null || true
+        echo "Auto mode is off. Run 'auto setup' or 'auto mode calm' to enable it again."
+    else
+        systemctl enable --now "$SERVICE" 2>/dev/null || true
+        systemctl restart "$SERVICE" 2>/dev/null || true
+        echo "Auto mode is set to '$mode'."
+    fi
+    echo ""
+    "$0" status
 }
 
 case "${1:-start}" in
@@ -218,6 +326,18 @@ case "${1:-start}" in
         ;;
     report)
         "$REPORT_BIN" --open
+        exit 0
+        ;;
+    dashboard)
+        "$REPORT_BIN" --open
+        exit 0
+        ;;
+    doctor|health)
+        show_doctor
+        exit 0
+        ;;
+    setup|wizard)
+        run_setup "$@"
         exit 0
         ;;
     config)
