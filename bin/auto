@@ -15,13 +15,14 @@ SNOOZE_FILE="$STATE_DIR/auto-snooze-until"
 SKIP_TODAY_FILE="$STATE_DIR/auto-skip-date"
 REPORT_BIN="/usr/local/bin/power-report"
 
-# Friendly defaults. Use `auto mode calm|friendly|active|quiet|off`.
+# Friendly defaults. Use `auto mode calm|summer|friendly|active|quiet|off`.
 AUTO_MODE=friendly
 QUIET_HOURS_START=22:00
 QUIET_HOURS_END=08:00
 ALLOW_CRITICAL_AUTO=yes
 TEMP_CRITICAL=85
 TEMP_HOT=78
+BOOST_TEMP_LIMIT=78
 LOAD_HIGH=75
 LOAD_HIGH_DURATION=120
 LOAD_IDLE=8
@@ -44,14 +45,26 @@ apply_mode_preset() {
     case "${AUTO_MODE:-friendly}" in
         calm)
             TEMP_HOT=80
+            BOOST_TEMP_LIMIT=80
             LOAD_HIGH=85
             LOAD_HIGH_DURATION=300
             LOAD_IDLE=5
             LOAD_IDLE_DURATION=1200
             PROMPT_COOLDOWN=3600
             ;;
+        summer)
+            TEMP_CRITICAL=82
+            TEMP_HOT=74
+            BOOST_TEMP_LIMIT=70
+            LOAD_HIGH=90
+            LOAD_HIGH_DURATION=360
+            LOAD_IDLE=15
+            LOAD_IDLE_DURATION=180
+            PROMPT_COOLDOWN=1800
+            ;;
         active)
             TEMP_HOT=76
+            BOOST_TEMP_LIMIT=76
             LOAD_HIGH=65
             LOAD_HIGH_DURATION=45
             LOAD_IDLE=12
@@ -100,9 +113,9 @@ parse_duration() {
 friendly_profile() {
     case "${1:-unknown}" in
         performance) echo "Boost" ;;
-        power-saver) echo "Economie maxima" ;;
-        balanced) echo "Echilibrat" ;;
-        *) echo "${1:-necunoscut}" ;;
+        power-saver) echo "Maximum savings" ;;
+        balanced) echo "Balanced" ;;
+        *) echo "${1:-unknown}" ;;
     esac
 }
 
@@ -131,10 +144,12 @@ Simple controls:
   auto on               enable calm auto mode
   auto off              disable auto mode completely
   auto calm             set calm mode
+  auto summer           set summer mode for hot rooms
   auto friendly         set friendly mode
   auto active           set active mode
   auto quiet            set quiet mode
   auto mode calm        fewer suggestions, best for non-technical users
+  auto mode summer      hot-room mode: cooler, quieter, slower to suggest Boost
   auto mode friendly    balanced suggestions, default
   auto mode active      more responsive suggestions
   auto mode quiet       only protect the PC when it gets too hot
@@ -164,6 +179,7 @@ Critical protection: ${ALLOW_CRITICAL_AUTO}
 
 What the modes mean:
   calm      asks rarely; good if notifications annoy you
+  summer    cooler hot-room behavior; avoids Boost when already warm
   friendly  balanced; good default
   active    reacts faster when gaming/rendering
   quiet     no suggestions, only safety changes when very hot
@@ -172,6 +188,7 @@ What the modes mean:
 Advanced values in ${CONF_FILE}:
   Warm computer: ${TEMP_HOT}
   Too hot: ${TEMP_CRITICAL}
+  Boost allowed below: ${BOOST_TEMP_LIMIT}
   Busy: ${LOAD_HIGH} after $(format_seconds "$LOAD_HIGH_DURATION")
   Idle: ${LOAD_IDLE} after $(format_seconds "$LOAD_IDLE_DURATION")
   Minimum time between suggestions: $(format_seconds "$PROMPT_COOLDOWN")
@@ -239,19 +256,21 @@ Auto setup
 
 Choose how Auto should behave:
   1) Calm      - asks rarely, recommended
-  2) Friendly  - balanced suggestions
-  3) Active    - reacts faster for heavy work
-  4) Quiet     - no suggestions, only critical heat protection
-  5) Off       - disable auto mode completely
+  2) Summer    - hot-room mode, cooler and slower to suggest Boost
+  3) Friendly  - balanced suggestions
+  4) Active    - reacts faster for heavy work
+  5) Quiet     - no suggestions, only critical heat protection
+  6) Off       - disable auto mode completely
 EOF
     printf 'Choice [1]: '
     read -r choice
     case "${choice:-1}" in
         1) mode=calm ;;
-        2) mode=friendly ;;
-        3) mode=active ;;
-        4) mode=quiet ;;
-        5) mode=off ;;
+        2) mode=summer ;;
+        3) mode=friendly ;;
+        4) mode=active ;;
+        5) mode=quiet ;;
+        6) mode=off ;;
         *) echo "Unknown choice, using calm."; mode=calm ;;
     esac
 
@@ -316,7 +335,7 @@ case "${1:-start}" in
         "$0" mode calm
         exit 0
         ;;
-    off|calm|friendly|active|quiet)
+    off|calm|summer|friendly|active|quiet)
         "$0" mode "$1"
         exit 0
         ;;
@@ -390,8 +409,8 @@ case "${1:-start}" in
         exit 0
         ;;
     mode)
-        [[ $# -eq 1 ]] && { echo "Current mode: ${AUTO_MODE}"; echo "Available: calm, friendly, active, quiet, off, custom"; exit 0; }
-        case "$2" in calm|friendly|active|quiet|off|custom) ;; *) echo "Use: calm, friendly, active, quiet, off, custom" >&2; exit 1 ;; esac
+        [[ $# -eq 1 ]] && { echo "Current mode: ${AUTO_MODE}"; echo "Available: calm, summer, friendly, active, quiet, off, custom"; exit 0; }
+        case "$2" in calm|summer|friendly|active|quiet|off|custom) ;; *) echo "Use: calm, summer, friendly, active, quiet, off, custom" >&2; exit 1 ;; esac
         need_root "$@"
         set_config_value AUTO_MODE "$2"
         if [[ "$2" == "off" ]]; then
@@ -534,7 +553,7 @@ handle_action() {
         switch)
             logger -t boost-auto "Action accepted: ${command} (${reason})"
             AUTO_HELPER_INTERNAL=1 "$command" >/dev/null 2>&1 || true
-            notify_plain "Gata" "Am schimbat pe $(friendly_profile "$(powerprofilesctl get 2>/dev/null || echo unknown)")."
+            notify_plain "Done" "Switched to $(friendly_profile "$(powerprofilesctl get 2>/dev/null || echo unknown)")."
             ;;
         snooze)
             echo "$(( $(date +%s) + 7200 ))" > "$SNOOZE_FILE"
@@ -557,8 +576,8 @@ suggest_switch() {
             notify-send --wait -u normal -a "Auto power helper" \
             --expire-time=45000 \
             --action=switch="$label" \
-            --action=snooze="Mai tarziu" \
-            --action=today="Nu azi" \
+            --action=snooze="Later" \
+            --action=today="Not today" \
             "$title" "$body" 2>/dev/null || true)
 handle_action "$action" "$command" "$reason"
     ) &
@@ -623,15 +642,15 @@ while true; do
         if (( now - last_auto > 120 )); then
             logger -t boost-auto "critical heat ${temp}: auto powersave"
             AUTO_HELPER_INTERNAL=1 powersave >/dev/null 2>&1 || true
-            notify_plain "Calculatorul s-a incalzit prea tare" "Am trecut temporar pe un mod mai rece ca sa fie protejat." critical
+            notify_plain "The computer got too hot" "Temporarily switched to a cooler mode to protect it." critical
             last_auto=$now
             last_prompt=$now
         fi
     elif (( temp >= TEMP_HOT )) && [[ "$profile" == "performance" ]] && (( prompt_ok )) && ! suggestions_paused; then
         suggest_switch \
-            "Calculatorul e cam cald" \
-            "Pot trece pe un mod mai rece. Jocurile sau randarea pot merge putin mai incet, dar PC-ul se linisteste." \
-            "Raceste-l" \
+            "The computer is getting warm" \
+            "I can switch to a cooler mode. Games or rendering may run a little slower, but the PC will calm down." \
+            "Cool it down" \
             "powersave" \
             "hot:${temp}"
         last_prompt=$now
@@ -639,11 +658,11 @@ while true; do
     elif (( load >= LOAD_HIGH )); then
         if (( high_since == 0 )); then
             high_since=$now
-        elif (( now - high_since >= LOAD_HIGH_DURATION )) && [[ "$profile" != "performance" ]] && (( prompt_ok )) && ! suggestions_paused; then
+        elif (( now - high_since >= LOAD_HIGH_DURATION )) && [[ "$profile" != "performance" ]] && (( temp < BOOST_TEMP_LIMIT )) && (( prompt_ok )) && ! suggestions_paused; then
             suggest_switch \
-                "Pare ca ai nevoie de mai multa putere" \
-                "Pot activa Boost pentru aplicatii grele, jocuri sau randare. Ventilatoarele pot deveni mai zgomotoase." \
-                "Activeaza Boost" \
+                "It looks like you need more power" \
+                "I can enable Boost for heavy apps, games, or rendering. Fans may get louder." \
+                "Enable Boost" \
                 "boost" \
                 "busy:${load}"
             last_prompt=$now
@@ -655,9 +674,9 @@ while true; do
             idle_since=$now
         elif (( now - idle_since >= LOAD_IDLE_DURATION )) && [[ "$profile" == "performance" ]] && (( prompt_ok )) && ! suggestions_paused; then
             suggest_switch \
-                "PC-ul pare linistit acum" \
-                "Pot opri Boost ca sa scada caldura si zgomotul. Il poti porni iar cu comanda 'boost'." \
-                "Treci pe rece" \
+                "The PC looks quiet now" \
+                "I can leave Boost to reduce heat and noise. You can turn it back on with the 'boost' command." \
+                "Cool down" \
                 "powersave" \
                 "idle:${load}"
             last_prompt=$now

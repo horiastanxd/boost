@@ -11,7 +11,6 @@ import argparse
 import csv
 import html
 import json
-import os
 import subprocess
 import time
 import urllib.parse
@@ -174,7 +173,7 @@ def status_payload() -> dict[str, Any]:
         },
         "web": {"service": active_service("boost-web.service"), "url": f"http://{HOST}:{PORT}"},
         "profile": profile,
-        "friendlyProfile": {"performance": "Boost", "balanced": "Echilibrat", "power-saver": "Economie maxima"}.get(profile, profile),
+        "friendlyProfile": {"performance": "Boost", "balanced": "Balanced", "power-saver": "Maximum savings"}.get(profile, profile),
         "cpu": {"load": cpu_load_percent(), "temp": cpu_temp_c()},
         "gpu": gpu,
         "limits": {"pl1": rapl_w(0), "pl2": rapl_w(1)},
@@ -190,7 +189,7 @@ def status_payload() -> dict[str, Any]:
 
 
 def run_action(action: str, value: str | None = None) -> dict[str, Any]:
-    allowed_modes = {"calm", "friendly", "active", "quiet", "off"}
+    allowed_modes = {"calm", "summer", "friendly", "active", "quiet", "off"}
     allowed_durations = {"30m", "1h", "2h", "4h"}
     if action == "boost":
         result = run(["/usr/local/bin/boost"], timeout=30)
@@ -229,7 +228,7 @@ def valid_hhmm(value: str) -> bool:
 
 
 INDEX_HTML = r"""<!doctype html>
-<html lang="ro">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -251,7 +250,7 @@ table{width:100%;border-collapse:collapse;background:var(--panel);border:1px sol
 <div class="top">
   <div>
     <h1>Boost Control</h1>
-    <div class="muted">Control local pentru profiluri, Auto mode, statistici si rapoarte. Se actualizeaza automat.</div>
+    <div class="muted">Local controls for profiles, Auto mode, live statistics, and reports. Updates automatically.</div>
   </div>
   <div class="card">
     <div><span id="serviceDot" class="status-dot"></span><strong id="serviceText">Checking...</strong></div>
@@ -260,41 +259,42 @@ table{width:100%;border-collapse:collapse;background:var(--panel);border:1px sol
 </div>
 
 <section class="grid" aria-label="Live status">
-  <div class="card"><div class="label">Profil curent</div><div class="value" id="profile">-</div></div>
+  <div class="card"><div class="label">Current profile</div><div class="value" id="profile">-</div></div>
   <div class="card"><div class="label">Auto mode</div><div class="value" id="autoMode">-</div></div>
   <div class="card"><div class="label">CPU</div><div class="value"><span id="cpuLoad">-</span>% <small id="cpuTemp">- C</small></div></div>
   <div class="card"><div class="label">GPU</div><div class="value"><span id="gpuPower">-</span> W <small id="gpuTemp">- C</small></div></div>
-  <div class="card"><div class="label">Limite CPU</div><div class="value"><span id="limits">-</span> W</div></div>
+  <div class="card"><div class="label">CPU limits</div><div class="value"><span id="limits">-</span> W</div></div>
   <div class="card"><div class="label">Turbo</div><div class="value" id="turbo">-</div></div>
 </section>
 
 <div class="split">
   <section class="section card">
-    <div class="label">Profiluri manuale</div>
-    <p class="muted">Alegerea manuala dezactiveaza Auto mode, ca sistemul sa nu se lupte cu decizia ta.</p>
+    <div class="label">Manual profiles</div>
+    <p class="muted">Manual choices disable Auto mode so the system does not fight your decision.</p>
     <div class="actions">
-      <button class="btn primary" data-action="boost">Boost - performanta</button>
-      <button class="btn good" data-action="powersave">Powersave - rece si eficient</button>
+      <button class="btn primary" data-action="boost">Boost - performance</button>
+      <button class="btn good" data-action="powersave">Powersave - cool and efficient</button>
     </div>
     <div class="section">
       <div class="label">Auto mode</div>
-      <p class="muted">Pentru majoritatea oamenilor, Calm este alegerea buna.</p>
+      <p class="muted">Use Summer when the room is hot and the PC needs more thermal headroom.</p>
       <div class="actions">
         <button class="btn good" data-action="auto-mode" data-value="calm">Calm</button>
+        <button class="btn warn" data-action="auto-mode" data-value="summer">Summer</button>
         <button class="btn" data-action="auto-mode" data-value="friendly">Friendly</button>
         <button class="btn" data-action="auto-mode" data-value="active">Active</button>
-        <button class="btn warn" data-action="auto-mode" data-value="quiet">Quiet</button>
+        <button class="btn" data-action="auto-mode" data-value="quiet">Quiet</button>
         <button class="btn danger" data-action="auto-mode" data-value="off">Off</button>
       </div>
     </div>
     <div class="section">
-      <div class="label">Pauza</div>
+      <div class="label">Pause</div>
       <div class="actions">
         <button class="btn" data-action="snooze" data-value="30m">30 min</button>
-        <button class="btn" data-action="snooze" data-value="1h">1 ora</button>
-        <button class="btn" data-action="snooze" data-value="2h">2 ore</button>
-        <button class="btn" data-action="today-off">Nu azi</button>
-        <button class="btn good" data-action="resume">Reia</button>
+        <button class="btn" data-action="snooze" data-value="1h">1 hour</button>
+        <button class="btn" data-action="snooze" data-value="2h">2 hours</button>
+        <button class="btn" data-action="today-off">Not today</button>
+        <button class="btn good" data-action="resume">Resume</button>
       </div>
     </div>
     <div class="section">
@@ -302,33 +302,33 @@ table{width:100%;border-collapse:collapse;background:var(--panel);border:1px sol
       <div class="field-row">
         <label>Start <input id="quietStart" value="22:00" inputmode="numeric"></label>
         <label>End <input id="quietEnd" value="08:00" inputmode="numeric"></label>
-        <button class="btn" id="saveQuiet">Salveaza</button>
+        <button class="btn" id="saveQuiet">Save</button>
       </div>
     </div>
     <div id="message" class="message" role="status" aria-live="polite"></div>
   </section>
 
   <aside class="section card">
-    <div class="label">Rezumat</div>
+    <div class="label">Summary</div>
     <div class="grid" style="grid-template-columns:1fr 1fr">
-      <div><div class="muted">CPU mediu</div><strong id="avgCpu">-</strong></div>
-      <div><div class="muted">Temp max</div><strong id="maxTemp">-</strong></div>
-      <div><div class="muted">GPU mediu</div><strong id="avgGpu">-</strong></div>
+      <div><div class="muted">Average CPU</div><strong id="avgCpu">-</strong></div>
+      <div><div class="muted">Max temp</div><strong id="maxTemp">-</strong></div>
+      <div><div class="muted">Average GPU</div><strong id="avgGpu">-</strong></div>
       <div><div class="muted">EPP</div><strong id="epp">-</strong></div>
     </div>
     <div class="actions">
-      <button class="btn" data-action="report">Genereaza raport</button>
-      <a class="btn" href="/report" target="_blank" rel="noreferrer">Deschide latest</a>
+      <button class="btn" data-action="report">Generate report</button>
+      <a class="btn" href="/report" target="_blank" rel="noreferrer">Open latest</a>
     </div>
     <p class="muted" id="reportPath">-</p>
   </aside>
 </div>
 
 <section class="section">
-  <h2>Istoric recent</h2>
+  <h2>Recent history</h2>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Timp</th><th>Profil</th><th>CPU</th><th>Temp CPU</th><th>GPU</th><th>Limite</th></tr></thead>
+      <thead><tr><th>Time</th><th>Profile</th><th>CPU</th><th>CPU temp</th><th>GPU</th><th>Limits</th></tr></thead>
       <tbody id="history"></tbody>
     </table>
   </div>
@@ -340,7 +340,7 @@ const message = $('message')
 
 async function fetchStatus() {
   const response = await fetch('/api/status', { cache: 'no-store' })
-  if (!response.ok) throw new Error('Nu pot citi statusul')
+  if (!response.ok) throw new Error('Cannot read status')
   return response.json()
 }
 
@@ -352,7 +352,7 @@ function setMessage(text, isError = false) {
 function render(data) {
   $('serviceDot').className = data.auto.service === 'active' ? 'status-dot' : 'status-dot off'
   $('serviceText').textContent = `Auto: ${data.auto.service} | Web: ${data.web.service}`
-  $('updatedText').textContent = `Actualizat: ${data.time}`
+  $('updatedText').textContent = `Updated: ${data.time}`
   $('profile').textContent = data.friendlyProfile
   $('autoMode').textContent = data.auto.mode
   $('cpuLoad').textContent = data.cpu.load
@@ -367,7 +367,7 @@ function render(data) {
   $('maxTemp').textContent = `${Math.round(data.summary.max_temp)} C`
   $('avgGpu').textContent = `${Number(data.summary.avg_gpu).toFixed(1)} W`
   $('epp').textContent = data.system.epp
-  $('reportPath').textContent = data.report.latestExists ? data.report.path : 'Nu exista raport inca'
+  $('reportPath').textContent = data.report.latestExists ? data.report.path : 'No report yet'
   $('history').innerHTML = data.history.slice().reverse().map(row => `
     <tr>
       <td>${row.iso || '-'}</td><td>${row.profile || '-'}</td><td>${row.cpu_load || 0}%</td>
@@ -385,14 +385,14 @@ async function refresh() {
 }
 
 async function sendAction(action, value = null) {
-  setMessage('Lucrez...')
+  setMessage('Working...')
   const response = await fetch('/api/action', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, value })
   })
   const result = await response.json()
-  setMessage(result.message || (result.ok ? 'Gata' : 'Eroare'), !result.ok)
+  setMessage(result.message || (result.ok ? 'Done' : 'Error'), !result.ok)
   await refresh()
 }
 

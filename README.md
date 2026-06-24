@@ -12,7 +12,7 @@
 [![GPU: NVIDIA](https://img.shields.io/badge/GPU-NVIDIA-76B900?logo=nvidia&logoColor=white)](https://developer.nvidia.com/nvidia-system-management-interface)
 [![GNOME: power-profiles-daemon](https://img.shields.io/badge/GNOME-power--profiles--daemon-4A86CF?logo=gnome&logoColor=white)](https://gitlab.freedesktop.org/hadess/power-profiles-daemon)
 
-Four commands. No daemons. No config files. Fully reversible.  
+Manual profiles, Auto mode, and a local web dashboard. Fully reversible.
 **GNOME Power Mode indicator stays in sync automatically.**
 
 </div>
@@ -23,6 +23,7 @@ powersave   # Efficient daily use — barely slower, 15–25°C cooler
 silent      # Overnight — quiet fans, priority process, minimum power
 restore     # Revert everything to your boot-time BIOS state
 auto        # Intelligent daemon — monitors load & temp, prompts when switching makes sense
+auto summer # Hot-room mode — cooler behavior for warm summer rooms
 auto stats  # Current power statistics in terminal
 auto report # Local HTML report with recent samples
 auto web    # Realtime local web dashboard with controls
@@ -73,6 +74,7 @@ boost            # switch to when you need full power
 silent           # tonight, before you sleep
 restore          # back to BIOS defaults anytime
 auto mode calm   # optional: enable gentle automatic suggestions
+auto summer      # hot-room mode when ambient temperature is high
 auto report      # generate and open a local web report
 auto web         # open realtime web controls
 auto doctor      # check whether sensors, GPU stats, reports, and notifications work
@@ -211,6 +213,7 @@ Restores all settings to the state captured at boot:
 auto setup           # guided menu, easiest option
 auto doctor          # friendly health check
 auto mode calm       # rare suggestions, best default
+auto mode summer     # hot-room mode, cooler and slower to suggest Boost
 auto mode friendly   # balanced suggestions
 auto mode active     # faster suggestions for heavy work
 auto mode quiet      # no suggestions, only critical heat protection
@@ -223,7 +226,12 @@ auto dashboard       # same as auto web
 
 Manual profile commands stay in control: running `boost` or `powersave`
 turns auto mode off, so the daemon will not fight your choice. Run
-`auto start` or `auto mode calm|friendly|active|quiet` to opt back in.
+`auto start` or `auto mode calm|summer|friendly|active|quiet` to opt back in.
+
+`auto mode summer` is for high ambient temperatures. It suggests cooler
+profiles sooner, requires longer sustained load before suggesting Boost,
+leaves Boost more quickly when the system is quiet, and will not suggest
+Boost if the CPU is already above the configured Boost temperature limit.
 
 Reports are generated under:
 
@@ -308,6 +316,7 @@ Loop devices (snap/flatpak mounts) are excluded.
 
 /usr/local/lib/
   power-common.sh         # shared: safe_write, set_rapl, set_io_schedulers, show_status
+  boost-web.py            # local dashboard server
 
 /var/lib/power-profile/
   originals.env           # boot-time state (captured once by systemd service)
@@ -317,6 +326,8 @@ Loop devices (snap/flatpak mounts) are excluded.
 
 /etc/systemd/system/
   power-save-originals.service   # one-shot, runs before basic.target
+  boost-auto.service             # Auto mode daemon
+  boost-web.service              # local dashboard daemon
 ```
 
 ---
@@ -339,9 +350,11 @@ Loop devices (snap/flatpak mounts) are excluded.
 
 ```bash
 sudo rm /usr/local/bin/{boost,powersave,silent,restore,power-save-originals}
+sudo rm /usr/local/bin/{auto,power-report,boost-web}
 sudo rm /usr/local/lib/power-common.sh
-sudo systemctl disable --now power-save-originals.service
-sudo rm /etc/systemd/system/power-save-originals.service
+sudo rm /usr/local/lib/boost-web.py
+sudo systemctl disable --now power-save-originals.service boost-auto.service boost-web.service
+sudo rm /etc/systemd/system/{power-save-originals,boost-auto,boost-web}.service
 sudo rm -rf /var/lib/power-profile
 ```
 
@@ -357,6 +370,7 @@ auto stop       # stop daemon
 auto status     # current metrics + thresholds
 auto logs       # tail journalctl output
 auto config     # show active config
+auto summer     # hot-room mode
 ```
 
 Monitors CPU temperature and load every 5 seconds. Reacts based on configurable thresholds:
@@ -365,21 +379,24 @@ Monitors CPU temperature and load every 5 seconds. Reacts based on configurable 
 |-------|--------|
 | Temp ≥ 85°C (CRITICAL) | **Auto-switch to powersave** + desktop notification — no prompt, immediate safety action |
 | Temp ≥ 78°C + profile=boost | Prompt: *"CPU at 82°C — switch to Powersave?"* (30s timeout, defaults to no) |
-| Load ≥ 75% for 60s + profile=powersave | Prompt: *"CPU at 80% load — switch to Boost?"* |
-| Load ≤ 8% for 5 min + profile=boost | Prompt: *"CPU idle — switch to Powersave?"* |
+| Load ≥ 75% for 120s + profile=powersave | Prompt: *"CPU at 80% load — switch to Boost?"* |
+| Load ≤ 8% for 10 min + profile=boost | Prompt: *"CPU idle — switch to Powersave?"* |
+| Summer mode + CPU above Boost limit | Do not suggest Boost until the system is cooler |
 
-Prompts appear as GNOME dialogs (zenity). Timeout of 30s with no answer = keep current profile. Prompts are throttled: maximum one every 5 minutes.
+Prompts appear as desktop notifications with action buttons when supported.
+No answer keeps the current profile. Prompts are throttled by mode.
 
 **Config** (`/etc/boost-auto.conf`):
 
 ```bash
 TEMP_CRITICAL=85       # °C: auto-switch threshold
 TEMP_HOT=78            # °C: prompt threshold
+BOOST_TEMP_LIMIT=78    # °C: do not suggest Boost above this temperature
 LOAD_HIGH=75           # %: high load threshold
-LOAD_HIGH_DURATION=60  # seconds of sustained load before prompting
+LOAD_HIGH_DURATION=120 # seconds of sustained load before prompting
 LOAD_IDLE=8            # %: idle threshold
-LOAD_IDLE_DURATION=300 # seconds of idle before prompting
-PROMPT_COOLDOWN=300    # seconds between prompts
+LOAD_IDLE_DURATION=600 # seconds of idle before prompting
+PROMPT_COOLDOWN=900    # seconds between prompts
 POLL_INTERVAL=5        # measurement frequency
 ```
 

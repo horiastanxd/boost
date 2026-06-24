@@ -35,6 +35,10 @@ if [[ ! -f /etc/boost-auto.conf ]]; then
     echo "  -> /etc/boost-auto.conf (edit to tune thresholds)"
 else
     echo "  -> /etc/boost-auto.conf already exists, skipping"
+    if ! grep -qE '^[[:space:]]*BOOST_TEMP_LIMIT=' /etc/boost-auto.conf; then
+        printf '\n# Do not suggest Boost above this CPU temperature.\nBOOST_TEMP_LIMIT=78\n' >> /etc/boost-auto.conf
+        echo "  -> added BOOST_TEMP_LIMIT to existing config"
+    fi
 fi
 
 mkdir -p /var/lib/power-profile
