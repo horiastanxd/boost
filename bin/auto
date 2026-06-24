@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# auto - intelligent power profile daemon
+# Monitors CPU temp + load, prompts or auto-switches profiles
+# Version: 1.1.0
+
+CONF_FILE="/etc/boost-auto.conf"
+STATE_DIR="/var/lib/power-profile"
+PID_FILE="$STATE_DIR/auto.pid"
+SERVICE="boost-auto.service"
+
+# ── Default thresholds (override in /etc/boost-auto.conf) ──────────────────
+TEMP_CRITICAL=85    # °C: auto-switch to powersave immediately, no prompt
+TEMP_HOT=78         # °C: prompt to switch to powersave (if on boost)
+LOAD_HIGH=75        # %: after LOAD_HIGH_DURATION → prompt boost
+LOAD_HIGH_DURATION=60   # seconds of sustained high load
+LOAD_IDLE=8         # %: after LOAD_IDLE_DURATION → prompt powersave
+LOAD_IDLE_DURATION=300  # seconds of sustained idle
+PROMPT_COOLDOWN=300     # seconds between prompts (avoid spam)
+POLL_INTERVAL=5         # seconds between checks
+# ───────────────────────────────────────────────────────────────────────────
+
+[[ -f "$CONF_FILE" ]] && source "$CONF_FILE"
+
+# ── Subcommand dispatch ────────────────────────────────────────────────────
+case "${1:-start}" in
+    --daemon) : ;;  # fall through to daemon loop
+    start)
+        sudo systemctl enable --now "$SERVICE" 2>/dev/null && \
+            echo "[auto] Started. 'auto status' to monitor." || \
+            echo "[auto] Failed to start service. Is boost-auto.service installed?" >&2
+        exit $?
+        ;;
+    stop)
+        sudo systemctl stop "$SERVICE" && echo "[auto] Stopped."
+        exit $?
+        ;;
+    restart)
+        sudo systemctl restart "$SERVICE" && echo "[auto] Restarted."
+        exit $?
+        ;;
+    status)
+        echo "Service: $(systemctl is-active $SERVICE 2>/dev/null)"
+        echo "Profile: $(powerprofilesctl get 2>/dev/null)"
+        local_coretemp=$(find /sys/class/hwmon -name 'name' -exec grep -l coretemp {} \; 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
+        if [[ -n "$local_coretemp" ]]; then
+            temp=$(cat "${local_coretemp}/temp1_input" 2>/dev/null)
+            echo "CPU Temp: $(( temp / 1000 ))°C"
+        fi
+        echo "Thresholds: TEMP_CRITICAL=${TEMP_CRITICAL}°C  TEMP_HOT=${TEMP_HOT}°C  LOAD_HIGH=${LOAD_HIGH}%/${LOAD_HIGH_DURATION}s  LOAD_IDLE=${LOAD_IDLE}%/${LOAD_IDLE_DURATION}s"
+        echo "Config: $CONF_FILE"
+        exit 0
+        ;;
+    logs)
+        journalctl -u "$SERVICE" -f --no-pager
+        exit 0
+        ;;
+    config)
+        echo "Config file: $CONF_FILE"
+        [[ -f "$CONF_FILE" ]] && cat "$CONF_FILE" || echo "(using defaults — create $CONF_FILE to override)"
+        exit 0
+        ;;
+    --help|-h)
+        echo "Usage: auto [start|stop|restart|status|logs|config]"
+        exit 0
+        ;;
+    *)
+        echo "Unknown command: $1. Use: start|stop|restart|status|logs|config" >&2
+        exit 1
+        ;;
+esac
+
+# ── Daemon mode (called by systemd) ───────────────────────────────────────
+echo $$ > "$PID_FILE"
+logger -t boost-auto "Daemon started (PID=$$)"
+
+# Find coretemp hwmon dynamically
+find_coretemp_hwmon() {
+    for h in /sys/class/hwmon/hwmon*/; do
+        [[ "$(cat "${h}name" 2>/dev/null)" == "coretemp" ]] && echo "${h}" && return
+    done
+}
+CORETEMP_HWMON=$(find_coretemp_hwmon)
+
+get_cpu_temp() {
+    [[ -z "$CORETEMP_HWMON" ]] && echo 0 && return
+    local raw
+    raw=$(cat "${CORETEMP_HWMON}temp1_input" 2>/dev/null || echo 0)
+    echo $(( raw / 1000 ))
+}
+
+# CPU load: delta between two /proc/stat snapshots
+_prev_total=0 _prev_idle=0
+get_cpu_load() {
+    local line total idle
+    read -r line < /proc/stat
+    # cpu user nice system idle iowait irq softirq ...
+    set -- $line
+    idle=$5; shift; total=0
+    for v in "$@"; do (( total += v )); done || true
+    local delta_total=$(( total - _prev_total ))
+    local delta_idle=$(( idle - _prev_idle ))
+    _prev_total=$total; _prev_idle=$idle
+    [[ $delta_total -le 0 ]] && echo 0 && return
+    echo $(( (delta_total - delta_idle) * 100 / delta_total ))
+}
+
+# Active user display environment (Wayland + X11 fallback)
+get_user_env() {
+    local session user uid wayland x11
+    session=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$NF=="active" || NR==1 {print $1; exit}')
+    [[ -z "$session" ]] && return 1
+    user=$(loginctl show-session "$session" -p Name --value 2>/dev/null)
+    uid=$(id -u "$user" 2>/dev/null) || return 1
+    wayland=$(ls "/run/user/$uid/" 2>/dev/null | grep '^wayland-' | head -1)
+    x11=$(loginctl show-session "$session" -p Display --value 2>/dev/null)
+    _ENV_USER="$user"
+    _ENV_UID="$uid"
+    _ENV_WAYLAND="${wayland}"
+    _ENV_X11="${x11:-:0}"
+    _ENV_DBUS="unix:path=/run/user/$uid/bus"
+}
+
+notify() {
+    local title="$1" body="$2" urgency="${3:-normal}"
+    get_user_env || return
+    sudo -u "$_ENV_USER" \
+        XDG_RUNTIME_DIR="/run/user/$_ENV_UID" \
+        DBUS_SESSION_BUS_ADDRESS="$_ENV_DBUS" \
+        notify-send -u "$urgency" -a "boost-auto" "$title" "$body" 2>/dev/null || true
+    logger -t boost-auto "NOTIFY [$urgency] $title: $body"
+}
+
+prompt_switch() {
+    local text="$1"
+    get_user_env || return 1
+    local env_args=(
+        "XDG_RUNTIME_DIR=/run/user/$_ENV_UID"
+        "DBUS_SESSION_BUS_ADDRESS=$_ENV_DBUS"
+    )
+    if [[ -n "$_ENV_WAYLAND" ]]; then
+        env_args+=("WAYLAND_DISPLAY=$_ENV_WAYLAND" "GDK_BACKEND=wayland")
+    else
+        env_args+=("DISPLAY=$_ENV_X11" "GDK_BACKEND=x11")
+    fi
+    sudo -u "$_ENV_USER" env "${env_args[@]}" \
+        zenity --question \
+            --title="⚡ Power Profile" \
+            --text="$text" \
+            --ok-label="Yes, switch" \
+            --cancel-label="Keep current" \
+            --timeout=30 2>/dev/null
+    return $?
+}
+
+# ── State machine ──────────────────────────────────────────────────────────
+high_since=0      # epoch when load went above LOAD_HIGH
+idle_since=0      # epoch when load went below LOAD_IDLE
+last_prompt=0     # epoch of last prompt shown
+last_auto=0       # epoch of last auto-switch (avoid flapping)
+now=0
+
+while true; do
+    sleep "$POLL_INTERVAL"
+    now=$(date +%s)
+
+    temp=$(get_cpu_temp)
+    load=$(get_cpu_load)
+    profile=$(powerprofilesctl get 2>/dev/null || echo "balanced")
+    prompt_ok=$(( now - last_prompt > PROMPT_COOLDOWN ? 1 : 0 ))
+
+    # ── CRITICAL TEMP: auto-switch no prompt ───────────────────────────────
+    if (( temp >= TEMP_CRITICAL )) && [[ "$profile" != "power-saver" ]]; then
+        if (( now - last_auto > 120 )); then
+            logger -t boost-auto "CRITICAL ${temp}°C → auto powersave"
+            powersave > /dev/null 2>&1 || true
+            notify "Temperature critical: ${temp}°C" "Switched to Powersave automatically." critical
+            last_auto=$now; last_prompt=$now
+        fi
+
+    # ── HOT: prompt powersave ──────────────────────────────────────────────
+    elif (( temp >= TEMP_HOT )) && [[ "$profile" == "performance" ]] && (( prompt_ok )); then
+        logger -t boost-auto "HOT ${temp}°C → prompting powersave"
+        if prompt_switch "CPU temperature is ${temp}°C (threshold: ${TEMP_HOT}°C).\n\nSwitch to <b>Powersave</b>?"; then
+            powersave > /dev/null 2>&1 || true
+            notify "Switched to Powersave" "CPU was ${temp}°C."
+            last_auto=$now
+        fi
+        last_prompt=$now; high_since=0
+
+    # ── HIGH LOAD: prompt boost ────────────────────────────────────────────
+    elif (( load >= LOAD_HIGH )); then
+        if (( high_since == 0 )); then
+            high_since=$now
+        elif (( now - high_since >= LOAD_HIGH_DURATION )) && [[ "$profile" != "performance" ]] && (( prompt_ok )); then
+            logger -t boost-auto "LOAD ${load}% for ${LOAD_HIGH_DURATION}s → prompting boost"
+            if prompt_switch "CPU load is <b>${load}%</b> for over ${LOAD_HIGH_DURATION}s.\n\nSwitch to <b>Boost</b>?"; then
+                boost > /dev/null 2>&1 || true
+                notify "Switched to Boost" "CPU load was ${load}%."
+                last_auto=$now
+            fi
+            last_prompt=$now; high_since=0
+        fi
+        idle_since=0
+
+    # ── IDLE: prompt powersave ─────────────────────────────────────────────
+    elif (( load <= LOAD_IDLE )); then
+        if (( idle_since == 0 )); then
+            idle_since=$now
+        elif (( now - idle_since >= LOAD_IDLE_DURATION )) && [[ "$profile" == "performance" ]] && (( prompt_ok )); then
+            logger -t boost-auto "IDLE ${load}% for ${LOAD_IDLE_DURATION}s → prompting powersave"
+            if prompt_switch "CPU has been idle (<b>${load}%</b>) for over $(( LOAD_IDLE_DURATION / 60 )) min.\n\nSwitch to <b>Powersave</b>?"; then
+                powersave > /dev/null 2>&1 || true
+                notify "Switched to Powersave" "CPU was idle at ${load}%."
+                last_auto=$now
+            fi
+            last_prompt=$now; idle_since=0
+        fi
+        high_since=0
+
+    else
+        high_since=0; idle_since=0
+    fi
+done

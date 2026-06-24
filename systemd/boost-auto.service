@@ -1,0 +1,16 @@
+[Unit]
+Description=boost-auto power profile daemon
+After=network.target power-profiles-daemon.service
+Wants=power-profiles-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/auto --daemon
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=boost-auto
+
+[Install]
+WantedBy=multi-user.target

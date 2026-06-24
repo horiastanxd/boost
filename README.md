@@ -22,6 +22,7 @@ boost       # Maximum performance — gaming, compiling, ML inference
 powersave   # Efficient daily use — barely slower, 15–25°C cooler
 silent      # Overnight — quiet fans, priority process, minimum power
 restore     # Revert everything to your boot-time BIOS state
+auto        # Intelligent daemon — monitors load & temp, prompts when switching makes sense
 ```
 
 ---
@@ -280,6 +281,46 @@ sudo systemctl disable --now power-save-originals.service
 sudo rm /etc/systemd/system/power-save-originals.service
 sudo rm -rf /var/lib/power-profile
 ```
+
+---
+
+---
+
+## `auto` — Intelligent daemon
+
+```bash
+auto start      # enable + start background daemon
+auto stop       # stop daemon
+auto status     # current metrics + thresholds
+auto logs       # tail journalctl output
+auto config     # show active config
+```
+
+Monitors CPU temperature and load every 5 seconds. Reacts based on configurable thresholds:
+
+| Event | Action |
+|-------|--------|
+| Temp ≥ 85°C (CRITICAL) | **Auto-switch to powersave** + desktop notification — no prompt, immediate safety action |
+| Temp ≥ 78°C + profile=boost | Prompt: *"CPU at 82°C — switch to Powersave?"* (30s timeout, defaults to no) |
+| Load ≥ 75% for 60s + profile=powersave | Prompt: *"CPU at 80% load — switch to Boost?"* |
+| Load ≤ 8% for 5 min + profile=boost | Prompt: *"CPU idle — switch to Powersave?"* |
+
+Prompts appear as GNOME dialogs (zenity). Timeout of 30s with no answer = keep current profile. Prompts are throttled: maximum one every 5 minutes.
+
+**Config** (`/etc/boost-auto.conf`):
+
+```bash
+TEMP_CRITICAL=85       # °C: auto-switch threshold
+TEMP_HOT=78            # °C: prompt threshold
+LOAD_HIGH=75           # %: high load threshold
+LOAD_HIGH_DURATION=60  # seconds of sustained load before prompting
+LOAD_IDLE=8            # %: idle threshold
+LOAD_IDLE_DURATION=300 # seconds of idle before prompting
+PROMPT_COOLDOWN=300    # seconds between prompts
+POLL_INTERVAL=5        # measurement frequency
+```
+
+Runs as a systemd service. Detects Wayland and X11 sessions automatically.
 
 ---
 
