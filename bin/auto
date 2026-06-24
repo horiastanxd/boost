@@ -526,9 +526,14 @@ EOF
 
 open_as_user() {
     local url="$1"
+    if [[ "$EUID" -ne 0 ]]; then
+        xdg-open "$url" >/dev/null 2>&1 || true
+        return 0
+    fi
+    
     local user="${SUDO_USER:-$(logname 2>/dev/null || true)}"
-    if [[ -n "$user" ]]; then
-        sudo -u "$user" xdg-open "$url" >/dev/null 2>&1 || true
+    if [[ -n "$user" && "$user" != "root" ]]; then
+        sudo -u "$user" env "XDG_RUNTIME_DIR=/run/user/$(id -u "$user")" "DISPLAY=${DISPLAY:-:0}" "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}" "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$user")/bus" xdg-open "$url" >/dev/null 2>&1 || true
     else
         xdg-open "$url" >/dev/null 2>&1 || true
     fi
