@@ -466,17 +466,19 @@ Auto setup
 
 Choose how Auto should behave:
   1) Dynamic   - balanced suggestions, adapts to everyday workloads
-  2) Creator   - gaming/rendering limits, prioritizes performance
-  3) Quiet     - strict thermal/noise limits, best for meetings/library
-  4) Off       - disable auto mode completely
+  2) Gaming    - optimized for gaming sessions, quick to boost
+  3) Creator   - rendering/AI limits, prioritizes sustained performance
+  4) Quiet     - strict thermal/noise limits, best for meetings/library
+  5) Off       - disable auto mode completely
 EOF
     printf 'Choice [1]: '
     read -r choice
     case "${choice:-1}" in
         1) mode=dynamic ;;
-        2) mode=creator ;;
-        3) mode=quiet ;;
-        4) mode=off ;;
+        2) mode=gaming ;;
+        3) mode=creator ;;
+        4) mode=quiet ;;
+        5) mode=off ;;
         *) echo "Unknown choice, using dynamic."; mode=dynamic ;;
     esac
 
@@ -632,7 +634,7 @@ case "${1:-start}" in
         ;;
     mode)
         [[ $# -eq 1 ]] && { echo "Current mode: ${AUTO_MODE}"; echo "Available: dynamic, creator, quiet, off, custom"; exit 0; }
-        case "$2" in dynamic|creator|quiet|off) ;; *) echo "Use: dynamic, creator, quiet, off" >&2; exit 1 ;; esac
+        case "$2" in dynamic|gaming|creator|quiet|off) ;; *) echo "Use: dynamic, gaming, creator, quiet, off" >&2; exit 1 ;; esac
         need_root "$@"
         set_config_value AUTO_MODE "$2"
         if [[ "$2" == "off" ]]; then

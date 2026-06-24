@@ -105,6 +105,18 @@ def mode_thresholds(mode: str, config: dict[str, str] | None = None) -> dict[str
                 "promptCooldown": 900,
             }
         )
+    elif mode == "gaming":
+        thresholds.update(
+            {
+                "tempHot": 80,
+                "boostTempLimit": 80,
+                "loadHigh": 50,
+                "loadHighDuration": 30,
+                "loadIdle": 10,
+                "loadIdleDuration": 600,
+                "promptCooldown": 900,
+            }
+        )
     elif mode == "creator":
         thresholds.update(
             {
@@ -956,7 +968,7 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
       <div class="control-group" aria-labelledby="heading-auto-modes">
         <h2 id="heading-auto-modes" class="control-label" style="font-size:14px;color:var(--text-main);margin-bottom:4px;">🤖 Smart Auto Modes</h2>
         <div class="reason">
-          <strong style="color:var(--text-main);display:block;margin-bottom:4px;font-size:14px" id="decisionReason">Loading...</strong>
+          <strong style="color:var(--text-main);display:block;margin-bottom:4px;font-size:14px" id="decisionReasonCard">Loading...</strong>
         </div>
         <div class="actions">
           <button class="btn" id="mode-dynamic" data-action="auto-mode" data-value="dynamic" aria-label="Enable Dynamic Mode" title="Balanced suggestions adapted to everyday workloads">🧠 Dynamic</button>
@@ -1229,6 +1241,7 @@ function render(data) {
   $('summerNights').textContent = data.auto.summerSilentNights.toUpperCase();
 
   // Decision
+  $('decisionReasonCard').textContent = data.auto.decision;
   $('decisionReason').textContent = data.auto.decision;
   const t = data.auto.thresholds;
   $('tempHot').textContent = `${t.tempHot}°C`;

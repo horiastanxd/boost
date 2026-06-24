@@ -1,29 +1,34 @@
 #!/usr/bin/env bash
-# summer - hot-room Auto mode shortcut
+# summer - shortcut to enable/disable summer silent-nights mode
+# In hot rooms, Auto applies Eco Mode overnight during quiet hours.
+# Version: 1.2.0
 
 set -e
 
 case "${1:-}" in
     ""|on|start)
-        exec /usr/local/bin/auto mode summer
+        exec /usr/local/bin/auto summer-nights on
         ;;
     status)
         exec /usr/local/bin/auto status
         ;;
     off|stop)
-        exec /usr/local/bin/auto mode calm
+        exec /usr/local/bin/auto summer-nights off
         ;;
     --version)
-        echo "summer 1.0.0"
+        echo "summer 1.2.0"
         ;;
     --help|-h|help)
         cat <<'EOF'
 Usage: summer [on|off|status]
 
-Shortcut for hot-room Auto mode:
-  summer        enable Auto Summer mode
-  summer off    return Auto to Calm mode
-  summer status show Auto status
+Shortcut for summer silent-nights mode.
+When enabled, Auto applies Eco Mode overnight during quiet hours to
+reduce heat and fan noise in warm rooms.
+
+  summer        enable summer nights
+  summer off    disable summer nights
+  summer status show auto status
 EOF
         ;;
     *)

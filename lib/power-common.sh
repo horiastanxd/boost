@@ -4,10 +4,15 @@
 
 # shellcheck disable=SC2034
 # Sourced by profile scripts for --version.
-readonly VERSION="1.1.0"
+readonly VERSION="1.2.0"
 ORIGINALS_FILE="/var/lib/power-profile/originals.env"
 FAN_BACKUP="/var/lib/power-profile/fan-curve-backup.env"
-HWMON="/sys/class/hwmon/hwmon5"
+# Fan controller hwmon — discovered at source time, not hardcoded
+HWMON=""
+for _hwmon_dir in /sys/class/hwmon/hwmon*; do
+    [[ -f "${_hwmon_dir}/pwm1_auto_point1_pwm" ]] && HWMON="$_hwmon_dir" && break
+done
+unset _hwmon_dir
 PPD_BIN="$(command -v powerprofilesctl 2>/dev/null)"
 AUTO_CONF_FILE="/etc/boost-auto.conf"
 AUTO_SERVICE="boost-auto.service"

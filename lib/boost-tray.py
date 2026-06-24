@@ -232,7 +232,7 @@ class BoostTray:
         self.menu.append(auto_item)
 
         self.auto_mode_items = {}
-        for m, label in [("dynamic", "Dynamic"), ("creator", "Creator"), ("quiet", "Quiet"), ("off", "Off")]:
+        for m, label in [("dynamic", "Dynamic"), ("gaming", "Gaming"), ("creator", "Creator"), ("quiet", "Quiet"), ("off", "Off")]:
             item = Gtk.MenuItem(label=label)
             item.connect("activate", self.on_auto_mode, m)
             self.auto_menu.append(item)
