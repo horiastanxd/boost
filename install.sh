@@ -103,9 +103,17 @@ echo ""
 echo "Run 'powersave' now to start saving power."
 echo "Run 'auto start' to enable automatic switching."
 
+# Detect real user (sudo or pkexec)
+REAL_USER=""
 if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+    REAL_USER="$SUDO_USER"
+elif [ -n "$PKEXEC_UID" ]; then
+    REAL_USER=$(id -nu "$PKEXEC_UID")
+fi
+
+if [ -n "$REAL_USER" ]; then
     echo ""
-    echo "[install] Starting tray applet for user $SUDO_USER..."
+    echo "[install] Starting tray applet for user $REAL_USER..."
     pkill -f boost-tray || true
-    sudo -u "$SUDO_USER" env "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u $SUDO_USER)/bus" "DISPLAY=${DISPLAY:-:0}" "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}" "XDG_RUNTIME_DIR=/run/user/$(id -u $SUDO_USER)" nohup /usr/local/bin/boost-tray >/dev/null 2>&1 &
+    sudo -u "$REAL_USER" env "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$REAL_USER")/bus" "DISPLAY=${DISPLAY:-:0}" "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}" "XDG_RUNTIME_DIR=/run/user/$(id -u "$REAL_USER")" nohup /usr/local/bin/boost-tray >/dev/null 2>&1 &
 fi
