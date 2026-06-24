@@ -11,6 +11,7 @@ PID_FILE="$STATE_DIR/auto.pid"
 SERVICE="boost-auto.service"
 SNOOZE_FILE="$STATE_DIR/auto-snooze-until"
 SKIP_TODAY_FILE="$STATE_DIR/auto-skip-date"
+REPORT_BIN="/usr/local/bin/power-report"
 
 # Friendly defaults. Use `auto mode calm|friendly|active|quiet|off`.
 AUTO_MODE=friendly
@@ -25,10 +26,16 @@ LOAD_IDLE=8
 LOAD_IDLE_DURATION=600
 PROMPT_COOLDOWN=900
 POLL_INTERVAL=5
+STATS_INTERVAL=60
 
 if [[ -f "$CONF_FILE" ]]; then
     # shellcheck source=/etc/boost-auto.conf
     source /etc/boost-auto.conf
+fi
+
+if [[ -f /usr/local/lib/power-common.sh ]]; then
+    # shellcheck source=/dev/null
+    source /usr/local/lib/power-common.sh
 fi
 
 apply_mode_preset() {
@@ -110,7 +117,7 @@ format_seconds() {
 
 show_help() {
     cat <<'EOF'
-Usage: auto [start|stop|restart|status|logs|config|mode|quiet-hours|snooze|today-off|resume]
+Usage: auto [start|stop|restart|status|stats|report|logs|config|mode|quiet-hours|snooze|today-off|resume]
 
 Simple controls:
   auto mode calm        fewer suggestions, best for non-technical users
@@ -125,6 +132,8 @@ Quiet controls:
   auto snooze 2h
   auto today-off
   auto resume
+  auto stats
+  auto report
 
 Advanced users can still edit /etc/boost-auto.conf.
 EOF
@@ -201,6 +210,14 @@ case "${1:-start}" in
         ;;
     logs)
         journalctl -u "$SERVICE" -f --no-pager
+        exit 0
+        ;;
+    stats)
+        "$REPORT_BIN" --text
+        exit 0
+        ;;
+    report)
+        "$REPORT_BIN" --open
         exit 0
         ;;
     config)
@@ -422,6 +439,7 @@ high_since=0
 idle_since=0
 last_prompt=0
 last_auto=0
+last_stats=0
 
 while true; do
     sleep "$POLL_INTERVAL"
@@ -431,10 +449,15 @@ while true; do
     profile=$(powerprofilesctl get 2>/dev/null || echo "balanced")
     prompt_ok=$(( now - last_prompt > PROMPT_COOLDOWN ? 1 : 0 ))
 
+    if (( now - last_stats >= STATS_INTERVAL )) && declare -F record_power_sample >/dev/null; then
+        record_power_sample "$load"
+        last_stats=$now
+    fi
+
     if (( temp >= TEMP_CRITICAL )) && [[ "$profile" == "performance" ]] && [[ "${ALLOW_CRITICAL_AUTO}" == "yes" ]]; then
         if (( now - last_auto > 120 )); then
             logger -t boost-auto "critical heat ${temp}: auto powersave"
-            powersave >/dev/null 2>&1 || true
+            AUTO_HELPER_INTERNAL=1 powersave >/dev/null 2>&1 || true
             notify_plain "Calculatorul s-a incalzit prea tare" "Am trecut temporar pe un mod mai rece ca sa fie protejat." critical
             last_auto=$now
             last_prompt=$now

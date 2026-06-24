@@ -23,6 +23,8 @@ powersave   # Efficient daily use — barely slower, 15–25°C cooler
 silent      # Overnight — quiet fans, priority process, minimum power
 restore     # Revert everything to your boot-time BIOS state
 auto        # Intelligent daemon — monitors load & temp, prompts when switching makes sense
+auto stats  # Current power statistics in terminal
+auto report # Local HTML report with recent samples
 ```
 
 ---
@@ -67,6 +69,8 @@ powersave        # start here — good for 95% of daily use
 boost            # switch to when you need full power
 silent           # tonight, before you sleep
 restore          # back to BIOS defaults anytime
+auto mode calm   # optional: enable gentle automatic suggestions
+auto report      # generate and open a local web report
 ```
 
 All commands auto-elevate via `sudo` — no need to prefix them.
@@ -196,6 +200,41 @@ Restores all settings to the state captured at boot:
 
 ---
 
+### `auto` — Gentle helper + reports
+
+```bash
+auto mode calm       # rare suggestions, best default
+auto mode friendly   # balanced suggestions
+auto mode active     # faster suggestions for heavy work
+auto mode quiet      # no suggestions, only critical heat protection
+auto mode off        # disable auto mode completely
+auto stats           # print a current power snapshot
+auto report          # generate and open a local HTML report
+```
+
+Manual profile commands stay in control: running `boost` or `powersave`
+turns auto mode off, so the daemon will not fight your choice. Run
+`auto start` or `auto mode calm|friendly|active|quiet` to opt back in.
+
+Reports are generated under:
+
+```text
+/var/lib/power-profile/reports/latest.html
+```
+
+The daemon records a lightweight CSV sample about once per minute while
+it is running:
+
+```text
+/var/lib/power-profile/stats.csv
+```
+
+The report includes current profile, CPU load, CPU temperature, GPU
+temperature/power, RAPL limits, governor, EPP, turbo state, and recent
+history.
+
+---
+
 ## How it works
 
 ### RAPL power limits
@@ -244,6 +283,8 @@ Loop devices (snap/flatpak mounts) are excluded.
   silent                  # overnight profile
   restore                 # revert to boot state
   power-save-originals    # run by systemd at boot
+  auto                    # gentle automatic helper
+  power-report            # text/HTML power statistics
 
 /usr/local/lib/
   power-common.sh         # shared: safe_write, set_rapl, set_io_schedulers, show_status
@@ -251,6 +292,8 @@ Loop devices (snap/flatpak mounts) are excluded.
 /var/lib/power-profile/
   originals.env           # boot-time state (captured once by systemd service)
   fan-curve-backup.env    # fan curve backup (created when silent runs)
+  stats.csv               # lightweight history for reports
+  reports/latest.html     # latest generated web report
 
 /etc/systemd/system/
   power-save-originals.service   # one-shot, runs before basic.target

@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# power-report - text and HTML reports for boost power statistics
+# Version: 1.0.0
+
+set -euo pipefail
+
+# shellcheck source=/dev/null
+source /usr/local/lib/power-common.sh
+
+REPORT_DIR="/var/lib/power-profile/reports"
+REPORT_FILE=""
+OPEN_REPORT=0
+TEXT_ONLY=0
+HISTORY_ROWS=120
+
+usage() {
+    cat <<'EOF'
+Usage: power-report [--text] [--open] [--output FILE] [--history ROWS]
+
+Examples:
+  power-report --text
+  power-report --open
+  power-report --output /tmp/boost-report.html
+EOF
+}
+
+if [[ $EUID -ne 0 ]]; then
+    exec sudo "$0" "$@"
+fi
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --text)
+            TEXT_ONLY=1
+            shift
+            ;;
+        --open)
+            OPEN_REPORT=1
+            shift
+            ;;
+        --output)
+            REPORT_FILE="${2:-}"
+            [[ -n "$REPORT_FILE" ]] || { echo "--output needs a file" >&2; exit 1; }
+            shift 2
+            ;;
+        --history)
+            HISTORY_ROWS="${2:-120}"
+            [[ "$HISTORY_ROWS" =~ ^[0-9]+$ ]] || { echo "--history needs a number" >&2; exit 1; }
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+html_escape() {
+    sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'
+}
+
+record_power_sample
+
+latest_line=$(tail -n 1 "$STATS_FILE")
+IFS=',' read -r _epoch iso profile cpu_load cpu_temp gpu_temp gpu_power gpu_limit pl1 pl2 governor epp turbo <<< "$latest_line"
+
+if [[ "$TEXT_ONLY" == "1" ]]; then
+    cat <<EOF
+Power report
+
+Time:      ${iso}
+Profile:   ${profile}
+CPU:       ${cpu_load}% load, ${cpu_temp} C
+GPU:       ${gpu_temp} C, ${gpu_power} W / ${gpu_limit} W
+Limits:    PL1 ${pl1} W, PL2 ${pl2} W
+Governor:  ${governor}
+EPP:       ${epp}
+Turbo:     ${turbo}
+History:   ${STATS_FILE}
+EOF
+    exit 0
+fi
+
+mkdir -p "$REPORT_DIR"
+if [[ -z "$REPORT_FILE" ]]; then
+    REPORT_FILE="${REPORT_DIR}/report-$(date +%Y%m%d-%H%M%S).html"
+fi
+
+history_tmp=$(mktemp)
+trap 'rm -f "$history_tmp"' EXIT
+tail -n "$HISTORY_ROWS" "$STATS_FILE" > "$history_tmp"
+
+summary=$(awk -F, 'NR > 1 {
+    count++
+    cpu += $4
+    temp += $5
+    gpu += $7
+    if ($5 > max_temp) max_temp = $5
+    if ($4 > max_cpu) max_cpu = $4
+}
+END {
+    if (count == 0) count = 1
+    printf "%.0f,%.0f,%.1f,%.0f,%.0f", cpu / count, temp / count, gpu / count, max_temp, max_cpu
+}' "$history_tmp")
+IFS=',' read -r avg_cpu avg_temp avg_gpu max_temp max_cpu <<< "$summary"
+
+{
+cat <<EOF
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Boost Power Report</title>
+<style>
+:root{color-scheme:dark;--bg:#08111f;--panel:#0f1b2d;--muted:#8fa3bd;--text:#e7eef8;--line:#1f3350;--accent:#38bdf8;--ok:#2dd4bf;--warn:#fbbf24}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:1120px;margin:0 auto;padding:28px}
+h1{font-size:28px;margin:0 0 4px}
+.muted{color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:22px 0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+.label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.value{font-size:24px;font-weight:700;margin-top:6px}
+.value small{font-size:13px;color:var(--muted);font-weight:500}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--muted);font-size:12px;text-transform:uppercase}
+tr:last-child td{border-bottom:0}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#12324a;color:var(--accent)}
+</style>
+</head>
+<body>
+<main>
+<h1>Boost Power Report</h1>
+<div class="muted">Generated at $(date -Is). Source: $(printf '%s' "$STATS_FILE" | html_escape)</div>
+<section class="grid">
+<div class="card"><div class="label">Current profile</div><div class="value"><span class="pill">$(printf '%s' "$profile" | html_escape)</span></div></div>
+<div class="card"><div class="label">CPU now</div><div class="value">${cpu_load}% <small>${cpu_temp} C</small></div></div>
+<div class="card"><div class="label">GPU now</div><div class="value">${gpu_power} W <small>${gpu_temp} C</small></div></div>
+<div class="card"><div class="label">Power limits</div><div class="value">${pl1}/${pl2} W</div></div>
+<div class="card"><div class="label">Average CPU</div><div class="value">${avg_cpu}% <small>max ${max_cpu}%</small></div></div>
+<div class="card"><div class="label">Average temp</div><div class="value">${avg_temp} C <small>max ${max_temp} C</small></div></div>
+<div class="card"><div class="label">Average GPU power</div><div class="value">${avg_gpu} W</div></div>
+<div class="card"><div class="label">Turbo</div><div class="value">${turbo}</div></div>
+</section>
+<h2>Recent Samples</h2>
+<table>
+<thead><tr><th>Time</th><th>Profile</th><th>CPU</th><th>CPU temp</th><th>GPU</th><th>Limits</th><th>Governor</th><th>EPP</th><th>Turbo</th></tr></thead>
+<tbody>
+EOF
+
+tail -n "$HISTORY_ROWS" "$STATS_FILE" | awk -F, 'NR > 1 {
+    printf "<tr><td>%s</td><td>%s</td><td>%s%%</td><td>%s C</td><td>%s C / %s W</td><td>%s/%s W</td><td>%s</td><td>%s</td><td>%s</td></tr>\n", $2, $3, $4, $5, $6, $7, $9, $10, $11, $12, $13
+}'
+
+cat <<EOF
+</tbody>
+</table>
+</main>
+</body>
+</html>
+EOF
+} > "$REPORT_FILE"
+
+ln -sf "$REPORT_FILE" "${REPORT_DIR}/latest.html"
+echo "Report: ${REPORT_FILE}"
+
+if [[ "$OPEN_REPORT" == "1" ]]; then
+    open_user="${SUDO_USER:-}"
+    if [[ -n "$open_user" ]]; then
+        sudo -u "$open_user" xdg-open "$REPORT_FILE" >/dev/null 2>&1 || true
+    else
+        xdg-open "$REPORT_FILE" >/dev/null 2>&1 || true
+    fi
+fi

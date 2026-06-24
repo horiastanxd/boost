@@ -11,6 +11,7 @@ HWMON="/sys/class/hwmon/hwmon5"
 PPD_BIN="$(command -v powerprofilesctl 2>/dev/null)"
 AUTO_CONF_FILE="/etc/boost-auto.conf"
 AUTO_SERVICE="boost-auto.service"
+STATS_FILE="/var/lib/power-profile/stats.csv"
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -62,6 +63,114 @@ set_cpu_profile() {
         echo "$epp" > "$epp_file"
     done
     echo "[CPU]  governor=$gov, EPP=$epp (manual)"
+}
+
+find_hwmon_by_name() {
+    local pattern="$1" hwmon name
+    for hwmon in /sys/class/hwmon/hwmon*; do
+        [[ -r "${hwmon}/name" ]] || continue
+        name=$(cat "${hwmon}/name" 2>/dev/null)
+        [[ "$name" =~ $pattern ]] && printf '%s\n' "$hwmon" && return 0
+    done
+    return 1
+}
+
+get_cpu_temp_c() {
+    local hwmon label_file input_file label raw
+    hwmon=$(find_hwmon_by_name '^(coretemp|k10temp)$' 2>/dev/null || true)
+    [[ -z "$hwmon" ]] && return 1
+
+    for label_file in "$hwmon"/temp*_label; do
+        [[ -r "$label_file" ]] || continue
+        label=$(cat "$label_file" 2>/dev/null)
+        case "$label" in
+            "Package id 0"|"Tctl"|"Tdie")
+                input_file="${label_file%_label}_input"
+                raw=$(cat "$input_file" 2>/dev/null || echo 0)
+                echo $(( raw / 1000 ))
+                return 0
+                ;;
+        esac
+    done
+
+    raw=$(cat "$hwmon/temp1_input" 2>/dev/null || echo 0)
+    [[ "$raw" -gt 0 ]] || return 1
+    echo $(( raw / 1000 ))
+}
+
+read_cpu_totals() {
+    local cpu user nice system idle iowait irq softirq steal guest guest_nice
+    read -r cpu user nice system idle iowait irq softirq steal guest guest_nice < /proc/stat
+    local total=$(( user + nice + system + idle + iowait + irq + softirq + steal + guest + guest_nice ))
+    local idle_total=$(( idle + iowait ))
+    printf '%s %s\n' "$total" "$idle_total"
+}
+
+get_cpu_load_percent() {
+    local total_a idle_a total_b idle_b delta_total delta_idle
+    read -r total_a idle_a < <(read_cpu_totals)
+    sleep 0.2
+    read -r total_b idle_b < <(read_cpu_totals)
+    delta_total=$(( total_b - total_a ))
+    delta_idle=$(( idle_b - idle_a ))
+    [[ "$delta_total" -le 0 ]] && echo 0 && return
+    echo $(( (delta_total - delta_idle) * 100 / delta_total ))
+}
+
+get_rapl_limit_w() {
+    local constraint="$1" value
+    value=$(cat "/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_${constraint}_power_limit_uw" 2>/dev/null || echo 0)
+    echo $(( value / 1000000 ))
+}
+
+get_power_profile() {
+    powerprofilesctl get 2>/dev/null || echo unknown
+}
+
+get_governor() {
+    cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown
+}
+
+get_epp() {
+    cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null || echo unknown
+}
+
+get_turbo_state() {
+    [[ "$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null)" = "0" ]] && echo ON || echo OFF
+}
+
+get_gpu_csv() {
+    nvidia-smi --query-gpu=temperature.gpu,power.draw,power.limit \
+        --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ' || true
+}
+
+ensure_stats_file() {
+    mkdir -p "$(dirname "$STATS_FILE")"
+    if [[ ! -f "$STATS_FILE" ]]; then
+        echo "epoch,iso,profile,cpu_load,cpu_temp,gpu_temp,gpu_power,gpu_limit,pl1,pl2,governor,epp,turbo" > "$STATS_FILE"
+    fi
+}
+
+record_power_sample() {
+    local cpu_load="${1:-}" gpu_csv gpu_temp gpu_power gpu_limit
+    [[ -n "$cpu_load" ]] || cpu_load=$(get_cpu_load_percent)
+    gpu_csv=$(get_gpu_csv)
+    IFS=',' read -r gpu_temp gpu_power gpu_limit <<< "$gpu_csv"
+    ensure_stats_file
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "$(date +%s)" \
+        "$(date -Is)" \
+        "$(get_power_profile)" \
+        "${cpu_load:-0}" \
+        "$(get_cpu_temp_c 2>/dev/null || echo 0)" \
+        "${gpu_temp:-0}" \
+        "${gpu_power:-0}" \
+        "${gpu_limit:-0}" \
+        "$(get_rapl_limit_w 0)" \
+        "$(get_rapl_limit_w 1)" \
+        "$(get_governor)" \
+        "$(get_epp)" \
+        "$(get_turbo_state)" >> "$STATS_FILE"
 }
 
 save_originals() {
@@ -169,19 +278,18 @@ reset_process_priorities() {
 show_status() {
     echo ""
     echo "--- Status ---"
-    sensors 2>/dev/null | grep -E "Package id|Core 0:|Core 28:|fan2" || true
-    local gpu_info
-    gpu_info=$(nvidia-smi --query-gpu=temperature.gpu,power.draw,power.limit --format=csv,noheader 2>/dev/null)
-    [[ -n "$gpu_info" ]] && echo "GPU:      $gpu_info"
-    if [[ -n "$PPD_BIN" ]]; then
-        echo "PPD:      $($PPD_BIN get 2>/dev/null)"
-    fi
-    echo "Governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)"
-    echo "EPP:      $(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null)"
-    echo "Turbo:    $([ "$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null)" = "0" ] && echo ON || echo OFF)"
-    local pl1 pl2
-    pl1=$(( $(cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw 2>/dev/null || echo 0) / 1000000 ))
-    pl2=$(( $(cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw 2>/dev/null || echo 0) / 1000000 ))
+    local gpu_csv gpu_temp gpu_power gpu_limit pl1 pl2
+    gpu_csv=$(get_gpu_csv)
+    IFS=',' read -r gpu_temp gpu_power gpu_limit <<< "$gpu_csv"
+    echo "CPU load: $(get_cpu_load_percent)%"
+    echo "CPU temp: $(get_cpu_temp_c 2>/dev/null || echo 0) C"
+    [[ -n "$gpu_csv" ]] && echo "GPU:      ${gpu_temp} C, ${gpu_power} W / ${gpu_limit} W"
+    echo "PPD:      $(get_power_profile)"
+    echo "Governor: $(get_governor)"
+    echo "EPP:      $(get_epp)"
+    echo "Turbo:    $(get_turbo_state)"
+    pl1=$(get_rapl_limit_w 0)
+    pl2=$(get_rapl_limit_w 1)
     echo "PL1/PL2:  ${pl1}W / ${pl2}W"
     echo "THP:      $(grep -oP '\[\K[^\]]+' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)"
 }

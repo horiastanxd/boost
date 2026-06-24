@@ -10,7 +10,7 @@ fi
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "[install] Copying scripts to /usr/local/bin..."
-for bin in boost powersave silent restore power-save-originals auto; do
+for bin in boost powersave silent restore power-save-originals auto power-report; do
     install -m 755 "$REPO_DIR/bin/$bin" /usr/local/bin/"$bin"
     echo "  -> /usr/local/bin/$bin"
 done
@@ -40,6 +40,7 @@ echo ""
 echo "[install] Done. Commands available:"
 echo "  boost | powersave | silent | restore    — manual profiles"
 echo "  auto start | stop | status | logs       — intelligent auto-daemon"
+echo "  auto stats | auto report                — text and web statistics"
 echo ""
 echo "Run 'powersave' now to start saving power."
 echo "Run 'auto start' to enable automatic switching."
