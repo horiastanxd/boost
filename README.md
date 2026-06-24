@@ -1,56 +1,70 @@
 <div align="center">
   <br/>
-  
+
   # ⚡ Boost
-  **Intelligent, premium Linux power management for Intel + NVIDIA desktops.**
+  **Intelligent, premium Linux power management for Intel + AMD + NVIDIA desktops.**
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
   [![ShellCheck](https://github.com/horiastanxd/boost/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/horiastanxd/boost/actions/workflows/shellcheck.yml)
+  [![Python](https://img.shields.io/badge/Python-3.8+-3776AB?logo=python&logoColor=white)](lib/boost-web.py)
   [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnubash&logoColor=white)](bin/boost)
   [![Platform: Linux](https://img.shields.io/badge/Platform-Linux-FCC624?logo=linux&logoColor=black)](https://kernel.org)
 
   *Manual profiles, autonomous smart modes, and a gorgeous local web dashboard. Fully reversible.*<br/>
   **GNOME Power Mode indicator stays in sync automatically.**
+
+  <img src="assets/demo.gif" alt="Boost dashboard demo" width="100%">
 </div>
 
 <br/>
 
 ---
 
-## 🌟 The Ultimate Linux Power Experience
-Most Linux desktops run at full BIOS power limits all the time. On modern hardware like the i7-14700K, this means thermal spikes, unnecessary fan noise, and high idle temperatures reaching up to 89°C just from context switching. 
+## 🌟 Why Boost?
 
-**Boost** brings intelligent, premium power management to your Linux desktop. It offers per-use-case control over the CPU governor, energy performance hints (EPP), RAPL power limits, GPU wattage, I/O scheduler, and fan curves — safely and reversibly.
+Most Linux desktops run at full BIOS power limits all the time. On modern hardware like the i7-14700K, this means thermal spikes, unnecessary fan noise, and idle temperatures up to **89°C** just from context switching.
+
+**Boost** brings intelligent, premium power management to your Linux desktop — per-use-case control over CPU governor, EPP, RAPL power limits, GPU wattage, I/O scheduler, and fan curves. Safely and reversibly.
 
 ### 📉 Real-World Results
-Tested on an **i7-14700KF + RTX 5060 Ti** on Ubuntu 24.04 (one case fan):
+Tested on **i7-14700KF + RTX 5060 Ti** on Ubuntu 24.04 (one case fan):
 
 | Profile | Package Temp | Fan Noise | PL1 (Sustained) | PL2 (Burst) | GPU Limit |
-|---------|-------------|-----------|-----|-----|-------|
+|---------|-------------|-----------|-----------------|-------------|-----------|
 | 🔴 **BIOS default** | **89°C** | 🌪️ Loud | 135 W | 253 W | 180 W |
 | 🚀 **Performance** | 63°C | 💨 Moderate | 125 W | 253 W | 180 W |
 | ⚖️ **Balanced** | 54°C | 🤫 Quiet | 125 W | 150 W | 150 W |
 | 🍃 **Eco Mode** | **~50°C** | 🪶 Near-silent | 65 W | 75 W | 150 W |
 
-*A 35°C drop purely through smart software algorithms. No undervolting required.*
+*A 35°C drop purely through smart software. No undervolting required.*
 
 ---
 
-## 🎨 Premium Interfaces
-We believe system tools should be beautiful. Boost comes with two stunning, modern ways to control your machine:
+## 🆚 How Boost Compares
 
-### 🖥️ The Web Dashboard
-A sleek, realtime, glassmorphic local dashboard. Change profiles, tweak smart modes, and view live telemetry (CPU, GPU, RAM) at `http://localhost:8765`.
-<img src="assets/dashboard.png" alt="Web Dashboard" width="100%">
-
-### 💧 The System Tray Applet
-Fast, seamless profile switching right from your desktop environment panel.
-<img src="assets/tray.png" alt="Tray Applet" width="100%">
+| Feature | **Boost** | TLP | auto-cpufreq | powertop |
+|---------|-----------|-----|--------------|---------|
+| Web dashboard | ✅ | ❌ | ❌ | ❌ |
+| Live telemetry chart | ✅ | ❌ | ❌ | ❌ |
+| System tray applet | ✅ | ❌ | ❌ | ❌ |
+| Game mode auto-detect | ✅ | ❌ | ❌ | ❌ |
+| Desktop notifications | ✅ | ❌ | ✅ | ❌ |
+| GNOME Power sync | ✅ | ❌ | ✅ | ❌ |
+| RAPL power limits | ✅ | ✅ | ❌ | ✅ |
+| GPU power limits | ✅ | ❌ | ❌ | ❌ |
+| Per-use-case profiles | ✅ | ❌ | ❌ | ❌ |
+| Fully reversible | ✅ | ✅ | ✅ | ✅ |
 
 ---
 
-## 🛠️ Quick Start
+## 🚀 Quick Start
 
+**One line install:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/horiastanxd/boost/main/install.sh | sudo bash
+```
+
+Or manually:
 ```bash
 git clone https://github.com/horiastanxd/boost
 cd boost
@@ -72,13 +86,28 @@ auto doctor      # 🩺 Check if sensors and drivers work
 
 ---
 
-## 🤖 Smart Auto Modes (Personas)
-Manual control is great, but autonomous logic is better. `boost-auto` runs a lightweight daemon that monitors your thermal and load states every 5 seconds. Instead of tweaking numbers, select a persona that matches your workflow:
+## 🎨 Premium Interfaces
+
+### 🖥️ The Web Dashboard
+A sleek, realtime, glassmorphic local dashboard. Change profiles, tweak smart modes, and view live telemetry at `http://localhost:8765`.
+
+<img src="assets/dashboard.png" alt="Web Dashboard" width="100%">
+
+### 💧 The System Tray Applet
+Fast, seamless profile switching right from your desktop environment panel.
+
+<img src="assets/tray.png" alt="Tray Applet" width="100%">
+
+---
+
+## 🤖 Smart Auto Modes
+
+Manual control is great, but autonomous logic is better. `boost-auto` runs a lightweight Python daemon that monitors your thermal and load states every 5 seconds. Instead of tweaking numbers, select a persona that matches your workflow:
 
 - 🧠 **Dynamic (Default)**: Adapts to everyday workloads. Automatically limits spikes during idle usage but prompts you for Boost if heavy load persists.
-- 🎮 **Gaming**: Optimized for game sessions. Much lower CPU load thresholds required to activate Boost, but respects thermal safety constraints.
-- 🎬 **Creator**: Designed for 3D rendering and AI training. Prioritizes maximum thermal limits, holding performance states for much longer without interruption.
-- 🤫 **Quiet**: Perfect for libraries, meetings, or leaving the PC on overnight. Enforces strict thermal/noise ceilings and restricts sudden bursts of power.
+- 🎮 **Gaming**: Auto-detects game processes (Steam, Wine, CS2, Dota2...) and switches to Performance instantly. Respects thermal safety.
+- 🎬 **Creator**: Designed for 3D rendering and AI training. Prioritizes maximum thermal limits, holding performance states much longer.
+- 🤫 **Quiet**: Perfect for libraries, meetings, or overnight. Enforces strict thermal/noise ceilings.
 
 ```bash
 auto mode dynamic    # Enable everyday balanced suggestions
@@ -90,38 +119,38 @@ auto mode quiet      # Enable strict thermal constraints
 ---
 
 ## ⚙️ Requirements
-Boost relies on standard Linux power APIs to orchestrate its magic:
 
 | Component | Requirement |
 |-----------|-------------|
-| CPU driver | `intel_pstate` (Intel 6th gen+) |
-| GPU | NVIDIA with `nvidia-smi` |
-| GNOME sync | `power-profiles-daemon` + `powerprofilesctl` *(auto-detected, optional)* |
+| CPU driver | `intel_pstate` (Intel 6th gen+) or `amd_pstate` (Zen 2+) |
+| GPU | NVIDIA with `nvidia-smi` *(optional)* |
+| GNOME sync | `power-profiles-daemon` + `powerprofilesctl` *(optional)* |
 | Fan control | `nct6798` or compatible SuperIO *(optional)* |
 | Privileges | sudo |
 
 Check your compatibility in one line:
 ```bash
-cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver  # expects intel_pstate
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver  # expects intel_pstate or amd_pstate
 nvidia-smi -L                                             # expects GPU list
 ls /sys/class/powercap/intel-rapl/                        # expects RAPL available
 ```
 
-> **AMD users:** RAPL and fan control work identically. Replace governor/EPP logic with `amd_pstate` equivalents. Pull requests are highly welcome!
+> **AMD users:** RAPL and fan control work identically. `amd_pstate` governor/EPP logic is supported. Pull requests welcome!
 
 ---
 
 ## 🛡️ Safety & Architecture
-We don't mess around with hardware safety. 
 
 - **RAPL Bounds Checking:** Every power limit modification reads the `constraint_*_max_power_uw` from your CPU and clamps values *before* writing.
-- **Hardware Fan Authority:** The `Eco Mode` (silent) shifts the Smart Fan IV PWM curve, but the motherboard retains ultimate thermal authority. If the CPU reaches 75°C+, the fans will blast to 100% regardless of the software curve.
-- **Boot Persistence:** Profile changes are ephemeral by default. A dedicated `systemd` service (`power-save-originals.service`) captures your BIOS state at boot, ensuring `restore` always works and a reboot always resets your system to factory defaults.
+- **Hardware Fan Authority:** Eco Mode shifts the Smart Fan IV PWM curve, but the motherboard retains ultimate thermal authority. If the CPU reaches 75°C+, fans blast to 100% regardless.
+- **Boot Persistence:** Profile changes are ephemeral by default. A `systemd` service (`power-save-originals.service`) captures your BIOS state at boot — `restore` always works, reboot always resets to factory defaults.
+- **Thread-safe daemon:** The Python web server and background daemon are fully thread-safe with proper lock guards on all shared state.
 
 ---
 
 ## 🗑️ Uninstall
-Reverting is easy and leaves no trace behind:
+
+Reverting is easy and leaves no trace:
 ```bash
 sudo rm /usr/local/bin/{boost,powersave,silent,restore,power-save-originals,summer,auto,power-report,boost-web}
 sudo rm /usr/local/lib/power-common.sh
