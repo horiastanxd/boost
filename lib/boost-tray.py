@@ -18,6 +18,32 @@ CONF_FILE = Path("/etc/boost-auto.conf")
 def run_cmd(cmd):
     subprocess.Popen(cmd, shell=True, env=dict(os.environ, AUTO_HELPER_INTERNAL="1"))
 
+def open_dashboard(_widget=None):
+    """Open the web dashboard in the user's browser, trying multiple strategies."""
+    url = "http://127.0.0.1:8765"
+    env = os.environ.copy()
+    
+    # Strategy 1: Find the actual browser binary and launch directly
+    browsers = [
+        'brave-browser', 'brave', 'google-chrome', 'google-chrome-stable',
+        'chromium-browser', 'chromium', 'firefox', 'firefox-esr',
+        'microsoft-edge', 'opera', 'vivaldi',
+    ]
+    for browser in browsers:
+        try:
+            path = subprocess.check_output(['which', browser], stderr=subprocess.DEVNULL, text=True).strip()
+            if path:
+                subprocess.Popen([path, url], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+        except Exception:
+            continue
+    
+    # Strategy 2: xdg-open as fallback
+    try:
+        subprocess.Popen(['xdg-open', url], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
 def read_text(path, default="unknown"):
     try:
         with open(path, 'r', encoding='utf-8') as f:
@@ -137,7 +163,7 @@ class BoostTray:
         self.menu.append(Gtk.SeparatorMenuItem())
         
         dash_item = Gtk.MenuItem(label="📊 Open Web Dashboard")
-        dash_item.connect("activate", lambda w: Gtk.show_uri_on_window(None, "http://127.0.0.1:8765", Gdk.CURRENT_TIME))
+        dash_item.connect("activate", open_dashboard)
         self.menu.append(dash_item)
         
         quit_item = Gtk.MenuItem(label="Quit Tray")

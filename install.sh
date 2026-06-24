@@ -74,6 +74,8 @@ install -m 644 "$REPO_DIR/systemd/boost-web.service" \
     /etc/systemd/system/boost-web.service
 systemctl daemon-reload
 systemctl enable power-save-originals.service
+systemctl enable --now boost-web.service
+echo "  -> Web dashboard enabled and started: http://127.0.0.1:8765"
 
 echo "[install] Installing udev rules..."
 install -m 644 "$REPO_DIR/systemd/99-boost-power.rules" \
