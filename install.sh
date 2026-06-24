@@ -45,6 +45,8 @@ done
 echo "[install] Copying lib to /usr/local/lib..."
 install -m 644 "$REPO_DIR/lib/power-common.sh" /usr/local/lib/power-common.sh
 install -m 644 "$REPO_DIR/lib/boost-web.py" /usr/local/lib/boost-web.py
+install -m 755 "$REPO_DIR/lib/boost-daemon.py" /usr/local/lib/boost-daemon.py
+
 
 echo "[install] Copying shell autocompletions..."
 mkdir -p /usr/share/bash-completion/completions
