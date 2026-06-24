@@ -78,7 +78,7 @@ class BoostTray:
     def __init__(self):
         self.indicator = AyatanaAppIndicator3.Indicator.new(
             "boost-tray",
-            "indicator-cpufreq",  # system icon fallback
+            "power-profile-balanced-symbolic",
             AyatanaAppIndicator3.IndicatorCategory.SYSTEM_SERVICES
         )
         self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
@@ -174,11 +174,11 @@ class BoostTray:
         return True
         
     def apply_status(self, temp, load, prof, amode):
-        icon = "indicator-cpufreq"
-        if prof == "performance": icon = "weather-clear"
-        elif prof == "power-saver": icon = "weather-snow"
+        icon = "power-profile-balanced-symbolic"
+        if prof == "performance": icon = "power-profile-performance-symbolic"
+        elif prof == "power-saver": icon = "power-profile-power-saver-symbolic"
         
-        if temp > 80: icon = "software-update-urgent"
+        if temp > 80: icon = "dialog-warning-symbolic"
         
         self.indicator.set_icon_full(icon, "Boost Status")
         
