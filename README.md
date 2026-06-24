@@ -76,12 +76,14 @@ auto doctor      # 🩺 Check if sensors and drivers work
 Manual control is great, but autonomous logic is better. `boost-auto` runs a lightweight daemon that monitors your thermal and load states every 5 seconds. Instead of tweaking numbers, select a persona that matches your workflow:
 
 - 🧠 **Dynamic (Default)**: Adapts to everyday workloads. Automatically limits spikes during idle usage but prompts you for Boost if heavy load persists.
-- 🎬 **Creator**: Designed for gaming, 3D rendering, and AI training. Prioritizes maximum thermal limits, holding performance states for much longer without interruption.
+- 🎮 **Gaming**: Optimized for game sessions. Much lower CPU load thresholds required to activate Boost, but respects thermal safety constraints.
+- 🎬 **Creator**: Designed for 3D rendering and AI training. Prioritizes maximum thermal limits, holding performance states for much longer without interruption.
 - 🤫 **Quiet**: Perfect for libraries, meetings, or leaving the PC on overnight. Enforces strict thermal/noise ceilings and restricts sudden bursts of power.
 
 ```bash
 auto mode dynamic    # Enable everyday balanced suggestions
-auto mode creator    # Enable gaming/rendering optimizations
+auto mode gaming     # Enable gaming optimizations
+auto mode creator    # Enable AI/rendering constraints
 auto mode quiet      # Enable strict thermal constraints
 ```
 

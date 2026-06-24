@@ -96,6 +96,12 @@ class BoostDaemon:
             self.load_high, self.load_high_duration = 75, 120
             self.load_idle, self.load_idle_duration = 8, 600
             self.prompt_cooldown = 900
+        elif self.mode == "gaming":
+            # Baseline for gaming, allows higher temps, quicker boosting
+            self.temp_hot, self.boost_temp_limit = 80, 80
+            self.load_high, self.load_high_duration = 50, 30
+            self.load_idle, self.load_idle_duration = 10, 600
+            self.prompt_cooldown = 900
         elif self.mode == "creator":
             # For AI training / rendering: high sustained load required before boosting,
             # high temp limits, very long idle required before cooling down.

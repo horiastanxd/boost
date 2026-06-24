@@ -373,7 +373,7 @@ def status_payload() -> dict[str, Any]:
             "quietEnd": config.get("QUIET_HOURS_END", "08:00"),
             "summerSilentNights": config.get("SUMMER_SILENT_NIGHTS", "no"),
             "thresholds": thresholds,
-            "modes": [mode_thresholds(item, config) for item in ("dynamic", "creator", "quiet", "off")],
+            "modes": [mode_thresholds(item, config) for item in ("dynamic", "gaming", "creator", "quiet", "off")],
             "pause": pause,
             "ambient": ambient,
             "decision": decision_reason(mode, profile, cpu_temp, cpu_load, thresholds, pause),
@@ -396,7 +396,7 @@ def status_payload() -> dict[str, Any]:
 
 
 def run_action(action: str, value: str | None = None) -> dict[str, Any]:
-    allowed_modes = {"dynamic", "creator", "quiet", "off"}
+    allowed_modes = {"dynamic", "gaming", "creator", "quiet", "off"}
     allowed_durations = {"30m", "1h", "2h", "4h"}
     if action == "boost":
         result = run(["/usr/local/bin/boost"], timeout=30)
@@ -800,7 +800,8 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
         </div>
         <div class="actions">
           <button class="btn" id="mode-dynamic" data-action="auto-mode" data-value="dynamic" aria-label="Enable Dynamic Mode" title="Balanced suggestions adapted to everyday workloads">🧠 Dynamic</button>
-          <button class="btn" id="mode-creator" data-action="auto-mode" data-value="creator" aria-label="Enable Creator Mode" title="Optimized for gaming, 3D rendering, and AI training limits">🎬 Creator (AI/Render)</button>
+          <button class="btn" id="mode-gaming" data-action="auto-mode" data-value="gaming" aria-label="Enable Gaming Mode" title="Optimized for gaming sessions">🎮 Gaming</button>
+          <button class="btn" id="mode-creator" data-action="auto-mode" data-value="creator" aria-label="Enable Creator Mode" title="Optimized for 3D rendering and AI training limits">🎬 Creator (Render/AI)</button>
           <button class="btn" id="mode-quiet" data-action="auto-mode" data-value="quiet" aria-label="Enable Quiet Mode" title="Strict low noise and heat profile">🤫 Quiet</button>
           <button class="btn" id="mode-off" data-action="auto-mode" data-value="off" style="color:var(--color-danger)" aria-label="Disable Auto Mode" title="Disable background automation daemon completely">🚫 Off</button>
         </div>
@@ -1151,7 +1152,7 @@ async function sendAction(action, value = null) {
       if ($('profile')) $('profile').textContent = profileNames[action] || action;
     }
   } else if (action === 'auto-mode') {
-    ['dynamic','creator','quiet','off'].forEach(m => { const b = $(`mode-${m}`); if(b) b.classList.remove('active-preset'); });
+    ['dynamic','gaming','creator','quiet','off'].forEach(m => { const b = $(`mode-${m}`); if(b) b.classList.remove('active-preset'); });
     $(`mode-${value}`)?.classList.add('active-preset');
     if ($('autoMode')) $('autoMode').textContent = value;
     // Also update table row highlight

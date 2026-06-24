@@ -77,6 +77,15 @@ apply_mode_preset() {
             LOAD_IDLE_DURATION=600
             PROMPT_COOLDOWN=900
             ;;
+        gaming)
+            TEMP_HOT=80
+            BOOST_TEMP_LIMIT=80
+            LOAD_HIGH=50
+            LOAD_HIGH_DURATION=30
+            LOAD_IDLE=10
+            LOAD_IDLE_DURATION=600
+            PROMPT_COOLDOWN=900
+            ;;
         creator)
             TEMP_HOT=82
             BOOST_TEMP_LIMIT=82
@@ -175,13 +184,14 @@ refresh_mode_settings() {
 }
 
 mode_description() {
-    case "$1" in
+    case "${1:-dynamic}" in
         dynamic) echo "balanced everyday" ;;
+        gaming)  echo "optimized for games" ;;
         creator) echo "gaming/rendering limits" ;;
-        quiet) echo "strictly low noise/heat" ;;
-        off) echo "disabled" ;;
-        custom) echo "advanced config values" ;;
-        *) echo "unknown" ;;
+        quiet)   echo "strictly low noise/heat" ;;
+        off)     echo "disabled" ;;
+        custom)  echo "advanced config values" ;;
+        *)       echo "unknown" ;;
     esac
 }
 
@@ -201,7 +211,7 @@ print_mode_row() {
 show_modes() {
     echo "Auto mode presets"
     echo ""
-    for mode in dynamic creator quiet off; do
+    for mode in dynamic gaming creator quiet off; do
         print_mode_row "$mode"
     done
 }
@@ -270,7 +280,8 @@ Simple controls:
   auto on               enable dynamic auto mode
   auto off              disable auto mode
   auto mode dynamic     balanced suggestions, adapts to everyday workloads
-  auto mode creator     gaming/rendering limits, prioritizes performance
+  auto mode gaming      optimized limits for gaming sessions
+  auto mode creator     rendering limits, prioritizes performance
   auto mode quiet       strict thermal/noise limits, best for meetings/library
   auto mode off         turn auto mode off completely
 
@@ -542,7 +553,7 @@ case "${1:-start}" in
         "$0" mode dynamic
         exit 0
         ;;
-    off|dynamic|creator|quiet)
+    off|dynamic|gaming|creator|quiet)
         "$0" mode "$1"
         exit 0
         ;;
