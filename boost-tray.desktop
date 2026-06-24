@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Boost Power Tray
+Comment=System tray indicator for Boost power manager
+Exec=/usr/local/bin/boost-tray
+Icon=indicator-cpufreq
+Terminal=false
+Type=Application
+Categories=System;Settings;HardwareSettings;
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel

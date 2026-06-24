@@ -46,6 +46,7 @@ echo "[install] Copying lib to /usr/local/lib..."
 install -m 644 "$REPO_DIR/lib/power-common.sh" /usr/local/lib/power-common.sh
 install -m 644 "$REPO_DIR/lib/boost-web.py" /usr/local/lib/boost-web.py
 install -m 755 "$REPO_DIR/lib/boost-daemon.py" /usr/local/lib/boost-daemon.py
+install -m 755 "$REPO_DIR/lib/boost-tray.py" /usr/local/bin/boost-tray
 
 
 echo "[install] Copying shell autocompletions..."
@@ -55,9 +56,11 @@ for cmd in boost powersave silent restore summer; do
     ln -sf auto /usr/share/bash-completion/completions/"$cmd"
 done
 
-echo "[install] Installing desktop app launcher..."
+echo "[install] Installing desktop app launcher & tray autostart..."
 mkdir -p /usr/local/share/applications
+mkdir -p /etc/xdg/autostart
 install -m 644 "$REPO_DIR/boost-dashboard.desktop" /usr/local/share/applications/boost-dashboard.desktop
+install -m 644 "$REPO_DIR/boost-tray.desktop" /etc/xdg/autostart/boost-tray.desktop
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/local/share/applications >/dev/null 2>&1 || true
 fi

@@ -496,9 +496,16 @@ table{width:100%;border-collapse:collapse;background:rgba(15,23,42,0.3)}
 th,td{text-align:left;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.05);white-space:nowrap}
 th{color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:0.06em;background:rgba(255,255,255,0.02)}
 tr:last-child td{border-bottom:0}tr:hover td{background:rgba(255,255,255,0.01)}
+#toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
+.toast { background: var(--panel-bg); backdrop-filter: blur(16px); border: 1px solid var(--panel-border); border-left: 4px solid var(--accent); padding: 16px 20px; border-radius: 12px; color: #fff; box-shadow: 0 10px 30px rgba(0,0,0,0.3); font-weight: 500; font-size: 14px; opacity: 0; transform: translateY(20px); animation: toast-in 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+.toast.error { border-left-color: var(--color-danger); }
+.toast.hide { animation: toast-out 0.3s ease forwards; }
+@keyframes toast-in { to { opacity: 1; transform: translateY(0); } }
+@keyframes toast-out { to { opacity: 0; transform: translateY(20px); } }
 </style>
 </head>
 <body>
+<div id="toast-container"></div>
 <main>
 <div class="top">
   <div>
@@ -592,7 +599,6 @@ tr:last-child td{border-bottom:0}tr:hover td{background:rgba(255,255,255,0.01)}
         </div>
       </div>
 
-      <div id="message" class="message" role="status" aria-live="polite"></div>
     </section>
 
     <section class="card">
@@ -745,7 +751,6 @@ tr:last-child td{border-bottom:0}tr:hover td{background:rgba(255,255,255,0.01)}
 
 <script>
 const $ = (id) => document.getElementById(id)
-const message = $('message')
 
 function secondsText(seconds) {
   if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
@@ -753,10 +758,31 @@ function secondsText(seconds) {
   return `${seconds}s`
 }
 
+function showToast(text, isError = false) {
+  const container = $('toast-container') || (() => {
+    const c = document.createElement('div');
+    c.id = 'toast-container';
+    document.body.appendChild(c);
+    return c;
+  })();
+  const toast = document.createElement('div');
+  toast.className = isError ? 'toast error' : 'toast';
+  toast.textContent = text;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.classList.add('hide');
+    setTimeout(() => toast.remove(), 300);
+  }, 4000);
+}
+
 function setMessage(text, isError = false) {
-  message.textContent = text
-  message.className = isError ? 'message error' : 'message'
-  setTimeout(() => { message.textContent = '' }, 4000)
+  showToast(text, isError);
+}
+
+async function fetchStatus() {
+  const res = await fetch('/api/status');
+  if (!res.ok) throw new Error('API Error');
+  return res.json();
 }
 
 function setGauge(id, value, max = 100) {
@@ -843,6 +869,15 @@ function render(data) {
   // Update circular gauges
   setGauge('cpuLoad', data.cpu.load);
   setGauge('cpuTemp', data.cpu.temp);
+  
+  const cpuTempCard = document.getElementById('cpuTempCircle').closest('.gauge-card');
+  if (data.cpu.temp >= 80) {
+    cpuTempCard.style.boxShadow = '0 0 30px rgba(239, 68, 68, 0.4)';
+    cpuTempCard.style.borderColor = 'rgba(239, 68, 68, 0.5)';
+  } else {
+    cpuTempCard.style.boxShadow = '';
+    cpuTempCard.style.borderColor = '';
+  }
   
   $('gpuPowerText').textContent = data.gpu.power
   $('gpuLimitText').textContent = data.gpu.limit
