@@ -102,3 +102,10 @@ echo "  auto web                                — local web dashboard"
 echo ""
 echo "Run 'powersave' now to start saving power."
 echo "Run 'auto start' to enable automatic switching."
+
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+    echo ""
+    echo "[install] Starting tray applet for user $SUDO_USER..."
+    pkill -f boost-tray || true
+    sudo -u "$SUDO_USER" env "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u $SUDO_USER)/bus" "DISPLAY=${DISPLAY:-:0}" "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}" "XDG_RUNTIME_DIR=/run/user/$(id -u $SUDO_USER)" nohup /usr/local/bin/boost-tray >/dev/null 2>&1 &
+fi
