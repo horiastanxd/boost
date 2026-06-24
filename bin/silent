@@ -1,126 +1,89 @@
 #!/usr/bin/env bash
-# silent - overnight mode: minimal power, quiet fans, priority process
-# Restoring: run `boost` or `powersave` in the morning
+# silent - overnight mode: minimum power, quiet fans, priority process
+# Version: 1.1.0
 
 source /usr/local/lib/power-common.sh
 check_root "$@"
 
 if [[ "$1" == "--status" ]]; then show_status; exit 0; fi
+if [[ "$1" == "--version" ]]; then echo "silent $VERSION"; exit 0; fi
 
-HWMON="/sys/class/hwmon/hwmon5"
-FAN_BACKUP="/var/lib/power-profile/fan-curve-backup.env"
 ORIG_USER="${SUDO_USER:-$(logname 2>/dev/null)}"
 
-# --- Fan curve backup + quiet curve ---
-save_fan_curve() {
-    {
-        for i in 1 2 3 4 5; do
-            echo "ORIG_PWM_PT${i}_PWM=$(cat ${HWMON}/pwm1_auto_point${i}_pwm 2>/dev/null)"
-            echo "ORIG_PWM_PT${i}_TEMP=$(cat ${HWMON}/pwm1_auto_point${i}_temp 2>/dev/null)"
-        done
-        echo "ORIG_PWM1_ENABLE=$(cat ${HWMON}/pwm1_enable 2>/dev/null)"
-        echo "ORIG_PWM1_FLOOR=$(cat ${HWMON}/pwm1_floor 2>/dev/null)"
-    } > "$FAN_BACKUP"
-    logger -t power-profile "Fan curve backed up"
-}
-
 apply_quiet_fan_curve() {
-    # Smart Fan IV stays active (enable=5) - hardware temp feedback preserved
-    # Lower PWM values only; temps unchanged for safety
-    # Original curve: 60%/69%/84%/100%/100% -> Silent: 12%/31%/59%/86%/100%
+    [[ ! -d "$HWMON" ]] && echo "[FAN]  hwmon not found, skipping" && return
+    save_fan_curve
     local pwm_vals=(30 80 150 220 255)
     local i=1
     for v in "${pwm_vals[@]}"; do
         safe_write "$v" "${HWMON}/pwm1_auto_point${i}_pwm"
         ((i++))
     done
-    echo "[FAN]  Smart Fan IV curve -> 12%/31%/59%/86%/100% (temp thresholds unchanged)"
+    echo "[FAN]  Smart Fan IV -> 12%/31%/59%/86%/100% (temp thresholds unchanged)"
 }
 
-# --- Process priority selection ---
 select_and_prioritize() {
     echo ""
-    echo "Top running processes for user '$ORIG_USER':"
-    echo "-----------------------------------------------"
+    echo "Top processes for '$ORIG_USER':"
+    echo "---"
     ps aux --sort=-%cpu | awk -v u="$ORIG_USER" \
         'NR>1 && $1==u {printf "  PID=%-7s CPU=%-5s %s\n", $2, $3, $11}' | head -12
-    echo "-----------------------------------------------"
-    echo -n "Process name/PID to keep at HIGH priority (Enter to skip): "
+    echo "---"
+    echo -n "Process to keep at HIGH priority (Enter to skip): "
 
-    local priority_proc
+    local priority_proc=""
     read -r priority_proc < /dev/tty 2>/dev/null || priority_proc=""
 
-    # Renice ALL user processes to +15 (yields to everything else)
-    local reniced=0
+    local count=0
     while IFS= read -r pid; do
-        renice -n 15 -p "$pid" > /dev/null 2>&1 && ((reniced++)) || true
+        renice -n 15 -p "$pid" > /dev/null 2>&1 && ((count++)) || true
     done < <(ps -u "$ORIG_USER" -o pid= 2>/dev/null)
-    echo "[PROC] $reniced processes -> nice +15 (background priority)"
+    echo "[PROC] $count processes -> nice +15"
 
     if [[ -n "$priority_proc" ]]; then
         local pids
         if [[ "$priority_proc" =~ ^[0-9]+$ ]]; then
             pids="$priority_proc"
         else
-            # Match by basename to avoid matching grep itself
             pids=$(ps -u "$ORIG_USER" -o pid=,comm= | awk -v p="$priority_proc" '$2~p{print $1}' | tr '\n' ' ')
         fi
-
         if [[ -n "$pids" ]]; then
             for pid in $pids; do
                 renice -n -5 -p "$pid" > /dev/null 2>&1 || true
                 ionice -c 2 -n 0 -p "$pid" > /dev/null 2>&1 || true
             done
-            echo "[PROC] '$priority_proc' (PIDs: $pids) -> nice -5, ionice best-effort/high"
+            echo "[PROC] '$priority_proc' (PIDs: $pids) -> nice -5, ionice high"
         else
-            echo "[PROC] No match for '$priority_proc' - skipping priority boost"
+            echo "[PROC] No match for '$priority_proc'"
         fi
     fi
 }
 
-# --- Main ---
 echo "[SILENT] Applying overnight profile..."
 save_originals
 
-# CPU: powersave + EPP power + turbo OFF = no spikes, no fan ramp-ups
-for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-    echo powersave > "$gov"
-done
-for epp in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
-    echo power > "$epp"
-done
-safe_write 1 /sys/devices/system/cpu/intel_pstate/no_turbo
-echo "[CPU]  governor=powersave, EPP=power, turbo=OFF"
+# power-saver -> ppd sets governor=powersave, EPP=power
+set_cpu_profile "power-saver" "powersave" "power"
 
-# RAPL: PL1=65W, PL2=75W - very conservative, keeps CPU cool = quiet fan
+set_turbo off
+
 set_rapl 0 65000000
 set_rapl 1 75000000
 echo "[CPU]  PL1=65W, PL2=75W"
 
-# I/O schedulers
 set_io_schedulers
 
-# THP: never (reduces background memory overhead)
 safe_write never /sys/kernel/mm/transparent_hugepage/enabled
-echo "[VM]   transparent_hugepages=never"
+echo "[VM]   THP=never"
 
-# GPU: hardware minimum (150W) - fan off at idle already
 nvidia-smi -pm 1 -i 0 > /dev/null 2>&1
 nvidia-smi --power-limit=150 -i 0 > /dev/null 2>&1
-echo "[GPU]  power-limit=150W (hardware min)"
+echo "[GPU]  power-limit=150W"
 
-# Fan curve: quieter Smart Fan IV
-if [[ -d "$HWMON" ]]; then
-    save_fan_curve
-    apply_quiet_fan_curve
-else
-    echo "[FAN]  hwmon5/nct6798 not found, skipping fan curve"
-fi
-
-# Process priorities
+apply_quiet_fan_curve
 select_and_prioritize
 
-logger -t power-profile "silent profile applied by $ORIG_USER"
+logger -t power-profile "silent applied by $ORIG_USER"
 echo ""
-echo "[SILENT] Done. Run 'boost' or 'powersave' in the morning to restore."
+echo "[SILENT] Done. Run 'boost' or 'powersave' in the morning."
 show_status

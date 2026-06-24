@@ -5,12 +5,15 @@
 **Linux power profile manager for Intel + NVIDIA desktops**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![ShellCheck](https://github.com/horiastanxd/boost/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/horiastanxd/boost/actions/workflows/shellcheck.yml)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnubash&logoColor=white)](bin/boost)
 [![Platform: Linux](https://img.shields.io/badge/Platform-Linux-FCC624?logo=linux&logoColor=black)](https://kernel.org)
 [![CPU: Intel](https://img.shields.io/badge/CPU-Intel%20pstate-0071C5?logo=intel&logoColor=white)](https://www.kernel.org/doc/html/latest/admin-guide/pm/intel_pstate.html)
 [![GPU: NVIDIA](https://img.shields.io/badge/GPU-NVIDIA-76B900?logo=nvidia&logoColor=white)](https://developer.nvidia.com/nvidia-system-management-interface)
+[![GNOME: power-profiles-daemon](https://img.shields.io/badge/GNOME-power--profiles--daemon-4A86CF?logo=gnome&logoColor=white)](https://gitlab.freedesktop.org/hadess/power-profiles-daemon)
 
-Four commands. No daemons. No config files. Fully reversible.
+Four commands. No daemons. No config files. Fully reversible.  
+**GNOME Power Mode indicator stays in sync automatically.**
 
 </div>
 
@@ -75,6 +78,7 @@ All commands auto-elevate via `sudo` — no need to prefix them.
 |-----------|-------------|
 | CPU driver | `intel_pstate` (Intel 6th gen+) |
 | GPU | NVIDIA with `nvidia-smi` |
+| GNOME sync | `power-profiles-daemon` + `powerprofilesctl` *(auto-detected, optional)* |
 | Fan control | `nct6798` or compatible SuperIO *(optional — silent mode)* |
 | Privileges | sudo |
 
@@ -95,11 +99,12 @@ ls /sys/class/powercap/intel-rapl/                        # RAPL available
 ### `boost` — Full performance
 
 ```bash
-boost [--status]
+boost [--status] [--version]
 ```
 
 | Setting | Value |
 |---------|-------|
+| GNOME Power Mode | **Performance** |
 | CPU governor | `performance` |
 | Energy performance hint (EPP) | `performance` |
 | Turbo boost | ON |
@@ -116,11 +121,12 @@ Use for: gaming, video rendering, ML training/inference, large compilations.
 ### `powersave` — Efficient daily use
 
 ```bash
-powersave [--status]
+powersave [--status] [--version]
 ```
 
 | Setting | Value |
 |---------|-------|
+| GNOME Power Mode | **Balanced** |
 | CPU governor | `powersave` |
 | EPP | `balance_performance` |
 | Turbo boost | ON (boosts on real load, idles deep) |

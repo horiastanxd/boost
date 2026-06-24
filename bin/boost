@@ -1,25 +1,22 @@
 #!/usr/bin/env bash
 # boost - maximum performance profile
-# Usage: boost [--status]
+# Version: 1.1.0
 
 source /usr/local/lib/power-common.sh
 check_root "$@"
 
 if [[ "$1" == "--status" ]]; then show_status; exit 0; fi
+if [[ "$1" == "--version" ]]; then echo "boost $VERSION"; exit 0; fi
 
-FAN_BACKUP="/var/lib/power-profile/fan-curve-backup.env"
-HWMON="/sys/class/hwmon/hwmon5"
 ORIG_USER="${SUDO_USER:-$(logname 2>/dev/null)}"
 
 echo "[BOOST] Applying performance profile..."
 save_originals
 
-for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$gov"; done
-for epp in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do echo performance > "$epp"; done
-echo "[CPU]  governor=performance, EPP=performance"
+# CPU via ppd (syncs GNOME) or manual fallback
+set_cpu_profile "performance" "performance" "performance"
 
-safe_write 0 /sys/devices/system/cpu/intel_pstate/no_turbo
-echo "[CPU]  turbo=ON"
+set_turbo on
 
 set_rapl 0 125000000
 set_rapl 1 253000000
@@ -28,30 +25,15 @@ echo "[CPU]  PL1=125W, PL2=253W"
 set_io_schedulers
 
 safe_write always /sys/kernel/mm/transparent_hugepage/enabled
-echo "[VM]   transparent_hugepages=always"
+echo "[VM]   THP=always"
 
 nvidia-smi -pm 1 -i 0 > /dev/null 2>&1
 nvidia-smi --power-limit=180 -i 0 > /dev/null 2>&1
-echo "[GPU]  persistent=ON, power-limit=180W"
+echo "[GPU]  power-limit=180W"
 
-# Restore fan curve if silent was active
-if [[ -f "$FAN_BACKUP" && -d "$HWMON" ]]; then
-    source "$FAN_BACKUP"
-    for i in 1 2 3 4 5; do
-        pwm_var="ORIG_PWM_PT${i}_PWM"; temp_var="ORIG_PWM_PT${i}_TEMP"
-        safe_write "${!pwm_var}" "${HWMON}/pwm1_auto_point${i}_pwm" 2>/dev/null || true
-        safe_write "${!temp_var}" "${HWMON}/pwm1_auto_point${i}_temp" 2>/dev/null || true
-    done
-    echo "[FAN]  Smart Fan IV curve restored"
-fi
+restore_fan_curve
+reset_process_priorities "$ORIG_USER"
 
-# Reset process priorities if silent was active
-if [[ -n "$ORIG_USER" ]]; then
-    while IFS= read -r pid; do
-        renice -n 0 -p "$pid" > /dev/null 2>&1 || true
-    done < <(ps -u "$ORIG_USER" -o pid= 2>/dev/null)
-fi
-
-logger -t power-profile "boost profile applied"
+logger -t power-profile "boost applied"
 echo "[BOOST] Done."
 show_status
