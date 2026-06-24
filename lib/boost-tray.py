@@ -183,6 +183,10 @@ class BoostTray:
             AyatanaAppIndicator3.IndicatorCategory.SYSTEM_SERVICES
         )
         self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
+        self._last_state = {
+            "temp": 0, "load": 0, "prof": "balanced",
+            "amode": "friendly", "snooze_mins": 0, "today_skip": False
+        }
 
         # Build Menu
         self.menu = Gtk.Menu()
@@ -229,11 +233,11 @@ class BoostTray:
             snooze_menu.append(item)
 
         today_off = Gtk.MenuItem(label="All Today")
-        today_off.connect("activate", lambda w: run_cmd("/usr/local/bin/auto today-off"))
+        today_off.connect("activate", self.on_today_off)
         snooze_menu.append(today_off)
 
         resume_item = Gtk.MenuItem(label="▶️ Resume Auto Mode")
-        resume_item.connect("activate", lambda w: run_cmd("/usr/local/bin/auto resume"))
+        resume_item.connect("activate", self.on_resume)
         snooze_menu.append(resume_item)
 
         self.menu.append(Gtk.SeparatorMenuItem())
@@ -275,14 +279,38 @@ class BoostTray:
         _cached_profile = None
         _profile_cycle_count = 0
         notify(f"Switched to {friendly_name} mode ⚡")
+        # Optimistic UI update
+        prof = {"boost": "performance", "powersave": "balanced", "silent": "power-saver"}.get(command, "balanced")
+        self._last_state["prof"] = prof
+        GLib.idle_add(lambda: self.apply_status(**self._last_state) or False)
 
     def on_auto_mode(self, widget, mode):
         run_cmd(f"/usr/local/bin/auto mode {mode}")
         notify(f"Auto mode set to {mode.capitalize()}")
+        self._last_state["amode"] = mode
+        GLib.idle_add(lambda: self.apply_status(**self._last_state) or False)
 
     def on_snooze(self, widget, duration):
         run_cmd(f"/usr/local/bin/auto snooze {duration}")
         notify(f"Auto mode snoozed for {duration}")
+        mins = {"30m": 30, "1h": 60, "2h": 120, "4h": 240}.get(duration, 30)
+        self._last_state["snooze_mins"] = mins
+        self._last_state["today_skip"] = False
+        GLib.idle_add(lambda: self.apply_status(**self._last_state) or False)
+
+    def on_today_off(self, widget):
+        run_cmd("/usr/local/bin/auto today-off")
+        notify("Auto mode paused for today")
+        self._last_state["today_skip"] = True
+        self._last_state["snooze_mins"] = 0
+        GLib.idle_add(lambda: self.apply_status(**self._last_state) or False)
+
+    def on_resume(self, widget):
+        run_cmd("/usr/local/bin/auto resume")
+        notify("Auto mode resumed")
+        self._last_state["snooze_mins"] = 0
+        self._last_state["today_skip"] = False
+        GLib.idle_add(lambda: self.apply_status(**self._last_state) or False)
 
     def update_status(self):
         def fetch_data():
@@ -299,6 +327,10 @@ class BoostTray:
         return True
 
     def apply_status(self, temp, load, prof, amode, snooze_mins, today_skip):
+        self._last_state.update({
+            "temp": temp, "load": load, "prof": prof,
+            "amode": amode, "snooze_mins": snooze_mins, "today_skip": today_skip
+        })
         icon = "power-profile-balanced-symbolic"
         if prof == "performance": icon = "power-profile-performance-symbolic"
         elif prof == "power-saver": icon = "power-profile-power-saver-symbolic"

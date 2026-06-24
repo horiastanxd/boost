@@ -1121,6 +1121,40 @@ async function refresh() {
 }
 
 async function sendAction(action, value = null) {
+  // Optimistic UI Updates
+  if (['boost', 'powersave', 'silent', 'restore'].includes(action)) {
+    ['boost', 'powersave', 'silent'].forEach(a => { const b = $(`btn-${a}`); if(b) b.classList.remove('active-preset'); });
+    if (action !== 'restore') {
+      $(`btn-${action}`)?.classList.add('active-preset');
+      const profileNames = {boost: 'Performance', powersave: 'Balanced', silent: 'Power-Saver'};
+      if ($('profile')) $('profile').textContent = profileNames[action] || action;
+    }
+  } else if (action === 'auto-mode') {
+    ['calm','summer','friendly','active','quiet','off'].forEach(m => { const b = $(`mode-${m}`); if(b) b.classList.remove('active-preset'); });
+    $(`mode-${value}`)?.classList.add('active-preset');
+    if ($('autoMode')) $('autoMode').textContent = value;
+    // Also update table row highlight
+    document.querySelectorAll('#modes tr').forEach(tr => tr.classList.remove('active-preset'));
+    const matchedRow = Array.from(document.querySelectorAll('#modes tr')).find(tr => tr.firstElementChild?.textContent?.toLowerCase() === value);
+    if (matchedRow) matchedRow.classList.add('active-preset');
+  } else if (action === 'snooze') {
+    if ($('pauseState')) $('pauseState').textContent = '⏸ Snoozed';
+  } else if (action === 'today-off') {
+    if ($('pauseState')) $('pauseState').textContent = '⏸ Today off';
+  } else if (action === 'resume') {
+    if ($('pauseState')) $('pauseState').textContent = '✅ Available';
+  } else if (action === 'summer-nights') {
+    if (value === 'on') {
+      $('summer-nights-on')?.classList.add('active-preset');
+      $('summer-nights-off')?.classList.remove('active-preset');
+      if ($('summerNights')) $('summerNights').textContent = 'YES';
+    } else {
+      $('summer-nights-on')?.classList.remove('active-preset');
+      $('summer-nights-off')?.classList.add('active-preset');
+      if ($('summerNights')) $('summerNights').textContent = 'NO';
+    }
+  }
+
   try {
     const r = await fetch('/api/action', {
       method: 'POST',
