@@ -281,7 +281,7 @@ class BoostDaemon:
         if not env_vars: return
             
         user = env_vars.pop('USER')
-        uid = env_vars.pop('UID')
+        env_vars.pop('UID', None)  # don't pass UID as env var to notify-send
         
         cmd_env = dict(os.environ)
         cmd_env.update(env_vars)

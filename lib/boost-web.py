@@ -364,6 +364,8 @@ def cpu_temp_c() -> int:
 def cpu_totals() -> tuple[int, int]:
     parts = read_text("/proc/stat", "").splitlines()[0].split()
     values = [int(value) for value in parts[1:]]
+    if len(values) < 5:
+        return 0, 0
     idle = values[3] + values[4]
     return sum(values), idle
 
@@ -436,30 +438,33 @@ def history(limit: int = 80) -> list[dict[str, str]]:
     with _HISTORY_LOCK:
         if current_mtime != 0 and current_mtime == _HISTORY_CACHE_MTIME and limit <= _HISTORY_CACHE_LIMIT:
             return _HISTORY_CACHE_DATA[-limit:] if limit > 0 else _HISTORY_CACHE_DATA.copy()
-    
-        if current_mtime == 0:
+
+    if current_mtime == 0:
+        with _HISTORY_LOCK:
             _HISTORY_CACHE_MTIME = 0
             _HISTORY_CACHE_LIMIT = limit
             _HISTORY_CACHE_DATA = []
-            return []
-    
-        try:
-            with open(STATS_FILE, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        except OSError:
-            lines = []
-    
-        if len(lines) <= 1:
+        return []
+
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        lines = []
+
+    if len(lines) <= 1:
+        with _HISTORY_LOCK:
             _HISTORY_CACHE_MTIME = current_mtime
             _HISTORY_CACHE_LIMIT = limit
             _HISTORY_CACHE_DATA = []
-            return []
-    
-        target_lines = [lines[0]] + lines[-limit:]
-        _HISTORY_CACHE_DATA = list(csv.DictReader(target_lines))
+        return []
+
+    data = list(csv.DictReader([lines[0]] + lines[-limit:]))
+    with _HISTORY_LOCK:
+        _HISTORY_CACHE_DATA = data
         _HISTORY_CACHE_MTIME = current_mtime
         _HISTORY_CACHE_LIMIT = limit
-        return _HISTORY_CACHE_DATA.copy()
+    return data.copy()
 
 
 def summary(rows: list[dict[str, str]]) -> dict[str, float]:
@@ -563,7 +568,10 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
         with _SNOOZE_WEB_LOCK:
             _SNOOZE_WEB_CACHE = (0, 0, False)
     elif action == "quiet-hours":
-        payload = json.loads(value or "{}")
+        try:
+            payload = json.loads(value or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {"ok": False, "message": "Invalid JSON for quiet-hours."}
         start = str(payload.get("start", "22:00"))
         end = str(payload.get("end", "08:00"))
         if not valid_hhmm(start) or not valid_hhmm(end):
@@ -577,8 +585,13 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
         return {"ok": False, "message": "Unknown action."}
 
     if result.returncode == 0:
+        if action in ("boost", "powersave", "silent", "restore"):
+            with _SYS_STATE_LOCK:
+                _SYS_STATE_CACHE.clear()
+            with _CACHE_LOCK:
+                _CACHE.pop("powerprofile", None)
         return {"ok": True, "message": f"{action.capitalize()} applied successfully."}
-    
+
     # On error, just return the last line of stderr or stdout so it fits in a toast
     full_err = (result.stderr or result.stdout).strip()
     short_err = full_err.split("\n")[-1] if full_err else "Unknown error"
