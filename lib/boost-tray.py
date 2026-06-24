@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 import threading
+import time
 
 import gi
 gi.require_version('Gtk', '3.0')
@@ -141,38 +142,54 @@ def get_profile():
             _cached_profile = "balanced"
     return _cached_profile
 
-def get_auto_mode():
-    mode = "friendly"
+_TRAY_CACHE = {"time": 0, "mode": "dynamic", "snooze": 0, "off": False}
+
+def _refresh_tray_cache():
+    now = time.time()
+    if now - _TRAY_CACHE["time"] < 30:
+        return
+        
+    mode = "dynamic"
     try:
         for line in read_text(CONF_FILE, "").splitlines():
             if line.startswith("AUTO_MODE="):
                 mode = line.split("=")[1].strip()
     except Exception:
         pass
-    return mode
+        
+    snooze = 0
+    try:
+        until_str = read_text(STATE_DIR / "auto-snooze-until", "")
+        if until_str:
+            until_ts = int(until_str)
+            now_ts = int(datetime.now(timezone.utc).timestamp())
+            snooze = max(0, (until_ts - now_ts) // 60)
+    except (ValueError, OSError):
+        pass
+        
+    off = False
+    try:
+        skip_date = read_text(STATE_DIR / "auto-skip-date", "")
+        if skip_date:
+            off = (skip_date == datetime.now().strftime("%Y-%m-%d"))
+    except Exception:
+        pass
+        
+    _TRAY_CACHE.update({"time": now, "mode": mode, "snooze": snooze, "off": off})
+
+def get_auto_mode():
+    _refresh_tray_cache()
+    return _TRAY_CACHE["mode"]
 
 def get_snooze_remaining():
     """Return minutes remaining on snooze, or 0 if not snoozed."""
-    try:
-        until_str = read_text(STATE_DIR / "auto-snooze-until", "")
-        if not until_str:
-            return 0
-        until_ts = int(until_str)
-        now_ts = int(datetime.now(timezone.utc).timestamp())
-        remaining = until_ts - now_ts
-        return max(0, remaining // 60)
-    except (ValueError, OSError):
-        return 0
+    _refresh_tray_cache()
+    return _TRAY_CACHE["snooze"]
 
 def is_today_off():
     """Return True if auto-mode is skipped for today."""
-    try:
-        skip_date = read_text(STATE_DIR / "skip-date", "")
-        if not skip_date:
-            return False
-        return skip_date == datetime.now().strftime("%Y-%m-%d")
-    except Exception:
-        return False
+    _refresh_tray_cache()
+    return _TRAY_CACHE["off"]
 
 
 class BoostTray:
@@ -261,8 +278,8 @@ class BoostTray:
 
         # Start update loop
         get_cpu_load()  # initialize baseline
-        GLib.timeout_add_seconds(3, self.update_status)
-        self.update_status()
+        self._update_event = threading.Event()
+        threading.Thread(target=self._background_loop, daemon=True).start()
 
     def add_profile_item(self, label, command, expected_profile):
         """Add a power-profile menu item that also sends a desktop notification."""
@@ -312,8 +329,8 @@ class BoostTray:
         self._last_state["today_skip"] = False
         GLib.idle_add(lambda: self.apply_status(**self._last_state) or False)
 
-    def update_status(self):
-        def fetch_data():
+    def _background_loop(self):
+        while True:
             temp = get_cpu_temp()
             load = get_cpu_load()
             prof = get_profile()
@@ -322,9 +339,8 @@ class BoostTray:
             today_skip = is_today_off()
             GLib.idle_add(self.apply_status, temp, load, prof, amode,
                           snooze_mins, today_skip)
-
-        threading.Thread(target=fetch_data, daemon=True).start()
-        return True
+            self._update_event.wait(3.0)
+            self._update_event.clear()
 
     def apply_status(self, temp, load, prof, amode, snooze_mins, today_skip):
         self._last_state.update({

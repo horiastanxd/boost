@@ -12,6 +12,7 @@ import csv
 import html
 import json
 import subprocess
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,17 +40,36 @@ def read_text(path: str | Path, default: str = "unknown") -> str:
         return default
 
 
+_CONFIG_CACHE_MTIME: float = -1
+_CONFIG_CACHE_DATA: dict[str, str] = {}
+_CONFIG_LOCK = threading.Lock()
+
 def read_config() -> dict[str, str]:
-    config: dict[str, str] = {}
-    if not CONF_FILE.exists():
-        return config
-    for line in CONF_FILE.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        config[key.strip()] = value.strip()
-    return config
+    global _CONFIG_CACHE_MTIME, _CONFIG_CACHE_DATA
+    try:
+        current_mtime = CONF_FILE.stat().st_mtime
+    except OSError:
+        current_mtime = 0
+        
+    with _CONFIG_LOCK:
+        if current_mtime != 0 and current_mtime == _CONFIG_CACHE_MTIME:
+            return _CONFIG_CACHE_DATA.copy()
+            
+        config: dict[str, str] = {}
+        if current_mtime != 0:
+            try:
+                for line in CONF_FILE.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    config[key.strip()] = value.strip()
+            except OSError:
+                pass
+                
+        _CONFIG_CACHE_MTIME = current_mtime
+        _CONFIG_CACHE_DATA = config
+        return config.copy()
 
 
 DEFAULT_THRESHOLDS = {
@@ -126,11 +146,24 @@ def mode_thresholds(mode: str, config: dict[str, str] | None = None) -> dict[str
     return thresholds
 
 
+_AMBIENT_CACHE_VAL = None
+_AMBIENT_CACHE_TIME = 0
+_AMBIENT_LOCK = threading.Lock()
+
 def ambient_temp(config: dict[str, str]) -> dict[str, Any]:
+    global _AMBIENT_CACHE_VAL, _AMBIENT_CACHE_TIME
+    with _AMBIENT_LOCK:
+        now = time.time()
+        if _AMBIENT_CACHE_VAL is not None and now - _AMBIENT_CACHE_TIME < 600:
+            return _AMBIENT_CACHE_VAL
+
     value = config.get("AMBIENT_TEMP_C", "").strip()
     if value:
         try:
-            return {"detected": True, "temp": int(float(value)), "source": "AMBIENT_TEMP_C"}
+            res = {"detected": True, "temp": int(float(value)), "source": "AMBIENT_TEMP_C"}
+            with _AMBIENT_LOCK:
+                _AMBIENT_CACHE_VAL, _AMBIENT_CACHE_TIME = res, time.time()
+            return res
         except ValueError:
             pass
 
@@ -139,7 +172,10 @@ def ambient_temp(config: dict[str, str]) -> dict[str, Any]:
         raw = read_text(temp_file, "")
         try:
             parsed = int(float(raw))
-            return {"detected": True, "temp": parsed // 1000 if parsed > 200 else parsed, "source": temp_file}
+            res = {"detected": True, "temp": parsed // 1000 if parsed > 200 else parsed, "source": temp_file}
+            with _AMBIENT_LOCK:
+                _AMBIENT_CACHE_VAL, _AMBIENT_CACHE_TIME = res, time.time()
+            return res
         except ValueError:
             pass
 
@@ -150,9 +186,15 @@ def ambient_temp(config: dict[str, str]) -> dict[str, Any]:
                 continue
             raw = int(read_text(str(label_file).replace("_label", "_input"), "0") or "0")
             if raw > 0:
-                return {"detected": True, "temp": raw // 1000, "source": f"{hwmon.name}:{label}"}
+                res = {"detected": True, "temp": raw // 1000, "source": f"{hwmon.name}:{label}"}
+                with _AMBIENT_LOCK:
+                    _AMBIENT_CACHE_VAL, _AMBIENT_CACHE_TIME = res, time.time()
+                return res
 
-    return {"detected": False, "temp": None, "source": "not detected"}
+    res = {"detected": False, "temp": None, "source": "not detected"}
+    with _AMBIENT_LOCK:
+        _AMBIENT_CACHE_VAL, _AMBIENT_CACHE_TIME = res, time.time()
+    return res
 
 
 def apply_ambient_adjustment(thresholds: dict[str, int | str], ambient: dict[str, Any]) -> dict[str, int | str]:
@@ -185,12 +227,23 @@ def quiet_active(start: str, end: str) -> bool:
     return now_m >= start_total or now_m < end_total
 
 
+_SNOOZE_WEB_CACHE = (0, 0, False)
+_SNOOZE_WEB_LOCK = threading.Lock()
+
 def pause_payload(config: dict[str, str]) -> dict[str, Any]:
+    global _SNOOZE_WEB_CACHE
     now = int(time.time())
     mode = config.get("AUTO_MODE", "dynamic")
     quiet = quiet_active(config.get("QUIET_HOURS_START", "22:00"), config.get("QUIET_HOURS_END", "08:00"))
-    today_off = SKIP_TODAY_FILE.exists() and read_text(SKIP_TODAY_FILE, "") == time.strftime("%Y-%m-%d")
-    snooze_until = int(read_text(SNOOZE_FILE, "0") or "0") if SNOOZE_FILE.exists() else 0
+    
+    with _SNOOZE_WEB_LOCK:
+        if now - _SNOOZE_WEB_CACHE[0] < 30:
+            snooze_until, today_off = _SNOOZE_WEB_CACHE[1], _SNOOZE_WEB_CACHE[2]
+        else:
+            today_off = SKIP_TODAY_FILE.exists() and read_text(SKIP_TODAY_FILE, "") == time.strftime("%Y-%m-%d")
+            snooze_until = int(read_text(SNOOZE_FILE, "0") or "0") if SNOOZE_FILE.exists() else 0
+            _SNOOZE_WEB_CACHE = (now, snooze_until, today_off)
+            
     snoozed = snooze_until > now
     if mode == "off":
         reason = "Auto mode is off."
@@ -235,34 +288,40 @@ def decision_reason(
     return "Current profile looks reasonable for the active mode."
 
 
-def set_config_value(key: str, value: str) -> None:
-    lines = []
-    found = False
-    if CONF_FILE.exists():
-        lines = CONF_FILE.read_text(encoding="utf-8").splitlines()
-    next_lines: list[str] = []
-    for line in lines:
-        if line.strip().startswith(f"{key}="):
-            next_lines.append(f"{key}={value}")
-            found = True
-        else:
-            next_lines.append(line)
-    if not found:
-        next_lines.append(f"{key}={value}")
-    CONF_FILE.write_text("\n".join(next_lines) + "\n", encoding="utf-8")
+_SYS_STATE_CACHE = {}
+_SYS_STATE_LOCK = threading.Lock()
+
+def get_sys_state() -> dict[str, str]:
+    global _SYS_STATE_CACHE
+    now = time.time()
+    with _SYS_STATE_LOCK:
+        if _SYS_STATE_CACHE and now - _SYS_STATE_CACHE.get('time', 0) < 10:
+            return _SYS_STATE_CACHE['val']
+            
+    gov = read_text("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+    epp = read_text("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference")
+    turbo = "ON" if read_text("/sys/devices/system/cpu/intel_pstate/no_turbo", "1") == "0" else "OFF"
+    
+    val = {"governor": gov, "epp": epp, "turbo": turbo}
+    with _SYS_STATE_LOCK:
+        _SYS_STATE_CACHE = {'time': time.time(), 'val': val}
+    return val
 
 
 _CACHE = {}
+_CACHE_LOCK = threading.Lock()
 
 def cached_run(key: str, cmd: list[str], ttl: int) -> str:
     now = time.time()
-    if key in _CACHE and now - _CACHE[key]['time'] < ttl:
-        return _CACHE[key]['val']
+    with _CACHE_LOCK:
+        if key in _CACHE and now - _CACHE[key]['time'] < ttl:
+            return _CACHE[key]['val']
     try:
         res = run(cmd, timeout=3).stdout.strip()
     except Exception:
         res = ""
-    _CACHE[key] = {'time': now, 'val': res}
+    with _CACHE_LOCK:
+        _CACHE[key] = {'time': time.time(), 'val': res}
     return res
 
 
@@ -271,10 +330,18 @@ def active_service(name: str) -> str:
 
 
 def power_profile() -> str:
-    return cached_run("powerprofile", ["powerprofilesctl", "get"], 2) or "unknown"
+    return cached_run("powerprofile", ["powerprofilesctl", "get"], 5) or "unknown"
 
+
+_CACHED_TEMP_FILE: str | None = None
 
 def cpu_temp_c() -> int:
+    global _CACHED_TEMP_FILE
+    if _CACHED_TEMP_FILE:
+        raw = int(read_text(_CACHED_TEMP_FILE, "0") or "0")
+        if raw > 0:
+            return raw // 1000
+
     for hwmon in Path("/sys/class/hwmon").glob("hwmon*"):
         name = read_text(hwmon / "name", "")
         if name not in {"coretemp", "k10temp", "zenpower", "amd_energy"}:
@@ -282,10 +349,14 @@ def cpu_temp_c() -> int:
         for label_file in hwmon.glob("temp*_label"):
             label = read_text(label_file, "")
             if label in {"Package id 0", "Tctl", "Tdie", "Tccd1", "Tccd2"}:
-                raw = int(read_text(str(label_file).replace("_label", "_input"), "0") or "0")
+                target = str(label_file).replace("_label", "_input")
+                raw = int(read_text(target, "0") or "0")
+                _CACHED_TEMP_FILE = target
                 return raw // 1000
-        raw = int(read_text(hwmon / "temp1_input", "0") or "0")
+        target = str(hwmon / "temp1_input")
+        raw = int(read_text(target, "0") or "0")
         if raw > 0:
+            _CACHED_TEMP_FILE = target
             return raw // 1000
     return 0
 
@@ -297,6 +368,7 @@ def cpu_totals() -> tuple[int, int]:
     return sum(values), idle
 
 
+_CPU_LOCK = threading.Lock()
 _LAST_CPU_TOTAL = 0
 _LAST_CPU_IDLE = 0
 
@@ -304,16 +376,17 @@ def cpu_load_percent() -> int:
     global _LAST_CPU_TOTAL, _LAST_CPU_IDLE
     total, idle = cpu_totals()
     
-    if _LAST_CPU_TOTAL == 0:  # First run
+    with _CPU_LOCK:
+        if _LAST_CPU_TOTAL == 0:  # First run
+            _LAST_CPU_TOTAL = total
+            _LAST_CPU_IDLE = idle
+            return 0
+            
+        delta_total = total - _LAST_CPU_TOTAL
+        delta_idle = idle - _LAST_CPU_IDLE
         _LAST_CPU_TOTAL = total
         _LAST_CPU_IDLE = idle
-        return 0
         
-    delta_total = total - _LAST_CPU_TOTAL
-    delta_idle = idle - _LAST_CPU_IDLE
-    _LAST_CPU_TOTAL = total
-    _LAST_CPU_IDLE = idle
-    
     if delta_total <= 0:
         return 0
     return int((delta_total - delta_idle) * 100 / delta_total)
@@ -331,21 +404,62 @@ def gpu_stats() -> dict[str, str]:
     return {"temp": temp, "power": power, "limit": limit}
 
 
-def rapl_w(constraint: int) -> int:
-    path = f"/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_{constraint}_power_limit_uw"
-    return int(read_text(path, "0") or "0") // 1_000_000
+_RAPL_CACHE = {}
+_RAPL_LOCK = threading.Lock()
 
+def rapl_w(constraint: int) -> int:
+    now = time.time()
+    with _RAPL_LOCK:
+        if constraint in _RAPL_CACHE and now - _RAPL_CACHE[constraint]['time'] < 10:
+            return _RAPL_CACHE[constraint]['val']
+            
+    path = f"/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_{constraint}_power_limit_uw"
+    val = int(read_text(path, "0") or "0") // 1_000_000
+    
+    with _RAPL_LOCK:
+        _RAPL_CACHE[constraint] = {'time': time.time(), 'val': val}
+    return val
+
+
+_HISTORY_LOCK = threading.Lock()
+_HISTORY_CACHE_MTIME: float = -1
+_HISTORY_CACHE_LIMIT: int = 0
+_HISTORY_CACHE_DATA: list[dict[str, str]] = []
 
 def history(limit: int = 80) -> list[dict[str, str]]:
-    if not STATS_FILE.exists():
-        return []
-    with open(STATS_FILE, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-    if len(lines) <= 1:
-        return []
-    # Header + last N lines
-    target_lines = [lines[0]] + lines[-(limit):]
-    return list(csv.DictReader(target_lines))
+    global _HISTORY_CACHE_MTIME, _HISTORY_CACHE_LIMIT, _HISTORY_CACHE_DATA
+    try:
+        current_mtime = STATS_FILE.stat().st_mtime
+    except OSError:
+        current_mtime = 0
+
+    with _HISTORY_LOCK:
+        if current_mtime != 0 and current_mtime == _HISTORY_CACHE_MTIME and limit <= _HISTORY_CACHE_LIMIT:
+            return _HISTORY_CACHE_DATA[-limit:] if limit > 0 else _HISTORY_CACHE_DATA.copy()
+    
+        if current_mtime == 0:
+            _HISTORY_CACHE_MTIME = 0
+            _HISTORY_CACHE_LIMIT = limit
+            _HISTORY_CACHE_DATA = []
+            return []
+    
+        try:
+            with open(STATS_FILE, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError:
+            lines = []
+    
+        if len(lines) <= 1:
+            _HISTORY_CACHE_MTIME = current_mtime
+            _HISTORY_CACHE_LIMIT = limit
+            _HISTORY_CACHE_DATA = []
+            return []
+    
+        target_lines = [lines[0]] + lines[-limit:]
+        _HISTORY_CACHE_DATA = list(csv.DictReader(target_lines))
+        _HISTORY_CACHE_MTIME = current_mtime
+        _HISTORY_CACHE_LIMIT = limit
+        return _HISTORY_CACHE_DATA.copy()
 
 
 def summary(rows: list[dict[str, str]]) -> dict[str, float]:
@@ -358,12 +472,27 @@ def summary(rows: list[dict[str, str]]) -> dict[str, float]:
         except ValueError:
             return 0
 
+    sum_cpu = sum_temp = sum_gpu = 0.0
+    max_temp = max_cpu = 0.0
+    for row in rows:
+        cpu = number(row, "cpu_load")
+        temp = number(row, "cpu_temp")
+        gpu = number(row, "gpu_power")
+        
+        sum_cpu += cpu
+        sum_temp += temp
+        sum_gpu += gpu
+        
+        if temp > max_temp: max_temp = temp
+        if cpu > max_cpu: max_cpu = cpu
+
+    count = len(rows)
     return {
-        "avg_cpu": sum(number(row, "cpu_load") for row in rows) / len(rows),
-        "avg_temp": sum(number(row, "cpu_temp") for row in rows) / len(rows),
-        "avg_gpu": sum(number(row, "gpu_power") for row in rows) / len(rows),
-        "max_temp": max(number(row, "cpu_temp") for row in rows),
-        "max_cpu": max(number(row, "cpu_load") for row in rows),
+        "avg_cpu": sum_cpu / count,
+        "avg_temp": sum_temp / count,
+        "avg_gpu": sum_gpu / count,
+        "max_temp": max_temp,
+        "max_cpu": max_cpu,
     }
 
 
@@ -400,11 +529,7 @@ def status_payload() -> dict[str, Any]:
         "cpu": {"load": cpu_load, "temp": cpu_temp},
         "gpu": gpu,
         "limits": {"pl1": rapl_w(0), "pl2": rapl_w(1)},
-        "system": {
-            "governor": read_text("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"),
-            "epp": read_text("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference"),
-            "turbo": "ON" if read_text("/sys/devices/system/cpu/intel_pstate/no_turbo", "1") == "0" else "OFF",
-        },
+        "system": get_sys_state(),
         "report": {"latestExists": LATEST_REPORT.exists(), "path": str(LATEST_REPORT)},
         "summary": summary(rows),
         "history": rows[-30:],
@@ -412,6 +537,7 @@ def status_payload() -> dict[str, Any]:
 
 
 def run_action(action: str, value: str | None = None) -> dict[str, Any]:
+    global _SNOOZE_WEB_CACHE
     allowed_modes = {"dynamic", "gaming", "creator", "quiet", "off"}
     allowed_durations = {"30m", "1h", "2h", "4h"}
     if action == "boost":
@@ -426,10 +552,16 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
         result = run(["/usr/local/bin/auto", "mode", value], timeout=10)
     elif action == "snooze" and value in allowed_durations:
         result = run(["/usr/local/bin/auto", "snooze", value], timeout=10)
+        with _SNOOZE_WEB_LOCK:
+            _SNOOZE_WEB_CACHE = (0, 0, False)
     elif action == "today-off":
         result = run(["/usr/local/bin/auto", "today-off"], timeout=10)
+        with _SNOOZE_WEB_LOCK:
+            _SNOOZE_WEB_CACHE = (0, 0, False)
     elif action == "resume":
         result = run(["/usr/local/bin/auto", "resume"], timeout=10)
+        with _SNOOZE_WEB_LOCK:
+            _SNOOZE_WEB_CACHE = (0, 0, False)
     elif action == "quiet-hours":
         payload = json.loads(value or "{}")
         start = str(payload.get("start", "22:00"))
@@ -470,7 +602,6 @@ INDEX_HTML = r"""<!doctype html>
 <title>Boost Control Dashboard</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap');
 :root{
   color-scheme:dark;
   --bg-deep:#050912;
@@ -1101,8 +1232,20 @@ function render(data) {
   $('epp').textContent = `${data.system.governor} (${data.system.epp})`;
   $('reportPath').textContent = data.report.latestExists ? data.report.path : 'No report generated yet';
 
-  // Chart
-  drawChart(data.history);
+  // Chart & History Table
+  const hChanged = !_prevData || !_prevData.history || data.history.length !== _prevData.history.length || (data.history.length > 0 && data.history[data.history.length-1].iso !== _prevData.history[_prevData.history.length-1].iso);
+  if (hChanged) {
+    drawChart(data.history);
+    $('history').innerHTML = data.history.slice().reverse().map(r => `
+      <tr>
+        <td>${r.iso ? r.iso.split('T')[1].substring(0,8) : '—'}</td>
+        <td style="text-transform:capitalize">${{performance:'Boost',balanced:'Balanced','power-saver':'Silent'}[r.profile]||r.profile}</td>
+        <td><strong>${r.cpu_load||0}%</strong></td>
+        <td style="color:${tempColor(parseInt(r.cpu_temp||0))}">${r.cpu_temp||0}°C</td>
+        <td>${r.gpu_temp||0}°C / ${r.gpu_power||0}W</td>
+        <td>${r.pl1||0}/${r.pl2||0}W</td>
+      </tr>`).join('');
+  }
 
   // Active profile highlight
   ['boost','powersave','silent'].forEach(a => { const b = $(`btn-${a}`); if(b) b.classList.remove('active-preset'); });
@@ -1124,25 +1267,17 @@ function render(data) {
   }
 
   // Modes table
-  $('modes').innerHTML = data.auto.modes.map(m => `
-    <tr class="${data.auto.mode === m.mode ? 'active-preset' : ''}">
-      <td style="font-weight:600;text-transform:capitalize">${m.mode}</td>
-      <td>${m.tempHot}°C</td><td>${m.tempCritical}°C</td><td>${m.boostTempLimit}°C</td>
-      <td>${m.loadHigh}% / ${secondsText(m.loadHighDuration)}</td>
-      <td>${m.loadIdle}% / ${secondsText(m.loadIdleDuration)}</td>
-      <td>${secondsText(m.promptCooldown)}</td>
-    </tr>`).join('');
-
-  // History table
-  $('history').innerHTML = data.history.slice().reverse().map(r => `
-    <tr>
-      <td>${r.iso ? r.iso.split('T')[1].substring(0,8) : '—'}</td>
-      <td style="text-transform:capitalize">${{performance:'Boost',balanced:'Balanced','power-saver':'Silent'}[r.profile]||r.profile}</td>
-      <td><strong>${r.cpu_load||0}%</strong></td>
-      <td style="color:${tempColor(parseInt(r.cpu_temp||0))}">${r.cpu_temp||0}°C</td>
-      <td>${r.gpu_temp||0}°C / ${r.gpu_power||0}W</td>
-      <td>${r.pl1||0}/${r.pl2||0}W</td>
-    </tr>`).join('');
+  const mChanged = !_prevData || _prevData.auto.mode !== data.auto.mode || JSON.stringify(_prevData.auto.modes) !== JSON.stringify(data.auto.modes);
+  if (mChanged) {
+    $('modes').innerHTML = data.auto.modes.map(m => `
+      <tr class="${data.auto.mode === m.mode ? 'active-preset' : ''}">
+        <td style="font-weight:600;text-transform:capitalize">${m.mode}</td>
+        <td>${m.tempHot}°C</td><td>${m.tempCritical}°C</td><td>${m.boostTempLimit}°C</td>
+        <td>${m.loadHigh}% / ${secondsText(m.loadHighDuration)}</td>
+        <td>${m.loadIdle}% / ${secondsText(m.loadIdleDuration)}</td>
+        <td>${secondsText(m.promptCooldown)}</td>
+      </tr>`).join('');
+  }
 
   _prevData = data;
 }
@@ -1237,6 +1372,7 @@ setInterval(() => {
 </body>
 </html>"""
 
+INDEX_HTML_BYTES = INDEX_HTML.encode("utf-8")
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "BoostWeb/1.0"
@@ -1259,7 +1395,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/":
-            self.send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
+            self.send_bytes(INDEX_HTML_BYTES, "text/html; charset=utf-8")
         elif parsed.path == "/favicon.ico":
             self.send_bytes(b"", "image/x-icon")
         elif parsed.path == "/api/status":

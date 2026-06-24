@@ -49,6 +49,12 @@ class BoostDaemon:
         self.last_prompt = 0
         self.last_auto = 0
         self.last_stats = 0
+        self.last_conf_mtime = -1
+        self.cached_session = None
+        self.cached_env = None
+        self._cached_profile = None
+        self._profile_cycle_count = 0
+        self._snooze_cache = (0, 0, False)
         
     def log(self, msg, level=syslog.LOG_INFO):
         syslog.syslog(level, msg)
@@ -65,8 +71,16 @@ class BoostDaemon:
                     name = f.read().strip()
                 if name in ['coretemp', 'k10temp', 'zenpower', 'amd_energy']:
                     for f in os.listdir(hwmon_path):
-                        if f.endswith('_input') and f.startswith('temp'):
-                            return os.path.join(hwmon_path, f)
+                        if f.endswith('_label') and f.startswith('temp'):
+                            try:
+                                with open(os.path.join(hwmon_path, f), 'r') as lbl:
+                                    label = lbl.read().strip()
+                                if label in {"Package id 0", "Tctl", "Tdie", "Tccd1", "Tccd2"}:
+                                    return os.path.join(hwmon_path, f.replace('_label', '_input'))
+                            except Exception: pass
+                    fallback = os.path.join(hwmon_path, "temp1_input")
+                    if os.path.exists(fallback):
+                        return fallback
         return None
 
     def read_config(self):
@@ -142,24 +156,23 @@ class BoostDaemon:
 
     def is_game_running(self):
         try:
-            for pid in os.listdir('/proc'):
-                if pid.isdigit():
-                    try:
-                        with open(f'/proc/{pid}/comm', 'r') as f:
-                            comm = f.read().strip()
-                            if any(g in comm for g in GAME_PROCESSES):
-                                return True
-                    except:
-                        pass
+            return subprocess.run(
+                ['pgrep', '-f', '|'.join(GAME_PROCESSES)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            ).returncode == 0
         except Exception:
-            pass
-        return False
+            return False
 
     def get_ppd_profile(self):
-        try:
-            return subprocess.check_output(['powerprofilesctl', 'get'], text=True).strip()
-        except Exception:
-            return "balanced"
+        self._profile_cycle_count += 1
+        if self._cached_profile is None or self._profile_cycle_count >= 3:
+            self._profile_cycle_count = 0
+            try:
+                self._cached_profile = subprocess.check_output(['powerprofilesctl', 'get'], text=True).strip()
+            except Exception:
+                self._cached_profile = "balanced"
+        return self._cached_profile
 
     def read_text(self, path, default=""):
         try:
@@ -177,7 +190,9 @@ class BoostDaemon:
 
     def record_stats(self, load, temp, profile):
         try:
-            if not os.path.exists(STATE_DIR): os.makedirs(STATE_DIR)
+            if not getattr(self, '_state_dir_created', False):
+                os.makedirs(STATE_DIR, exist_ok=True)
+                self._state_dir_created = True
             
             gpu_temp, gpu_power, gpu_limit = self.get_gpu_stats()
             pl1 = str(int(self.read_text('/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw', '0')) // 1000000)
@@ -196,14 +211,21 @@ class BoostDaemon:
             with open(STATS_FILE, 'a') as f:
                 f.write(row)
                 
-            # Prevent infinite growth: if file > 250KB, keep only last 2000 lines (~1.5 days at 1 min interval)
+            # Prevent infinite growth: if file > 250KB, keep header + last 2000 lines (~1.5 days at 1 min interval)
             if os.path.getsize(STATS_FILE) > 250 * 1024:
-                subprocess.Popen(['bash', '-c', f'tail -n 2000 {STATS_FILE} > {STATS_FILE}.tmp && mv {STATS_FILE}.tmp {STATS_FILE}'])
+                with open(STATS_FILE, 'r') as f:
+                    lines = f.readlines()
+                if len(lines) > 2000:
+                    with open(f"{STATS_FILE}.tmp", 'w') as f:
+                        f.write(lines[0])
+                        f.writelines(lines[-2000:])
+                    os.rename(f"{STATS_FILE}.tmp", STATS_FILE)
         except Exception as e:
             self.log(f"Error recording stats: {e}")
 
     def run_command(self, cmd):
         subprocess.Popen(cmd, shell=True, env=dict(os.environ, AUTO_HELPER_INTERNAL="1"))
+        self._cached_profile = None
 
     def get_user_env(self):
         try:
@@ -216,6 +238,9 @@ class BoostDaemon:
                     session = parts[0]
                     break
             if not session: return None
+            
+            if self.cached_session == session and self.cached_env is not None:
+                return self.cached_env.copy()
             
             user = subprocess.check_output(['loginctl', 'show-session', session, '-p', 'Name', '--value'], text=True).strip()
             uid = subprocess.check_output(['id', '-u', user], text=True).strip()
@@ -243,6 +268,9 @@ class BoostDaemon:
             else:
                 env['DISPLAY'] = x11
                 env['GDK_BACKEND'] = 'x11'
+                
+            self.cached_session = session
+            self.cached_env = env.copy()
             return env
         except Exception as e:
             self.log(f"Error getting user env: {e}")
@@ -273,11 +301,14 @@ class BoostDaemon:
                         self.log(f"Action accepted: {action_cmd}")
                         self.run_command(action_cmd)
                     elif action == "snooze":
+                        until = int(time.time()) + 7200
                         with open(SNOOZE_FILE, 'w') as f:
-                            f.write(str(int(time.time()) + 7200))
+                            f.write(str(until))
+                        self._snooze_cache = (time.time(), until, False)
                     elif action == "today":
                         with open(SKIP_TODAY_FILE, 'w') as f:
                             f.write(datetime.now().strftime("%Y-%m-%d"))
+                        self._snooze_cache = (time.time(), 0, True)
                 except Exception:
                     pass
             threading.Thread(target=handle_notify).start()
@@ -293,7 +324,8 @@ class BoostDaemon:
     def in_quiet_hours(self):
         if self.quiet_start == self.quiet_end: return False
         try:
-            now_m = datetime.now().hour * 60 + datetime.now().minute
+            now = datetime.now()
+            now_m = now.hour * 60 + now.minute
             h, m = map(int, self.quiet_start.split(':'))
             start_m = h * 60 + m
             h, m = map(int, self.quiet_end.split(':'))
@@ -308,27 +340,45 @@ class BoostDaemon:
     def suggestions_paused(self):
         if self.mode in ("quiet", "off"): return True
         if self.in_quiet_hours(): return True
+        
+        now = time.time()
+        if now - self._snooze_cache[0] < 30:
+            ttl, until_epoch, skipped = self._snooze_cache
+            if skipped or until_epoch > now: return True
+            return False
+
+        skipped = False
+        until_epoch = 0
         try:
             if os.path.exists(SKIP_TODAY_FILE):
                 with open(SKIP_TODAY_FILE, 'r') as f:
                     if f.read().strip() == datetime.now().strftime("%Y-%m-%d"):
-                        return True
+                        skipped = True
             if os.path.exists(SNOOZE_FILE):
                 with open(SNOOZE_FILE, 'r') as f:
                     until_epoch = int(f.read().strip())
-                if until_epoch > time.time():
-                    return True
-                os.remove(SNOOZE_FILE)
+                if until_epoch <= now:
+                    os.remove(SNOOZE_FILE)
         except Exception:
             pass
-        return False
+            
+        self._snooze_cache = (now, until_epoch, skipped)
+        return skipped or until_epoch > now
 
     def loop(self):
         self.log("Boost Daemon started in Python High-Performance mode")
         while True:
             time.sleep(self.poll_interval)
-            self.read_config()
-            self.apply_preset()
+            
+            try:
+                current_mtime = os.stat(CONF_FILE).st_mtime if os.path.exists(CONF_FILE) else 0
+            except Exception:
+                current_mtime = 0
+                
+            if current_mtime != self.last_conf_mtime or self.last_conf_mtime == -1:
+                self.read_config()
+                self.apply_preset()
+                self.last_conf_mtime = current_mtime
             
             now = int(time.time())
             temp = self.read_cpu_temp()
