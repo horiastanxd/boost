@@ -28,7 +28,8 @@ migrate_config() {
         AUTO_MODE QUIET_HOURS_START QUIET_HOURS_END ALLOW_CRITICAL_AUTO \
         SUMMER_SILENT_NIGHTS AMBIENT_TEMP_C AMBIENT_TEMP_FILE \
         TEMP_CRITICAL TEMP_HOT BOOST_TEMP_LIMIT LOAD_HIGH LOAD_HIGH_DURATION \
-        LOAD_IDLE LOAD_IDLE_DURATION PROMPT_COOLDOWN POLL_INTERVAL STATS_INTERVAL
+        LOAD_IDLE LOAD_IDLE_DURATION PROMPT_COOLDOWN POLL_INTERVAL STATS_INTERVAL \
+        AC_PROFILE BATTERY_PROFILE BATTERY_LOW_PCT BATTERY_CRITICAL_PCT BATTERY_LOW_NOTIFY
     do
         value=$(awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1); found=1} END {exit found ? 0 : 1}' "$backup" 2>/dev/null || true)
         [[ -n "$value" ]] && set_config_value "$key" "$value"

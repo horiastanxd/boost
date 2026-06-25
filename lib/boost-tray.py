@@ -19,7 +19,7 @@ gi.require_version('AyatanaAppIndicator3', '0.1')
 gi.require_version('Notify', '0.7')
 from gi.repository import Gtk, Gdk, GLib, AyatanaAppIndicator3, Notify
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 STATE_DIR = Path("/var/lib/power-profile")
 CONF_FILE = Path("/etc/boost-auto.conf")
 
@@ -192,6 +192,58 @@ def is_today_off():
     return _TRAY_CACHE["off"]
 
 
+# ── Battery helpers for tray ─────────────────────────────────────────
+
+_BATTERY_SUPPLY_TRAY: str | None = None
+
+def _find_battery_supply_tray() -> str | None:
+    global _BATTERY_SUPPLY_TRAY
+    if _BATTERY_SUPPLY_TRAY is not None:
+        return _BATTERY_SUPPLY_TRAY if _BATTERY_SUPPLY_TRAY else None
+    psu_dir = Path("/sys/class/power_supply")
+    if not psu_dir.is_dir():
+        _BATTERY_SUPPLY_TRAY = ""
+        return None
+    for entry in psu_dir.iterdir():
+        type_path = entry / "type"
+        try:
+            if type_path.read_text(encoding="utf-8").strip() == "Battery":
+                _BATTERY_SUPPLY_TRAY = str(entry)
+                return str(entry)
+        except OSError:
+            continue
+    _BATTERY_SUPPLY_TRAY = ""
+    return None
+
+def get_battery_pct_tray() -> int | None:
+    supply = _find_battery_supply_tray()
+    if not supply:
+        return None
+    try:
+        val = int(read_text(f"{supply}/capacity", "0") or "0")
+        return val if val > 0 else None
+    except (ValueError, OSError):
+        return None
+
+def get_battery_status_tray() -> str:
+    supply = _find_battery_supply_tray()
+    if not supply:
+        return "Unknown"
+    return read_text(f"{supply}/status", "Unknown")
+
+def get_ac_online_tray() -> int | None:
+    psu_dir = Path("/sys/class/power_supply")
+    if not psu_dir.is_dir():
+        return None
+    for entry in psu_dir.iterdir():
+        type_path = entry / "type"
+        try:
+            if type_path.read_text(encoding="utf-8").strip() == "Mains":
+                return int(read_text(str(entry / "online"), "0") or "0")
+        except OSError:
+            continue
+    return None
+
 class BoostTray:
     def __init__(self):
         self.indicator = AyatanaAppIndicator3.Indicator.new(
@@ -284,7 +336,8 @@ class BoostTray:
     def add_profile_item(self, label, command, expected_profile):
         """Add a power-profile menu item that also sends a desktop notification."""
         item = Gtk.MenuItem(label=label)
-        friendly = label.split("(")[0].strip().lstrip("🚀🍃🌙♻️ ").strip()
+        parts = label.split("(")[0].strip().split(None, 1)
+        friendly = parts[1].strip() if len(parts) > 1 else parts[0].strip()
         item.connect("activate", self._on_profile_click, command, friendly)
         self.menu.append(item)
 
@@ -337,15 +390,18 @@ class BoostTray:
             amode = get_auto_mode()
             snooze_mins = get_snooze_remaining()
             today_skip = is_today_off()
+            bat_pct = get_battery_pct_tray()
+            ac_online = get_ac_online_tray()
             GLib.idle_add(self.apply_status, temp, load, prof, amode,
-                          snooze_mins, today_skip)
+                          snooze_mins, today_skip, bat_pct, ac_online)
             self._update_event.wait(3.0)
             self._update_event.clear()
 
-    def apply_status(self, temp, load, prof, amode, snooze_mins, today_skip):
+    def apply_status(self, temp, load, prof, amode, snooze_mins, today_skip, bat_pct=None, ac_online=None):
         self._last_state.update({
             "temp": temp, "load": load, "prof": prof,
-            "amode": amode, "snooze_mins": snooze_mins, "today_skip": today_skip
+            "amode": amode, "snooze_mins": snooze_mins, "today_skip": today_skip,
+            "bat_pct": bat_pct, "ac_online": ac_online
         })
         icon = "power-profile-balanced-symbolic"
         if prof == "performance": icon = "power-profile-performance-symbolic"
@@ -357,6 +413,13 @@ class BoostTray:
 
         # Stats line – include snooze remaining if active
         stats_label = f"🌡️ CPU: {temp}°C  |  ⚡ Load: {load}%"
+        if bat_pct is not None:
+            ac_str = "🔌" if ac_online == 1 else "🔋"
+            stats_label += f"  |  {ac_str} Bat: {bat_pct}%"
+            if bat_pct <= 10:
+                stats_label += " ⚠️"
+            elif bat_pct <= 20:
+                stats_label += " ⚡"
         if snooze_mins > 0:
             if snooze_mins >= 60:
                 h, m = divmod(snooze_mins, 60)

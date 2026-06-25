@@ -22,6 +22,7 @@ set_cpu_profile "balanced" "powersave" "balance_performance"
 set_turbo off
 apply_hardware_limits powersave
 set_io_schedulers
+apply_peripheral_power powersave
 
 safe_write madvise /sys/kernel/mm/transparent_hugepage/enabled
 echo "[VM]   THP=madvise"

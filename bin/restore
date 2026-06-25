@@ -28,12 +28,23 @@ else
 fi
 
 if [[ -n "${ORIG_TURBO:-}" ]]; then
-    safe_write "${ORIG_TURBO}" /sys/devices/system/cpu/intel_pstate/no_turbo
-    echo "[CPU]  turbo=$([ "${ORIG_TURBO}" = "0" ] && echo ON || echo OFF)"
+    case "${ORIG_TURBO_TYPE:-intel}" in
+        intel)
+            _turbo_state=$([[ "${ORIG_TURBO}" == "0" ]] && echo "on" || echo "off")
+            ;;
+        cpufreq|amd_pstate)
+            _turbo_state=$([[ "${ORIG_TURBO}" == "1" ]] && echo "on" || echo "off")
+            ;;
+        *)
+            _turbo_state="on"
+            ;;
+    esac
+    set_turbo "$_turbo_state"
 fi
 
 apply_hardware_limits restore
 set_io_schedulers
+apply_peripheral_power restore
 
 safe_write "${ORIG_THP:-madvise}" /sys/kernel/mm/transparent_hugepage/enabled
 echo "[VM]   THP=${ORIG_THP}"

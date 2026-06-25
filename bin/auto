@@ -46,9 +46,13 @@ reset_threshold_defaults() {
     PROMPT_COOLDOWN=900
 }
 
+if [[ -f /usr/local/lib/power-common.sh ]]; then
+    # shellcheck source=/usr/local/lib/power-common.sh disable=SC1091
+    source /usr/local/lib/power-common.sh
+fi
+
 if [[ "${BOOST_AUTO_NO_CONFIG:-0}" != "1" && -f "$CONF_FILE" ]]; then
-    # shellcheck source=/etc/boost-auto.conf disable=SC1091
-    source /etc/boost-auto.conf
+    read_safe_config "$CONF_FILE"
 fi
 
 CUSTOM_TEMP_CRITICAL="${TEMP_CRITICAL}"
@@ -59,11 +63,6 @@ CUSTOM_LOAD_HIGH_DURATION="${LOAD_HIGH_DURATION}"
 CUSTOM_LOAD_IDLE="${LOAD_IDLE}"
 CUSTOM_LOAD_IDLE_DURATION="${LOAD_IDLE_DURATION}"
 CUSTOM_PROMPT_COOLDOWN="${PROMPT_COOLDOWN}"
-
-if [[ -f /usr/local/lib/power-common.sh ]]; then
-    # shellcheck source=/usr/local/lib/power-common.sh disable=SC1091
-    source /usr/local/lib/power-common.sh
-fi
 
 apply_mode_preset() {
     reset_threshold_defaults
@@ -591,14 +590,11 @@ case "${1:-start}" in
         echo "Web dashboard: $web_state (${WEB_URL})"
         echo "Current mode: ${AUTO_MODE}"
         echo "Power profile: $(friendly_profile "$profile")"
-        local_coretemp=$(find /sys/class/hwmon -name 'name' -exec grep -l coretemp {} \; 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
-        if [[ -n "$local_coretemp" ]]; then
-            temp=$(cat "${local_coretemp}/temp1_input" 2>/dev/null || echo 0)
-            echo "Computer warmth: $(( temp / 1000 ))"
-        fi
+        temp=$(get_cpu_temp_c 2>/dev/null || echo 0)
+        echo "Computer warmth: ${temp} C"
         echo "Ambient temperature: ${ambient:-not detected}"
         echo "Suggestions: $(pause_status)"
-        echo "Decision: $(decision_reason "$(( ${temp:-0} / 1000 ))" 0 "$profile")"
+        echo "Decision: $(decision_reason "$temp" 0 "$profile")"
         echo "Quiet hours: ${QUIET_HOURS_START}-${QUIET_HOURS_END}"
         echo "Summer silent nights: ${SUMMER_SILENT_NIGHTS}"
         echo "Config: $CONF_FILE"

@@ -11,6 +11,7 @@ import argparse
 import csv
 import html
 import json
+import re
 import subprocess
 import threading
 import time
@@ -70,6 +71,66 @@ def read_config() -> dict[str, str]:
         _CONFIG_CACHE_MTIME = current_mtime
         _CONFIG_CACHE_DATA = config
         return config.copy()
+
+
+def write_config(updates: dict[str, str]) -> bool:
+    """Update config file with new key=value pairs, preserving comments and order."""
+    try:
+        if not CONF_FILE.exists():
+            CONF_FILE.write_text("")
+        file_lines = CONF_FILE.read_text(encoding="utf-8").splitlines(keepends=True)
+    except OSError:
+        return False
+
+    updated_keys = set(updates.keys())
+    new_lines = []
+    for line in file_lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in updates:
+                new_lines.append(f"{key}={updates[key]}\n")
+                updated_keys.discard(key)
+                continue
+        new_lines.append(line)
+    for key in updated_keys:
+        new_lines.append(f"{key}={updates[key]}\n")
+    try:
+        CONF_FILE.write_text("".join(new_lines), encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def config_payload() -> dict[str, Any]:
+    """Return all config keys and their descriptions for the config UI."""
+    config = read_config()
+    return {
+        "ok": True,
+        "config": {
+            "AUTO_MODE": config.get("AUTO_MODE", "dynamic"),
+            "TEMP_CRITICAL": config.get("TEMP_CRITICAL", "85"),
+            "TEMP_HOT": config.get("TEMP_HOT", "78"),
+            "BOOST_TEMP_LIMIT": config.get("BOOST_TEMP_LIMIT", "78"),
+            "LOAD_HIGH": config.get("LOAD_HIGH", "75"),
+            "LOAD_HIGH_DURATION": config.get("LOAD_HIGH_DURATION", "120"),
+            "LOAD_IDLE": config.get("LOAD_IDLE", "8"),
+            "LOAD_IDLE_DURATION": config.get("LOAD_IDLE_DURATION", "600"),
+            "PROMPT_COOLDOWN": config.get("PROMPT_COOLDOWN", "900"),
+            "QUIET_HOURS_START": config.get("QUIET_HOURS_START", "22:00"),
+            "QUIET_HOURS_END": config.get("QUIET_HOURS_END", "08:00"),
+            "SUMMER_SILENT_NIGHTS": config.get("SUMMER_SILENT_NIGHTS", "no"),
+            "ALLOW_CRITICAL_AUTO": config.get("ALLOW_CRITICAL_AUTO", "yes"),
+            "POLL_INTERVAL": config.get("POLL_INTERVAL", "5"),
+            "STATS_INTERVAL": config.get("STATS_INTERVAL", "60"),
+            "AC_PROFILE": config.get("AC_PROFILE", "restore"),
+            "BATTERY_PROFILE": config.get("BATTERY_PROFILE", "powersave"),
+            "BATTERY_LOW_PCT": config.get("BATTERY_LOW_PCT", "20"),
+            "BATTERY_CRITICAL_PCT": config.get("BATTERY_CRITICAL_PCT", "10"),
+            "BATTERY_LOW_NOTIFY": config.get("BATTERY_LOW_NOTIFY", "yes"),
+        },
+    }
+
 
 
 DEFAULT_THRESHOLDS = {
@@ -312,9 +373,20 @@ def get_sys_state() -> dict[str, str]:
             
     gov = read_text("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
     epp = read_text("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference")
-    turbo = "ON" if read_text("/sys/devices/system/cpu/intel_pstate/no_turbo", "1") == "0" else "OFF"
+    if Path("/sys/devices/system/cpu/intel_pstate/no_turbo").exists():
+        turbo = "ON" if read_text("/sys/devices/system/cpu/intel_pstate/no_turbo", "1") == "0" else "OFF"
+    elif Path("/sys/devices/system/cpu/cpufreq/boost").exists():
+        turbo = "ON" if read_text("/sys/devices/system/cpu/cpufreq/boost", "0") == "1" else "OFF"
+    elif Path("/sys/devices/system/cpu/amd_pstate/boost").exists():
+        turbo = "ON" if read_text("/sys/devices/system/cpu/amd_pstate/boost", "0") == "1" else "OFF"
+    else:
+        turbo = "OFF"
     
-    val = {"governor": gov, "epp": epp, "turbo": turbo}
+    thp_raw = read_text("/sys/kernel/mm/transparent_hugepage/enabled", "")
+    m = re.search(r'\[([^\]]+)\]', thp_raw)
+    thp = m.group(1) if m else "unknown"
+
+    val = {"governor": gov, "epp": epp, "turbo": turbo, "thp": thp}
     with _SYS_STATE_LOCK:
         _SYS_STATE_CACHE = {'time': time.time(), 'val': val}
     return val
@@ -572,6 +644,78 @@ def _extract_profile_switches(rows: list[dict[str, str]]) -> list[dict[str, str]
     return switches[-5:]  # last 5 transitions for the dashboard log
 
 
+# ── Battery helpers ──────────────────────────────────────────────────
+
+_BATTERY_SUPPLY: str | None = None
+
+def find_battery_supply() -> str | None:
+    global _BATTERY_SUPPLY
+    if _BATTERY_SUPPLY is not None:
+        return _BATTERY_SUPPLY if _BATTERY_SUPPLY else None
+    psu_dir = Path("/sys/class/power_supply")
+    if not psu_dir.is_dir():
+        _BATTERY_SUPPLY = ""
+        return None
+    for entry in psu_dir.iterdir():
+        type_path = entry / "type"
+        try:
+            if type_path.read_text(encoding="utf-8").strip() == "Battery":
+                _BATTERY_SUPPLY = str(entry)
+                return str(entry)
+        except OSError:
+            continue
+    _BATTERY_SUPPLY = ""
+    return None
+
+def battery_pct() -> int | None:
+    supply = find_battery_supply()
+    if not supply:
+        return None
+    try:
+        val = int(read_text(f"{supply}/capacity", "0") or "0")
+        return val if val > 0 else None
+    except (ValueError, OSError):
+        return None
+
+def battery_status_text() -> str:
+    supply = find_battery_supply()
+    if not supply:
+        return "Unknown"
+    return read_text(f"{supply}/status", "Unknown")
+
+def ac_online() -> int | None:
+    psu_dir = Path("/sys/class/power_supply")
+    if not psu_dir.is_dir():
+        return None
+    for entry in psu_dir.iterdir():
+        type_path = entry / "type"
+        try:
+            if type_path.read_text(encoding="utf-8").strip() == "Mains":
+                online = int(read_text(str(entry / "online"), "0") or "0")
+                return online
+        except OSError:
+            continue
+    return None
+
+def battery_drain_rate(rows: list[dict[str, str]]) -> float | None:
+    """Return drain rate in %/hour from recent history while discharging, else None."""
+    discharge_rows = [
+        r for r in rows
+        if r.get("battery_status") == "Discharging" and r.get("battery_pct", "").lstrip('-').isdigit()
+    ]
+    if len(discharge_rows) < 2:
+        return None
+    try:
+        first, last = discharge_rows[0], discharge_rows[-1]
+        delta_pct = float(first["battery_pct"]) - float(last["battery_pct"])
+        delta_sec = float(last["epoch"]) - float(first["epoch"])
+        if delta_sec <= 60 or delta_pct <= 0:
+            return None
+        return round(delta_pct / delta_sec * 3600, 1)
+    except (ValueError, KeyError, ZeroDivisionError):
+        return None
+
+
 def status_payload() -> dict[str, Any]:
     config = read_config()
     rows = history()
@@ -610,6 +754,16 @@ def status_payload() -> dict[str, Any]:
         "summary": summary(rows),
         "history": rows[-30:],
         "profileSwitches": _extract_profile_switches(rows),
+        "battery": {
+            "pct": battery_pct(),
+            "status": battery_status_text(),
+            "acOnline": ac_online(),
+            "drainRatePctPerHour": battery_drain_rate(rows),
+            "acProfile": config.get("AC_PROFILE", "restore"),
+            "batteryProfile": config.get("BATTERY_PROFILE", "powersave"),
+            "lowPct": int(config.get("BATTERY_LOW_PCT", "20")),
+            "criticalPct": int(config.get("BATTERY_CRITICAL_PCT", "10")),
+        },
     }
 
 
@@ -653,6 +807,30 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
         result = run(["/usr/local/bin/auto", "summer-nights", value], timeout=10)
     elif action == "report":
         result = run(["/usr/local/bin/power-report"], timeout=10)
+    elif action == "save-config" and value is not None:
+        try:
+            updates = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {"ok": False, "message": "Invalid JSON for config update."}
+        if not isinstance(updates, dict):
+            return {"ok": False, "message": "Config must be a JSON object."}
+        # Validate known keys
+        known_keys = {
+            "TEMP_CRITICAL", "TEMP_HOT", "BOOST_TEMP_LIMIT",
+            "LOAD_HIGH", "LOAD_HIGH_DURATION", "LOAD_IDLE", "LOAD_IDLE_DURATION",
+            "PROMPT_COOLDOWN", "QUIET_HOURS_START", "QUIET_HOURS_END",
+            "SUMMER_SILENT_NIGHTS", "ALLOW_CRITICAL_AUTO",
+            "POLL_INTERVAL", "STATS_INTERVAL",
+            "AC_PROFILE", "BATTERY_PROFILE", "BATTERY_LOW_PCT", "BATTERY_CRITICAL_PCT", "BATTERY_LOW_NOTIFY",
+        }
+        for key in updates:
+            if key not in known_keys:
+                return {"ok": False, "message": f"Unknown config key: {key}"}
+        if write_config(updates):
+            with _CONFIG_LOCK:
+                _CONFIG_CACHE_MTIME = -1  # force re-read
+            return {"ok": True, "message": "Configuration saved."}
+        return {"ok": False, "message": "Failed to write config."}
     else:
         return {"ok": False, "message": "Unknown action."}
 
@@ -998,6 +1176,14 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
     <div style="margin-top:12px;font-size:13px;color:var(--text-secondary)">🌡️ GPU Temp: <strong id="gpuTempText" style="color:var(--text-main)">—</strong> °C</div>
   </div>
 
+  <div class="card gauge-card" style="animation-delay:0.18s">
+    <div class="gauge-label" style="margin-bottom:12px;font-size:12px">Battery</div>
+    <div style="font-family:var(--font-title);font-size:28px;font-weight:700;line-height:1.2"><span id="batteryPctText">—</span><small style="font-size:14px;color:var(--text-muted);font-weight:400"> %</small></div>
+    <div style="color:var(--text-muted);font-size:12px;margin-top:4px">Status: <span id="batteryStatusText">—</span></div>
+    <div style="margin-top:8px;font-size:13px;color:var(--text-secondary)">🔌 AC: <strong id="acOnlineText" style="color:var(--text-main)">—</strong></div>
+    <div style="margin-top:4px;font-size:12px;color:var(--text-muted)" id="batteryTimeRow" hidden>⏱ <span id="batteryTimeText">—</span></div>
+  </div>
+
   <div class="card gauge-card" style="animation-delay:0.2s">
     <div class="gauge-label" style="margin-bottom:12px;font-size:12px">System Config</div>
     <div class="stats-details" style="margin-top:0;border:none;padding:0;grid-template-columns:1fr 1fr;gap:12px">
@@ -1005,6 +1191,7 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
       <div class="detail-item"><div class="detail-lbl">Auto Mode</div><div class="detail-val" id="autoMode">—</div></div>
       <div class="detail-item"><div class="detail-lbl">Turbo</div><div class="detail-val" id="turbo">—</div></div>
       <div class="detail-item"><div class="detail-lbl">RAPL PL1/PL2</div><div class="detail-val" id="limits">—</div></div>
+      <div class="detail-item"><div class="detail-lbl">THP</div><div class="detail-val" id="thp">—</div></div>
     </div>
   </div>
 </section>
@@ -1050,6 +1237,7 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
           <div class="legend-item"><span class="legend-dot" style="background:#0ea5e9"></span><span>CPU Load (%)</span></div>
           <div class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span><span>CPU Temp (°C)</span></div>
           <div class="legend-item"><span class="legend-dot" style="background:#ec4899"></span><span>GPU Power (W/200)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background:#22c55e"></span><span>Battery (%)</span></div>
         </div>
       </div>
     </section>
@@ -1144,8 +1332,100 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
   </table></div>
 </section>
 
+<section style="margin-top:32px">
+  <h2 style="font-family:var(--font-title);font-size:22px;font-weight:700;margin-bottom:12px">⚙️ Configuration</h2>
+  <div class="card" style="padding:20px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px" id="configGrid">
+      <div class="detail-item">
+        <div class="detail-lbl">Critical Temp</div>
+        <input id="cfg_TEMP_CRITICAL" type="number" min="60" max="100" value="85" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Warm Threshold</div>
+        <input id="cfg_TEMP_HOT" type="number" min="50" max="95" value="78" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Boost Below</div>
+        <input id="cfg_BOOST_TEMP_LIMIT" type="number" min="50" max="95" value="78" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Busy Load %</div>
+        <input id="cfg_LOAD_HIGH" type="number" min="10" max="100" value="75" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Busy Duration (s)</div>
+        <input id="cfg_LOAD_HIGH_DURATION" type="number" min="10" max="3600" value="120" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Idle Load %</div>
+        <input id="cfg_LOAD_IDLE" type="number" min="0" max="50" value="8" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Idle Duration (s)</div>
+        <input id="cfg_LOAD_IDLE_DURATION" type="number" min="10" max="3600" value="600" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Cooldown (s)</div>
+        <input id="cfg_PROMPT_COOLDOWN" type="number" min="10" max="7200" value="900" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Poll Interval (s)</div>
+        <input id="cfg_POLL_INTERVAL" type="number" min="1" max="60" value="5" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Stats Interval (s)</div>
+        <input id="cfg_STATS_INTERVAL" type="number" min="10" max="600" value="60" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Critical Auto Protect</div>
+        <select id="cfg_ALLOW_CRITICAL_AUTO" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      </div>
+    </div>
+      <div class="detail-item">
+        <div class="detail-lbl">AC Profile</div>
+        <select id="cfg_AC_PROFILE" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+          <option value="restore">Default</option>
+          <option value="boost">Performance</option>
+          <option value="powersave">Balanced</option>
+          <option value="silent">Power Saver</option>
+        </select>
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Battery Profile</div>
+        <select id="cfg_BATTERY_PROFILE" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+          <option value="powersave">Balanced</option>
+          <option value="silent">Power Saver</option>
+          <option value="restore">Default</option>
+          <option value="boost">Performance</option>
+        </select>
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Battery Low %</div>
+        <input id="cfg_BATTERY_LOW_PCT" type="number" min="5" max="50" value="20" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Battery Critical %</div>
+        <input id="cfg_BATTERY_CRITICAL_PCT" type="number" min="3" max="30" value="10" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Low Battery Notify</div>
+        <select id="cfg_BATTERY_LOW_NOTIFY" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      </div>
+    <div class="actions" style="margin-top:20px">
+      <button class="btn active-preset" id="saveConfigBtn" style="width:100%">💾 Save Configuration</button>
+      <span style="font-size:11px;color:var(--text-muted);margin-top:8px;display:block">Changes take effect immediately. The daemon re-reads config on the next poll cycle.</span>
+    </div>
+  </div>
+</section>
+
 <footer class="footer">
-  Boost Power Manager v1.3.0 — Keyboard: <kbd>1</kbd> Boost <kbd>2</kbd> Powersave <kbd>3</kbd> Silent <kbd>4</kbd> Restore <kbd>R</kbd> Refresh
+  Boost Power Manager v1.4.0 — Keyboard: <kbd>1</kbd> Boost <kbd>2</kbd> Powersave <kbd>3</kbd> Silent <kbd>4</kbd> Restore <kbd>R</kbd> Refresh
 </footer>
 </main>
 
@@ -1258,12 +1538,14 @@ function drawChart(history) {
       <linearGradient id="grad-#0ea5e9" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0ea5e9"/><stop offset="1" stop-color="#0ea5e9" stop-opacity="0"/></linearGradient>
       <linearGradient id="grad-#f59e0b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f59e0b"/><stop offset="1" stop-color="#f59e0b" stop-opacity="0"/></linearGradient>
       <linearGradient id="grad-#ec4899" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ec4899"/><stop offset="1" stop-color="#ec4899" stop-opacity="0"/></linearGradient>
+      <linearGradient id="grad-#22c55e" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22c55e"/><stop offset="1" stop-color="#22c55e" stop-opacity="0"/></linearGradient>
     </defs>
     ${grid}
     ${bands}
     ${makePath(history, 'cpu_load', 100, '#0ea5e9')}
     ${makePath(history, 'cpu_temp', 100, '#f59e0b')}
     ${makePath(gpuData, 'gpu_pct', 100, '#ec4899')}
+    ${makePath(history, 'battery_pct', 100, '#22c55e')}
   `;
 }
 
@@ -1302,11 +1584,43 @@ function render(data) {
   $('gpuLimitText').textContent = data.gpu.limit;
   $('gpuTempText').textContent = data.gpu.temp;
 
+
+  // Battery
+  const bat = data.battery;
+  if (bat && bat.pct !== null && bat.pct !== undefined) {
+    $('batteryPctText').textContent = bat.pct;
+    $('batteryStatusText').textContent = bat.status;
+    $('acOnlineText').textContent = bat.acOnline === 1 ? 'Connected' : bat.acOnline === 0 ? 'On Battery' : '—';
+    const batEl = $('batteryPctText');
+    if (bat.pct <= bat.criticalPct) batEl.style.color = '#ef4444';
+    else if (bat.pct <= bat.lowPct) batEl.style.color = '#f59e0b';
+    else batEl.style.color = '';
+    // Show drain rate and estimated time remaining when on battery
+    const timeRow = $('batteryTimeRow');
+    if (bat.acOnline === 0 && bat.drainRatePctPerHour && bat.pct) {
+      const hoursLeft = bat.pct / bat.drainRatePctPerHour;
+      const h = Math.floor(hoursLeft);
+      const m = Math.round((hoursLeft - h) * 60);
+      const rateStr = `${bat.drainRatePctPerHour.toFixed(1)}%/h`;
+      $('batteryTimeText').textContent = h > 0
+        ? `~${h}h ${m}m remaining (${rateStr})`
+        : `~${m}m remaining (${rateStr})`;
+      timeRow.hidden = false;
+    } else {
+      timeRow.hidden = true;
+    }
+  } else {
+    $('batteryPctText').textContent = '—';
+    $('batteryStatusText').textContent = 'No battery';
+    $('acOnlineText').textContent = '—';
+    $('batteryTimeRow').hidden = true;
+  }
   // System config
   $('profile').textContent = data.friendlyProfile;
   $('autoMode').textContent = data.auto.mode;
   $('limits').textContent = `${data.limits.pl1}/${data.limits.pl2} W`;
   $('turbo').textContent = data.system.turbo;
+  $('thp').textContent = data.system.thp || '—';
 
   // Pause
   const p = data.auto.pause;
@@ -1372,7 +1686,7 @@ function render(data) {
   else if (data.profile === 'power-saver') $('btn-silent')?.classList.add('active-preset');
 
   // Active auto mode highlight
-  ['dynamic','creator','quiet','off'].forEach(m => { const b = $(`mode-${m}`); if(b) b.classList.remove('active-preset'); });
+  ['dynamic','gaming','creator','quiet','off'].forEach(m => { const b = $(`mode-${m}`); if(b) b.classList.remove('active-preset'); });
   $(`mode-${data.auto.mode}`)?.classList.add('active-preset');
 
   // Summer nights
@@ -1458,6 +1772,48 @@ async function sendAction(action, value = null) {
   } catch (e) { showToast(e.message, true); }
 }
 
+// Config UI
+async function loadConfig() {
+  try {
+    const res = await fetch('/api/config');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.ok) return;
+    const cfg = data.config;
+    for (const [key, val] of Object.entries(cfg)) {
+      const el = document.getElementById('cfg_' + key);
+      if (el) {
+        if (el.tagName === 'SELECT') {
+          el.value = val;
+        } else {
+          el.value = val;
+        }
+      }
+    }
+  } catch (e) { /* silent */ }
+}
+
+$('saveConfigBtn')?.addEventListener('click', async () => {
+  const updates = {};
+  const fields = ['TEMP_CRITICAL','TEMP_HOT','BOOST_TEMP_LIMIT','LOAD_HIGH','LOAD_HIGH_DURATION','LOAD_IDLE','LOAD_IDLE_DURATION','PROMPT_COOLDOWN','POLL_INTERVAL','STATS_INTERVAL','ALLOW_CRITICAL_AUTO','AC_PROFILE','BATTERY_PROFILE','BATTERY_LOW_PCT','BATTERY_CRITICAL_PCT','BATTERY_LOW_NOTIFY'];
+  for (const key of fields) {
+    const el = document.getElementById('cfg_' + key);
+    if (el) updates[key] = el.value;
+  }
+  try {
+    const r = await fetch('/api/action', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: 'save-config', value: JSON.stringify(updates)})
+    });
+    const result = await r.json();
+    showToast(result.message || (result.ok ? 'Configuration saved' : 'Error'), !result.ok);
+  } catch (e) { showToast(e.message, true); }
+});
+
+// Load config on startup
+loadConfig();
+
 // Event delegation
 document.addEventListener('click', e => {
   const btn = e.target.closest('[data-action]');
@@ -1518,6 +1874,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_bytes(b"", "image/x-icon")
         elif parsed.path == "/api/status":
             self.send_json(status_payload())
+        elif parsed.path == "/api/config":
+            self.send_json(config_payload())
         elif parsed.path == "/report":
             if LATEST_REPORT.exists():
                 self.send_bytes(LATEST_REPORT.read_bytes(), "text/html; charset=utf-8")

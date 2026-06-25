@@ -67,7 +67,7 @@ html_escape() {
 record_power_sample
 
 latest_line=$(tail -n 1 "$STATS_FILE")
-IFS=',' read -r _epoch iso profile cpu_load cpu_temp gpu_temp gpu_power gpu_limit pl1 pl2 governor epp turbo <<< "$latest_line"
+IFS=',' read -r _epoch iso profile cpu_load cpu_temp gpu_temp gpu_power gpu_limit pl1 pl2 governor epp turbo battery_pct battery_status <<< "$latest_line"
 
 if [[ "$TEXT_ONLY" == "1" ]]; then
     cat <<EOF
@@ -81,6 +81,7 @@ Limits:    PL1 ${pl1} W, PL2 ${pl2} W
 Governor:  ${governor}
 EPP:       ${epp}
 Turbo:     ${turbo}
+Battery:   ${battery_pct:-N/A}% (${battery_status:-Unknown})
 History:   ${STATS_FILE}
 EOF
     exit 0
@@ -95,7 +96,7 @@ history_tmp=$(mktemp)
 trap 'rm -f "$history_tmp"' EXIT
 tail -n "$HISTORY_ROWS" "$STATS_FILE" > "$history_tmp"
 
-summary=$(awk -F, 'NR > 1 {
+summary=$(awk -F, '$1 ~ /^[0-9]+$/ {
     count++
     cpu += $4
     temp += $5
@@ -155,6 +156,7 @@ tr:last-child td{border-bottom:0}tr:hover td{background:rgba(255,255,255,0.01)}
 <div class="card"><div class="label">Average temp</div><div class="value">${avg_temp} C <small>max ${max_temp} C</small></div></div>
 <div class="card"><div class="label">Average GPU power</div><div class="value">${avg_gpu} W</div></div>
 <div class="card"><div class="label">Turbo</div><div class="value">${turbo}</div></div>
+<div class="card"><div class="label">Battery</div><div class="value">${battery_pct:-N/A}% <small>${battery_status:-Unknown}</small></div></div>
 </section>
 
 <div class="card" style="padding: 20px; margin-bottom: 24px;">
@@ -172,12 +174,12 @@ tr:last-child td{border-bottom:0}tr:hover td{background:rgba(255,255,255,0.01)}
 <h2>Recent Samples</h2>
 <div class="table-wrap">
 <table>
-<thead><tr><th>Time</th><th>Profile</th><th>CPU</th><th>CPU temp</th><th>GPU</th><th>Limits</th><th>Governor</th><th>EPP</th><th>Turbo</th></tr></thead>
+<thead><tr><th>Time</th><th>Profile</th><th>CPU</th><th>CPU temp</th><th>GPU</th><th>Limits</th><th>Governor</th><th>EPP</th><th>Battery</th><th>Turbo</th></tr></thead>
 <tbody>
 EOF
 
-tail -n "$HISTORY_ROWS" "$STATS_FILE" | awk -F, 'NR > 1 {
-    printf "<tr><td>%s</td><td>%s</td><td>%s%%</td><td>%s C</td><td>%s C / %s W</td><td>%s/%s W</td><td>%s</td><td>%s</td><td>%s</td></tr>\n", $2, $3, $4, $5, $6, $7, $9, $10, $11, $12, $13
+tail -n "$HISTORY_ROWS" "$STATS_FILE" | awk -F, '$1 ~ /^[0-9]+$/ {
+    printf "<tr><td>%s</td><td>%s</td><td>%s%%</td><td>%s C</td><td>%s C / %s W</td><td>%s/%s W</td><td>%s</td><td>%s</td><td>%s%%</td><td>%s</td></tr>\n", $2, $3, $4, $5, $6, $7, $9, $10, $11, $12, $14, $13
 }'
 
 cat <<'EOF'
@@ -190,8 +192,8 @@ cat <<'EOF'
 const history = [
 EOF
 
-tail -n "$HISTORY_ROWS" "$STATS_FILE" | awk -F, 'NR > 1 {
-    printf "{iso:\"%s\",profile:\"%s\",cpu_load:%d,cpu_temp:%d,gpu_temp:%d,gpu_power:%d,pl1:%d,pl2:%d},\n", $2, $3, $4, $5, $6, $7, $9, $10
+tail -n "$HISTORY_ROWS" "$STATS_FILE" | awk -F, '$1 ~ /^[0-9]+$/ {
+    printf "{iso:\"%s\",profile:\"%s\",cpu_load:%d,cpu_temp:%d,gpu_temp:%d,gpu_power:%d,pl1:%d,pl2:%d,battery_pct:\"%s\"},\n", $2, $3, $4, $5, $6, $7, $9, $10, $14
 }'
 
 cat <<'EOF'

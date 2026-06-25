@@ -1,10 +1,25 @@
 #!/usr/bin/env bash
 # ac-event - Handles AC/Battery power events from udev
-# Version: 1.3.0
+# Version: 1.4.0
 
 sleep 1 # Wait briefly for hardware state to settle
 
-ac_online=$(cat /sys/class/power_supply/*/online 2>/dev/null | head -n1)
+# Source shared helpers for battery detection
+# shellcheck source=/dev/null
+[[ -f /usr/local/lib/power-common.sh ]] && source /usr/local/lib/power-common.sh
+
+# Source config for AC/Battery profile preferences
+AUTO_CONF_FILE="/etc/boost-auto.conf"
+AC_PROFILE="restore"
+BATTERY_PROFILE="powersave"
+BATTERY_LOW_PCT=20
+BATTERY_CRITICAL_PCT=10
+BATTERY_LOW_NOTIFY=yes
+if [[ -f "$AUTO_CONF_FILE" ]]; then
+    read_safe_config "$AUTO_CONF_FILE"
+fi
+
+ac_online=$(get_ac_online)
 [[ -z "$ac_online" ]] && exit 0
 
 get_user_env() {
@@ -43,12 +58,49 @@ notify_plain() {
         notify-send -u "$urgency" -a "Boost Power" -i battery "$title" "$body" 2>/dev/null || true
 }
 
+# Resolve profile name to command path
+profile_cmd() {
+    local profile="$1"
+    case "$profile" in
+        boost)     echo "/usr/local/bin/boost" ;;
+        powersave)  echo "/usr/local/bin/powersave" ;;
+        silent)    echo "/usr/local/bin/silent" ;;
+        restore|*) echo "/usr/local/bin/restore" ;;
+    esac
+}
+
+# Friendly name for notifications
+profile_label() {
+    case "$1" in
+        boost)     echo "Performance" ;;
+        powersave)  echo "Balanced" ;;
+        silent)    echo "Power Saver" ;;
+        restore)   echo "Default" ;;
+        *)         echo "$1" ;;
+    esac
+}
+
 if [[ "$ac_online" == "1" ]]; then
-    logger -t boost-ac "AC connected. Resuming normal profile."
-    /usr/local/bin/restore >/dev/null 2>&1 || true
-    notify_plain "AC Power Connected" "Switched to balanced profile." "normal"
+    logger -t boost-ac "AC connected. Applying profile: $AC_PROFILE"
+    cmd=$(profile_cmd "$AC_PROFILE")
+    $cmd >/dev/null 2>&1 || true
+    notify_plain "AC Power Connected" "Switched to $(profile_label "$AC_PROFILE") profile." "normal"
 elif [[ "$ac_online" == "0" ]]; then
-    logger -t boost-ac "On battery. Switching to powersave."
-    /usr/local/bin/powersave >/dev/null 2>&1 || true
-    notify_plain "On Battery" "Switched to maximum power savings." "normal"
+    logger -t boost-ac "On battery. Applying profile: $BATTERY_PROFILE"
+    cmd=$(profile_cmd "$BATTERY_PROFILE")
+    $cmd >/dev/null 2>&1 || true
+
+    # Check battery level and notify if low
+    if [[ "$BATTERY_LOW_NOTIFY" == "yes" ]]; then
+        bat_pct=$(get_battery_pct 2>/dev/null || echo "")
+        if [[ -n "$bat_pct" && "$bat_pct" -le "$BATTERY_CRITICAL_PCT" ]]; then
+            notify_plain "Battery Critical" "Only ${bat_pct}% remaining. System is in maximum power saving mode." "critical"
+        elif [[ -n "$bat_pct" && "$bat_pct" -le "$BATTERY_LOW_PCT" ]]; then
+            notify_plain "Battery Low" "${bat_pct}% remaining. Switched to $(profile_label "$BATTERY_PROFILE") profile." "normal"
+        else
+            notify_plain "On Battery" "Switched to $(profile_label "$BATTERY_PROFILE") profile." "normal"
+        fi
+    else
+        notify_plain "On Battery" "Switched to $(profile_label "$BATTERY_PROFILE") profile." "normal"
+    fi
 fi

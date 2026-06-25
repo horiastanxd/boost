@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import subprocess
+import shlex
 import syslog
 import threading
 from datetime import datetime
@@ -45,6 +46,16 @@ class BoostDaemon:
         self.quiet_start = "22:00"
         self.quiet_end = "08:00"
         self.summer_nights = "no"
+        self.ac_profile = "restore"
+        self.battery_profile = "powersave"
+        self.battery_low_pct = 20
+        self.battery_critical_pct = 10
+        self.battery_low_notify = "yes"
+        self._battery_supply = None
+        self._battery_notified_low = False
+        self._battery_notified_critical = False
+        self._last_battery_pct = 100
+        self._last_ac_online = None
         
         self.cpu_temp_path = self.find_cpu_temp_path()
         self.amd_gpu_hwmon = self.find_amd_gpu_hwmon()
@@ -110,6 +121,62 @@ class BoostDaemon:
                         return fallback
         return None
 
+
+    # ── Battery helpers ──────────────────────────────────────────────
+
+    def find_battery_supply(self):
+        """Discover the battery power supply sysfs directory."""
+        if self._battery_supply is not None:
+            return self._battery_supply
+        psu_dir = "/sys/class/power_supply"
+        if not os.path.exists(psu_dir):
+            self._battery_supply = ""
+            return None
+        for name in os.listdir(psu_dir):
+            type_path = os.path.join(psu_dir, name, "type")
+            try:
+                with open(type_path) as f:
+                    if f.read().strip() == "Battery":
+                        self._battery_supply = os.path.join(psu_dir, name)
+                        return self._battery_supply
+            except Exception:
+                continue
+        self._battery_supply = ""
+        return None
+
+    def read_battery_pct(self):
+        """Return battery capacity percentage (0-100), or None."""
+        supply = self.find_battery_supply()
+        if not supply:
+            return None
+        cap_path = os.path.join(supply, "capacity")
+        try:
+            return int(self.read_text(cap_path, "0") or "0")
+        except (ValueError, OSError):
+            return None
+
+    def read_ac_online(self):
+        """Return 1 if AC is online, 0 if on battery, None if unknown."""
+        psu_dir = "/sys/class/power_supply"
+        if not os.path.exists(psu_dir):
+            return None
+        for name in os.listdir(psu_dir):
+            type_path = os.path.join(psu_dir, name, "type")
+            try:
+                with open(type_path) as f:
+                    if f.read().strip() == "Mains":
+                        online_path = os.path.join(psu_dir, name, "online")
+                        return int(self.read_text(online_path, "0") or "0")
+            except Exception:
+                continue
+        return None
+
+    def read_battery_status_text(self):
+        """Return 'Charging', 'Discharging', 'Full', or 'Unknown'."""
+        supply = self.find_battery_supply()
+        if not supply:
+            return "Unknown"
+        return self.read_text(os.path.join(supply, "status"), "Unknown")
     def read_config(self):
         if not os.path.exists(CONF_FILE): return
         try:
@@ -125,10 +192,20 @@ class BoostDaemon:
                         elif k == "TEMP_HOT": self.temp_hot = int(v)
                         elif k == "BOOST_TEMP_LIMIT": self.boost_temp_limit = int(v)
                         elif k == "LOAD_HIGH": self.load_high = int(v)
+                        elif k == "LOAD_HIGH_DURATION": self.load_high_duration = int(v)
                         elif k == "LOAD_IDLE": self.load_idle = int(v)
+                        elif k == "LOAD_IDLE_DURATION": self.load_idle_duration = int(v)
+                        elif k == "PROMPT_COOLDOWN": self.prompt_cooldown = int(v)
+                        elif k == "POLL_INTERVAL": self.poll_interval = max(1, int(v))
+                        elif k == "STATS_INTERVAL": self.stats_interval = max(10, int(v))
                         elif k == "QUIET_HOURS_START": self.quiet_start = v
                         elif k == "QUIET_HOURS_END": self.quiet_end = v
                         elif k == "SUMMER_SILENT_NIGHTS": self.summer_nights = v
+                        elif k == "AC_PROFILE": self.ac_profile = v
+                        elif k == "BATTERY_PROFILE": self.battery_profile = v
+                        elif k == "BATTERY_LOW_PCT": self.battery_low_pct = int(v)
+                        elif k == "BATTERY_CRITICAL_PCT": self.battery_critical_pct = int(v)
+                        elif k == "BATTERY_LOW_NOTIFY": self.battery_low_notify = v
         except Exception: pass
 
     def apply_preset(self):
@@ -156,6 +233,15 @@ class BoostDaemon:
             self.load_high, self.load_high_duration = 90, 600
             self.load_idle, self.load_idle_duration = 5, 120
             self.prompt_cooldown = 3600
+
+    def read_turbo_state(self):
+        if os.path.exists('/sys/devices/system/cpu/intel_pstate/no_turbo'):
+            return "ON" if self.read_text('/sys/devices/system/cpu/intel_pstate/no_turbo', '1') == '0' else "OFF"
+        if os.path.exists('/sys/devices/system/cpu/cpufreq/boost'):
+            return "ON" if self.read_text('/sys/devices/system/cpu/cpufreq/boost', '0') == '1' else "OFF"
+        if os.path.exists('/sys/devices/system/cpu/amd_pstate/boost'):
+            return "ON" if self.read_text('/sys/devices/system/cpu/amd_pstate/boost', '0') == '1' else "OFF"
+        return "OFF"
 
     def read_cpu_temp(self):
         if not self.cpu_temp_path: return 0
@@ -259,14 +345,16 @@ class BoostDaemon:
             pl2 = str(int(self.read_text(f'{rapl_base}/constraint_1_power_limit_uw', '0')) // 1000000) if os.path.isdir(rapl_base) else '0'
             gov = self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor', 'unknown')
             epp = self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference', 'unknown')
-            turbo = "ON" if self.read_text('/sys/devices/system/cpu/intel_pstate/no_turbo', '1') == '0' else "OFF"
+            turbo = self.read_turbo_state()
             
+            battery_pct = self.read_battery_pct() or ""
+            battery_status = self.read_battery_status_text()
             iso_time = datetime.now().astimezone().replace(microsecond=0).isoformat()
-            row = f"{int(time.time())},{iso_time},{profile},{load},{temp},{gpu_temp},{gpu_power},{gpu_limit},{pl1},{pl2},{gov},{epp},{turbo}\n"
+            row = f"{int(time.time())},{iso_time},{profile},{load},{temp},{gpu_temp},{gpu_power},{gpu_limit},{pl1},{pl2},{gov},{epp},{turbo},{battery_pct},{battery_status}\n"
             
             if not os.path.exists(STATS_FILE):
                 with open(STATS_FILE, 'w') as f:
-                    f.write("epoch,iso,profile,cpu_load,cpu_temp,gpu_temp,gpu_power,gpu_limit,pl1,pl2,governor,epp,turbo\n")
+                    f.write("epoch,iso,profile,cpu_load,cpu_temp,gpu_temp,gpu_power,gpu_limit,pl1,pl2,governor,epp,turbo,battery_pct,battery_status\n")
             
             with open(STATS_FILE, 'a') as f:
                 f.write(row)
@@ -284,19 +372,24 @@ class BoostDaemon:
             self.log(f"Error recording stats: {e}")
 
     def run_command(self, cmd):
-        subprocess.Popen(cmd, shell=True, env=dict(os.environ, AUTO_HELPER_INTERNAL="1"))
+        subprocess.Popen(shlex.split(cmd), env=dict(os.environ, AUTO_HELPER_INTERNAL="1"))
         self._cached_profile = None
 
     def get_user_env(self):
         try:
             out = subprocess.check_output(['loginctl', 'list-sessions', '--no-legend'], text=True)
             session = None
+            first_session = None
             for line in out.strip().split('\n'):
                 if not line: continue
                 parts = line.split()
-                if 'active' in parts or parts[0]:
+                if not first_session and parts:
+                    first_session = parts[0]
+                if 'active' in parts:
                     session = parts[0]
                     break
+            if not session:
+                session = first_session
             if not session: return None
             
             if self.cached_session == session and self.cached_env is not None:
@@ -347,12 +440,11 @@ class BoostDaemon:
         cmd_env.update(env_vars)
         
         if action_label:
-            cmd = ['sudo', '-u', user]
-            for k, v in env_vars.items():
-                cmd.extend(['env', f"{k}={v}"])
-            cmd.extend(['notify-send', '--wait', '-u', level, '-a', 'Auto power helper', 
-                       '--expire-time=45000', f'--action=switch={action_label}', 
-                       '--action=snooze=Later', '--action=today=Not today', title, body])
+            env_args = [f"{k}={v}" for k, v in env_vars.items()]
+            cmd = ['sudo', '-u', user, 'env'] + env_args + [
+                'notify-send', '--wait', '-u', level, '-a', 'Auto power helper',
+                '--expire-time=45000', f'--action=switch={action_label}',
+                '--action=snooze=Later', '--action=today=Not today', title, body]
             
             def handle_notify():
                 try:
@@ -377,10 +469,9 @@ class BoostDaemon:
                     pass
             threading.Thread(target=handle_notify).start()
         else:
-            cmd = ['sudo', '-u', user]
-            for k, v in env_vars.items():
-                cmd.extend(['env', f"{k}={v}"])
-            cmd.extend(['notify-send', '-u', level, '-a', 'Auto power helper', title, body])
+            env_args = [f"{k}={v}" for k, v in env_vars.items()]
+            cmd = ['sudo', '-u', user, 'env'] + env_args + [
+                'notify-send', '-u', level, '-a', 'Auto power helper', title, body]
             subprocess.Popen(cmd, env=cmd_env)
         
         self.log(f"NOTIFY: {title}")
@@ -440,8 +531,9 @@ class BoostDaemon:
                 current_mtime = 0
                 
             if current_mtime != self.last_conf_mtime or self.last_conf_mtime == -1:
-                self.read_config()
-                self.apply_preset()
+                self.read_config()    # get new mode and all values
+                self.apply_preset()   # apply mode defaults
+                self.read_config()    # re-apply explicit config overrides on top
                 self.last_conf_mtime = current_mtime
             
             now = int(time.time())
@@ -455,6 +547,66 @@ class BoostDaemon:
             if now - self.last_stats >= self.stats_interval:
                 self.record_stats(load, temp, profile)
                 self.last_stats = now
+
+            # ── Battery & AC monitoring ──────────────────────────────
+            ac_online = self.read_ac_online()
+            battery_pct = self.read_battery_pct()
+
+            # AC plug/unplug event: switch profiles
+            if ac_online is not None and ac_online != self._last_ac_online:
+                self._last_ac_online = ac_online
+                if ac_online == 1:
+                    self.log(f"AC connected. Applying profile: {self.ac_profile}")
+                    self.run_command(f"/usr/local/bin/{self.ac_profile}")
+                    self.send_notification("AC Power Connected",
+                        f"Switched to {self.ac_profile} profile.")
+                elif ac_online == 0:
+                    self.log(f"On battery. Applying profile: {self.battery_profile}")
+                    self.run_command(f"/usr/local/bin/{self.battery_profile}")
+                    if battery_pct is not None and battery_pct <= self.battery_critical_pct:
+                        self.send_notification("Battery Critical",
+                            f"Only {battery_pct}% remaining. Maximum power saving.", level="critical")
+                    elif battery_pct is not None and battery_pct <= self.battery_low_pct:
+                        self.send_notification("Battery Low",
+                            f"{battery_pct}% remaining. Switched to {self.battery_profile} profile.")
+                    else:
+                        self.send_notification("On Battery",
+                            f"Switched to {self.battery_profile} profile.")
+                self._battery_notified_low = False
+                self._battery_notified_critical = False
+
+            # Track battery drain while on battery
+            if ac_online == 0 and battery_pct is not None:
+                self._last_battery_pct = battery_pct
+
+                # Critical battery: auto-switch to powersave/silent
+                if battery_pct <= self.battery_critical_pct and not self._battery_notified_critical:
+                    self._battery_notified_critical = True
+                    self._battery_notified_low = True  # don't also fire low notification
+                    if profile != "power-saver":
+                        self.log(f"Battery critical ({battery_pct}%). Auto powersave.")
+                        self.run_command("/usr/local/bin/powersave")
+                    if self.battery_low_notify == "yes":
+                        self.send_notification("Battery Critical",
+                            f"Only {battery_pct}% remaining. System is in maximum power saving mode.",
+                            level="critical")
+
+                # Low battery: notify once
+                elif battery_pct <= self.battery_low_pct and not self._battery_notified_low:
+                    self._battery_notified_low = True
+                    if self.battery_low_notify == "yes":
+                        self.send_notification("Battery Low",
+                            f"{battery_pct}% remaining. Consider plugging in your charger.")
+
+                # Reset notifications if battery goes back above thresholds (e.g. plugged in briefly)
+                if battery_pct > self.battery_low_pct:
+                    self._battery_notified_low = False
+                if battery_pct > self.battery_critical_pct:
+                    self._battery_notified_critical = False
+            elif ac_online == 1:
+                # Reset battery notifications when plugged in
+                self._battery_notified_low = False
+                self._battery_notified_critical = False
                 
             if self.mode == "off":
                 continue

@@ -79,6 +79,7 @@ set_cpu_profile "power-saver" "powersave" "power"
 set_turbo off
 apply_hardware_limits silent
 set_io_schedulers
+apply_peripheral_power silent
 
 safe_write never /sys/kernel/mm/transparent_hugepage/enabled
 echo "[VM]   THP=never"

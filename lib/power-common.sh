@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # /usr/local/lib/power-common.sh - shared helpers for boost/powersave/silent/restore
-# Version: 1.3.0
+# Version: 1.4.0
 
 # shellcheck disable=SC2034
 # Sourced by profile scripts for --version.
-readonly VERSION="1.3.0"
+readonly VERSION="1.4.0"
 ORIGINALS_FILE="/var/lib/power-profile/originals.env"
 FAN_BACKUP="/var/lib/power-profile/fan-curve-backup.env"
 # Fan controller hwmon — discovered at source time, not hardcoded
@@ -17,6 +17,8 @@ PPD_BIN="$(command -v powerprofilesctl 2>/dev/null)"
 AUTO_CONF_FILE="/etc/boost-auto.conf"
 AUTO_SERVICE="boost-auto.service"
 STATS_FILE="/var/lib/power-profile/stats.csv"
+BATTERY_SUPPLY=""
+_CACHED_BATTERY_CAPACITY=""
 
 # Colors for CLI styling
 if [[ -t 1 ]]; then
@@ -41,6 +43,91 @@ check_root() {
     if [[ $EUID -ne 0 ]]; then
         exec sudo "$0" "$@"
     fi
+}
+
+# ── Safe config reader (no eval, no source) ──────────────────────────
+
+# Reads a KEY=VALUE config file safely, exporting only valid variable names.
+# Usage: read_safe_config /path/to/config.conf
+# Sets global variables, never executes code.
+read_safe_config() {
+    local config_file="$1" line key val
+    [[ -f "$config_file" ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Strip leading/trailing whitespace
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        # Skip comments and empty lines
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        # Must contain = and key must be a valid shell identifier
+        [[ "$line" != *=* ]] && continue
+        key="${line%%=*}"
+        val="${line#*=}"
+        # Validate key: alphanumeric + underscore only
+        [[ "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || continue
+        # Strip quotes from value if present
+        val="${val%\"}"
+        val="${val#\"}"
+        val="${val%\'}"
+        val="${val#\'}"
+        printf -v "$key" "%s" "$val"
+    done < "$config_file"
+}
+
+# ── Battery helpers ──────────────────────────────────────────────────
+
+# Discover the battery power supply directory (cached after first call)
+find_battery_supply() {
+    [[ -n "$BATTERY_SUPPLY" ]] && echo "$BATTERY_SUPPLY" && return 0
+    local supply
+    for supply in /sys/class/power_supply/*/; do
+        local type
+        type=$(cat "${supply}type" 2>/dev/null || true)
+        [[ "$type" == "Battery" ]] || continue
+        BATTERY_SUPPLY="$supply"
+        echo "$supply"
+        return 0
+    done
+    return 1
+}
+
+# Returns battery capacity percentage (0-100), or empty string if no battery
+get_battery_pct() {
+    local supply
+    supply=$(find_battery_supply) || { echo ""; return 1; }
+    local cap
+    cap=$(cat "${supply}capacity" 2>/dev/null || echo "")
+    [[ -z "$cap" ]] && { echo ""; return 1; }
+    echo "$cap"
+}
+
+# Returns 1 if AC is online, 0 if on battery, empty if unknown
+get_ac_online() {
+    local supply
+    for supply in /sys/class/power_supply/*/; do
+        local type
+        type=$(cat "${supply}type" 2>/dev/null || true)
+        [[ "$type" == "Mains" ]] || continue
+        cat "${supply}online" 2>/dev/null || echo ""
+        return 0
+    done
+    echo ""
+}
+
+# Returns "charging", "discharging", "full", "unknown"
+get_battery_status() {
+    local supply
+    supply=$(find_battery_supply) || { echo "unknown"; return 1; }
+    cat "${supply}status" 2>/dev/null || echo "unknown"
+}
+
+# Returns battery voltage in microvolts, or empty
+get_battery_voltage() {
+    local supply
+    supply=$(find_battery_supply) || { echo ""; return 1; }
+    local uv
+    uv=$(cat "${supply}voltage_now" 2>/dev/null || echo "")
+    echo "$uv"
 }
 
 set_auto_config_value() {
@@ -228,17 +315,19 @@ get_gpu_csv() {
 ensure_stats_file() {
     mkdir -p "$(dirname "$STATS_FILE")"
     if [[ ! -f "$STATS_FILE" ]]; then
-        echo "epoch,iso,profile,cpu_load,cpu_temp,gpu_temp,gpu_power,gpu_limit,pl1,pl2,governor,epp,turbo" > "$STATS_FILE"
+        echo "epoch,iso,profile,cpu_load,cpu_temp,gpu_temp,gpu_power,gpu_limit,pl1,pl2,governor,epp,turbo,battery_pct,battery_status" > "$STATS_FILE"
     fi
 }
 
 record_power_sample() {
-    local cpu_load="${1:-}" gpu_csv gpu_temp gpu_power gpu_limit
+    local cpu_load="${1:-}" gpu_csv gpu_temp gpu_power gpu_limit bat_pct bat_status
     [[ -n "$cpu_load" ]] || cpu_load=$(get_cpu_load_percent)
     gpu_csv=$(get_gpu_csv)
     IFS=',' read -r gpu_temp gpu_power gpu_limit <<< "$gpu_csv"
+    bat_pct=$(get_battery_pct 2>/dev/null || echo "")
+    bat_status=$(get_battery_status 2>/dev/null || echo "Unknown")
     ensure_stats_file
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "$(date +%s)" \
         "$(date -Is)" \
         "$(get_power_profile)" \
@@ -251,7 +340,9 @@ record_power_sample() {
         "$(get_rapl_limit_w 1)" \
         "$(get_governor)" \
         "$(get_epp)" \
-        "$(get_turbo_state)" >> "$STATS_FILE"
+        "$(get_turbo_state)" \
+        "${bat_pct}" \
+        "${bat_status}" >> "$STATS_FILE"
 }
 
 save_originals() {
@@ -439,8 +530,7 @@ save_fan_curve() {
 
 restore_fan_curve() {
     [[ ! -f "$FAN_BACKUP" || ! -d "$HWMON" ]] && return 0
-    # shellcheck source=/dev/null
-    source "$FAN_BACKUP"
+    read_safe_config "$FAN_BACKUP"
     for i in 1 2 3 4 5; do
         local pwm_var="ORIG_PWM_PT${i}_PWM" temp_var="ORIG_PWM_PT${i}_TEMP"
         safe_write "${!pwm_var}" "${HWMON}/pwm1_auto_point${i}_pwm" 2>/dev/null || true
@@ -448,6 +538,95 @@ restore_fan_curve() {
     done
     safe_write "${ORIG_PWM1_FLOOR:-1}" "${HWMON}/pwm1_floor" 2>/dev/null || true
     echo "[FAN]  Smart Fan IV curve restored"
+}
+
+# ── WiFi / Bluetooth / USB power saving ──────────────────────────────
+
+# Set WiFi power save (on|off). Uses iw if available, else sysfs.
+set_wifi_powersave() {
+    local state="$1"  # on | off
+    if command -v iw >/dev/null 2>&1; then
+        local iface
+        for iface in /sys/class/net/wlan*/; do
+            [[ -d "$iface" ]] || continue
+            iface=$(basename "$iface")
+            if iw dev "$iface" set power_save "$state" 2>/dev/null; then
+                echo "  [NET] $iface power_save=$state"
+            fi
+        done
+    fi
+    # Also set device power control via sysfs
+    local dev
+    for dev in /sys/class/net/wlan*/device/power/control; do
+        [[ -f "$dev" ]] || continue
+        local val="on"
+        [[ "$state" == "on" ]] && val="auto"
+        safe_write "$val" "$dev" 2>/dev/null && \
+            echo "  [NET] $(echo "$dev" | cut -d/ -f5) power/control=$val"
+    done
+}
+
+# Set Bluetooth power control (auto|on)
+set_bt_power() {
+    local state="$1"  # powersave | performance
+    local val="on"
+    [[ "$state" == "powersave" ]] && val="auto"
+    local dev
+    for dev in /sys/class/bluetooth/*/device/power/control; do
+        [[ -f "$dev" ]] || continue
+        safe_write "$val" "$dev" 2>/dev/null && \
+            echo "  [BT]  $(echo "$dev" | cut -d/ -f5) power/control=$val"
+    done
+}
+
+# Set USB autosuspend (auto|on)
+set_usb_autosuspend() {
+    local state="$1"  # powersave | performance
+    local val="on"
+    [[ "$state" == "powersave" ]] && val="auto"
+    local count=0
+    local dev
+    for dev in /sys/bus/usb/devices/*/power/control; do
+        [[ -f "$dev" ]] || continue
+        safe_write "$val" "$dev" 2>/dev/null && ((count++))
+    done
+    [[ $count -gt 0 ]] && echo "  [USB] $count devices power/control=$val"
+}
+
+# Set PCI Express ASPM (via sysfs)
+set_pcie_aspm() {
+    local state="$1"  # powersave | performance
+    local policy="performance"
+    [[ "$state" == "powersave" ]] && policy="powersave"
+    if [[ -f /sys/module/pcie_aspm/parameters/policy ]]; then
+        safe_write "$policy" /sys/module/pcie_aspm/parameters/policy 2>/dev/null && \
+            echo "  [PCI] ASPM=$policy"
+    fi
+}
+
+# Apply all peripheral power saving for a given mode
+apply_peripheral_power() {
+    local mode="$1"  # boost | powersave | silent | restore
+    case "$mode" in
+        boost|restore)
+            set_wifi_powersave off
+            set_bt_power performance
+            set_usb_autosuspend performance
+            set_pcie_aspm performance
+            ;;
+        powersave)
+            set_wifi_powersave on
+            set_bt_power powersave
+            set_usb_autosuspend powersave
+            set_pcie_aspm powersave
+            ;;
+        silent)
+            set_wifi_powersave on
+            set_bt_power powersave
+            set_usb_autosuspend powersave
+            set_pcie_aspm powersave
+            ;;
+    esac
 }
 
 reset_process_priorities() {
