@@ -2,7 +2,7 @@
   <br/>
 
   # ⚡ Boost
-  **Intelligent, premium Linux power management for Intel + AMD + NVIDIA desktops.**
+  **Intelligent, premium Linux power management for Intel, AMD, NVIDIA, and Fedora Asahi systems.**
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
   [![ShellCheck](https://github.com/horiastanxd/boost/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/horiastanxd/boost/actions/workflows/shellcheck.yml)
@@ -65,8 +65,9 @@ Tested on **i7-14700KF + RTX 5060 Ti** on Ubuntu 24.04 (one case fan):
 | AMD CPU (governor + EPP) | ✅ Full | Ryzen 5000/7000 series |
 | NVIDIA GPU (power limits) | ✅ Full | Requires `nvidia-smi` |
 | AMD GPU (power limits) | ✅ Full | Requires `amdgpu` driver (v1.3.0+) |
+| Apple Silicon / Fedora Asahi | ✅ Tested | Tested on Fedora Asahi Remix 44, MacBook Pro 14-inch M2 Pro (2023) |
 | Intel Arc GPU | 🔜 Planned | No upstream power limit interface yet |
-| Laptop / battery | 🔜 Planned | AC event trigger exists; battery profiles coming |
+| Laptop / battery | ✅ Partial | Battery telemetry and AC/battery profile switching supported |
 
 ---
 
@@ -150,13 +151,16 @@ Yes. GPU management is skipped gracefully. AMD GPU support added in v1.3.0 via `
 Yes - running multiple power managers simultaneously causes conflicts. Disable TLP/auto-cpufreq before using Boost.
 
 **Q: Can I use Boost on a laptop?**  
-Partially. Profile switching works. Battery-aware profiles are planned. AC event trigger already fires when you plug/unplug.
+Yes, for supported Linux power backends. Battery telemetry and AC/battery profile switching are supported; hardware-specific power limits are applied only when the platform exposes safe sysfs interfaces.
+
+**Q: Does Boost work on Fedora Asahi Remix / Apple Silicon?**
+Yes. Boost has been tested on **Fedora Asahi Remix 44** running on a **MacBook Pro 14-inch, M2 Pro, 2023**. On this setup, Boost uses TuneD plus cpufreq policy controls, reads Apple SMC thermal sensors through `macsmc_hwmon`, and skips Intel RAPL/NVIDIA controls as not applicable.
 
 **Q: How do I undo everything?**  
 Run `restore` to return to BIOS defaults, then `sudo ./uninstall.sh` to remove all files.
 
 **Q: The tray applet doesn't appear.**  
-Install `gir1.2-ayatanaappindicator3-0.1` (Ubuntu/Debian) or `libayatana-appindicator3` (Fedora/Arch). Then run `boost-tray &`.
+Install `gir1.2-ayatanaappindicator3-0.1` (Ubuntu/Debian) or `libayatana-appindicator-gtk3` (Fedora/Arch). On GNOME, also install/enable an AppIndicator extension such as `gnome-shell-extension-appindicator`, then run `boost-tray &`.
 
 ---
 
@@ -182,20 +186,23 @@ auto mode quiet      # Enable strict thermal constraints
 
 | Component | Requirement |
 |-----------|-------------|
-| CPU driver | `intel_pstate` (Intel 6th gen+) or `amd_pstate` (Zen 2+) |
+| CPU driver | `intel_pstate`, `amd_pstate`, or generic cpufreq `policy*` controls |
 | GPU | NVIDIA with `nvidia-smi` *(optional)* |
-| GNOME sync | `power-profiles-daemon` + `powerprofilesctl` *(optional)* |
+| Power profile backend | `power-profiles-daemon` + `powerprofilesctl`, or TuneD on Fedora/Asahi *(optional)* |
 | Fan control | `nct6798` or compatible SuperIO *(optional)* |
 | Privileges | sudo |
 
 Check your compatibility in one line:
 ```bash
 cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver  # expects intel_pstate or amd_pstate
+cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor  # generic cpufreq / Asahi
 nvidia-smi -L                                             # expects GPU list
 ls /sys/class/powercap/intel-rapl/                        # expects RAPL available
 ```
 
 > **AMD users:** RAPL and fan control work identically. `amd_pstate` governor/EPP logic is supported. Pull requests welcome!
+
+> **Fedora Asahi users:** Intel RAPL, NVIDIA power limits, and EPP may be unavailable by design. Boost treats those as not applicable and uses TuneD, cpufreq policy governors, and Apple SMC sensors instead.
 
 ---
 
