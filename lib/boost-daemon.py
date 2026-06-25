@@ -107,13 +107,32 @@ class BoostDaemon:
             if os.path.exists(name_file):
                 with open(name_file, 'r') as f:
                     name = f.read().strip()
-                if name in ['coretemp', 'k10temp', 'zenpower', 'amd_energy']:
+                if name in ['coretemp', 'k10temp', 'zenpower', 'amd_energy', 'macsmc_hwmon']:
+                    if name == "macsmc_hwmon":
+                        best_path = None
+                        best_temp = 0
+                        for f in os.listdir(hwmon_path):
+                            if f.startswith("temp") and f.endswith("_input"):
+                                temp_path = os.path.join(hwmon_path, f)
+                                try:
+                                    temp = int(self.read_text(temp_path, "0") or "0")
+                                except Exception:
+                                    temp = 0
+                                if temp > best_temp:
+                                    best_temp = temp
+                                    best_path = temp_path
+                        if best_path:
+                            return best_path
                     for f in os.listdir(hwmon_path):
                         if f.endswith('_label') and f.startswith('temp'):
                             try:
                                 with open(os.path.join(hwmon_path, f), 'r') as lbl:
                                     label = lbl.read().strip()
-                                if label in {"Package id 0", "Tctl", "Tdie", "Tccd1", "Tccd2"}:
+                                if label in {
+                                    "Package id 0", "Tctl", "Tdie", "Tccd1", "Tccd2",
+                                    "WiFi/BT Module Temp", "NAND Flash Temperature",
+                                    "Composite", "Battery Hotspot",
+                                }:
                                     return os.path.join(hwmon_path, f.replace('_label', '_input'))
                             except Exception: pass
                     fallback = os.path.join(hwmon_path, "temp1_input")
@@ -241,7 +260,9 @@ class BoostDaemon:
             return "ON" if self.read_text('/sys/devices/system/cpu/cpufreq/boost', '0') == '1' else "OFF"
         if os.path.exists('/sys/devices/system/cpu/amd_pstate/boost'):
             return "ON" if self.read_text('/sys/devices/system/cpu/amd_pstate/boost', '0') == '1' else "OFF"
-        return "OFF"
+        if os.path.exists('/sys/devices/system/cpu/cpufreq/policy0/boost'):
+            return "ON" if self.read_text('/sys/devices/system/cpu/cpufreq/policy0/boost', '0') == '1' else "OFF"
+        return "unsupported"
 
     def read_cpu_temp(self):
         if not self.cpu_temp_path: return 0
@@ -284,7 +305,18 @@ class BoostDaemon:
             try:
                 self._cached_profile = subprocess.check_output(['powerprofilesctl', 'get'], text=True).strip()
             except Exception:
-                self._cached_profile = "balanced"
+                try:
+                    tuned = subprocess.check_output(['tuned-adm', 'active'], text=True).strip()
+                    tuned = tuned.replace("Current active profile: ", "")
+                    self._cached_profile = {
+                        "throughput-performance": "performance",
+                        "latency-performance": "performance",
+                        "accelerator-performance": "performance",
+                        "powersave": "power-saver",
+                        "balanced-battery": "power-saver",
+                    }.get(tuned, "balanced")
+                except Exception:
+                    self._cached_profile = "balanced"
         return self._cached_profile
 
     def read_text(self, path, default=""):
@@ -343,8 +375,8 @@ class BoostDaemon:
             rapl_base = '/sys/class/powercap/intel-rapl/intel-rapl:0'
             pl1 = str(int(self.read_text(f'{rapl_base}/constraint_0_power_limit_uw', '0')) // 1000000) if os.path.isdir(rapl_base) else '0'
             pl2 = str(int(self.read_text(f'{rapl_base}/constraint_1_power_limit_uw', '0')) // 1000000) if os.path.isdir(rapl_base) else '0'
-            gov = self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor', 'unknown')
-            epp = self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference', 'unknown')
+            gov = self.read_text('/sys/devices/system/cpu/cpufreq/policy0/scaling_governor', '') or self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor', 'unknown')
+            epp = self.read_text('/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference', '') or self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference', 'unsupported')
             turbo = self.read_turbo_state()
             
             battery_pct = self.read_battery_pct() or ""

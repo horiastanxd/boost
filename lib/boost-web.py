@@ -371,16 +371,18 @@ def get_sys_state() -> dict[str, str]:
         if _SYS_STATE_CACHE and now - _SYS_STATE_CACHE.get('time', 0) < 10:
             return _SYS_STATE_CACHE['val']
             
-    gov = read_text("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
-    epp = read_text("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference")
+    gov = read_text("/sys/devices/system/cpu/cpufreq/policy0/scaling_governor", "") or read_text("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", "")
+    epp = read_text("/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference", "") or read_text("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference", "") or "unsupported"
     if Path("/sys/devices/system/cpu/intel_pstate/no_turbo").exists():
         turbo = "ON" if read_text("/sys/devices/system/cpu/intel_pstate/no_turbo", "1") == "0" else "OFF"
     elif Path("/sys/devices/system/cpu/cpufreq/boost").exists():
         turbo = "ON" if read_text("/sys/devices/system/cpu/cpufreq/boost", "0") == "1" else "OFF"
     elif Path("/sys/devices/system/cpu/amd_pstate/boost").exists():
         turbo = "ON" if read_text("/sys/devices/system/cpu/amd_pstate/boost", "0") == "1" else "OFF"
+    elif Path("/sys/devices/system/cpu/cpufreq/policy0/boost").exists():
+        turbo = "ON" if read_text("/sys/devices/system/cpu/cpufreq/policy0/boost", "0") == "1" else "OFF"
     else:
-        turbo = "OFF"
+        turbo = "unsupported"
     
     thp_raw = read_text("/sys/kernel/mm/transparent_hugepage/enabled", "")
     m = re.search(r'\[([^\]]+)\]', thp_raw)
@@ -414,7 +416,22 @@ def active_service(name: str) -> str:
 
 
 def power_profile() -> str:
-    return cached_run("powerprofile", ["powerprofilesctl", "get"], 5) or "unknown"
+    ppd = cached_run("powerprofile_ppd", ["powerprofilesctl", "get"], 5)
+    if ppd:
+        return ppd
+    tuned = cached_run("powerprofile_tuned", ["tuned-adm", "active"], 5)
+    if tuned.startswith("Current active profile: "):
+        tuned = tuned.replace("Current active profile: ", "", 1)
+    tuned_map = {
+        "throughput-performance": "performance",
+        "latency-performance": "performance",
+        "accelerator-performance": "performance",
+        "powersave": "power-saver",
+        "balanced-battery": "power-saver",
+    }
+    if tuned in tuned_map:
+        return tuned_map[tuned]
+    return tuned or "unknown"
 
 
 _CACHED_TEMP_FILE: str | None = None
@@ -428,11 +445,26 @@ def cpu_temp_c() -> int:
 
     for hwmon in Path("/sys/class/hwmon").glob("hwmon*"):
         name = read_text(hwmon / "name", "")
-        if name not in {"coretemp", "k10temp", "zenpower", "amd_energy"}:
+        if name not in {"coretemp", "k10temp", "zenpower", "amd_energy", "macsmc_hwmon"}:
             continue
+        if name == "macsmc_hwmon":
+            best_target = ""
+            best_raw = 0
+            for input_file in hwmon.glob("temp*_input"):
+                raw = int(read_text(input_file, "0") or "0")
+                if raw > best_raw:
+                    best_raw = raw
+                    best_target = str(input_file)
+            if best_target:
+                _CACHED_TEMP_FILE = best_target
+                return best_raw // 1000
         for label_file in hwmon.glob("temp*_label"):
             label = read_text(label_file, "")
-            if label in {"Package id 0", "Tctl", "Tdie", "Tccd1", "Tccd2"}:
+            if label in {
+                "Package id 0", "Tctl", "Tdie", "Tccd1", "Tccd2",
+                "WiFi/BT Module Temp", "NAND Flash Temperature",
+                "Composite", "Battery Hotspot",
+            }:
                 target = str(label_file).replace("_label", "_input")
                 raw = int(read_text(target, "0") or "0")
                 _CACHED_TEMP_FILE = target
@@ -839,7 +871,8 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
             with _SYS_STATE_LOCK:
                 _SYS_STATE_CACHE.clear()
             with _CACHE_LOCK:
-                _CACHE.pop("powerprofile", None)
+                _CACHE.pop("powerprofile_ppd", None)
+                _CACHE.pop("powerprofile_tuned", None)
         return {"ok": True, "message": f"{action.capitalize()} applied successfully."}
 
     # On error, just return the last line of stderr or stdout so it fits in a toast

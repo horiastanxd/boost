@@ -247,10 +247,19 @@ parse_duration() {
 friendly_profile() {
     case "${1:-unknown}" in
         performance) echo "Performance" ;;
+        throughput-performance|latency-performance|accelerator-performance) echo "Performance" ;;
         power-saver) echo "Eco Mode" ;;
+        powersave|balanced-battery) echo "Eco Mode" ;;
         balanced) echo "Balanced" ;;
+        desktop) echo "Desktop" ;;
         *) echo "${1:-unknown}" ;;
     esac
+}
+
+current_power_profile() {
+    powerprofilesctl get 2>/dev/null ||
+        tuned-adm active 2>/dev/null | sed 's/^Current active profile: //' ||
+        echo unknown
 }
 
 format_seconds() {
@@ -408,6 +417,9 @@ check_item() {
     local ok="$1" label="$2" hint="${3:-}"
     if [[ "$ok" == "yes" ]]; then
         printf 'OK   %s\n' "$label"
+    elif [[ "$ok" == "na" ]]; then
+        printf 'N/A  %s\n' "$label"
+        [[ -n "$hint" ]] && printf '     %s\n' "$hint"
     else
         printf 'WARN %s\n' "$label"
         [[ -n "$hint" ]] && printf '     %s\n' "$hint"
@@ -417,10 +429,28 @@ check_item() {
 show_doctor() {
     local service_state profile notify_actions temp_ok rapl_ok gpu_ok ppd_ok report_ok stats_ok
     service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || echo inactive)
-    profile=$(powerprofilesctl get 2>/dev/null || echo unknown)
-    command -v powerprofilesctl >/dev/null 2>&1 && ppd_ok=yes || ppd_ok=no
-    command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1 && gpu_ok=yes || gpu_ok=no
-    [[ -r /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw ]] && rapl_ok=yes || rapl_ok=no
+    profile=$(current_power_profile)
+    if command -v powerprofilesctl >/dev/null 2>&1; then
+        ppd_ok=yes
+    elif command -v tuned-adm >/dev/null 2>&1; then
+        ppd_ok=na
+    else
+        ppd_ok=no
+    fi
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        nvidia-smi -L >/dev/null 2>&1 && gpu_ok=yes || gpu_ok=no
+    elif [[ "$(uname -m)" == "aarch64" ]] && grep -qi 'apple' /proc/device-tree/model 2>/dev/null; then
+        gpu_ok=na
+    else
+        gpu_ok=no
+    fi
+    if [[ -r /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw ]]; then
+        rapl_ok=yes
+    elif [[ "$(uname -m)" == "aarch64" ]] && grep -qi 'apple' /proc/device-tree/model 2>/dev/null; then
+        rapl_ok=na
+    else
+        rapl_ok=no
+    fi
     if declare -F get_cpu_temp_c >/dev/null && [[ "$(get_cpu_temp_c 2>/dev/null || echo 0)" -gt 0 ]]; then
         temp_ok=yes
     else
@@ -439,9 +469,9 @@ Profile:     $(friendly_profile "$profile")
 Quiet hours: ${QUIET_HOURS_START}-${QUIET_HOURS_END}
 
 EOF
-    check_item "$ppd_ok" "GNOME power profile sync" "Install power-profiles-daemon for GNOME indicator sync."
-    check_item "$gpu_ok" "NVIDIA stats and power limit" "nvidia-smi is missing or cannot see the GPU."
-    check_item "$rapl_ok" "CPU power limits" "RAPL path missing; CPU PL1/PL2 tuning may not work on this machine."
+    check_item "$ppd_ok" "Power profile backend" "Using TuneD on this system; GNOME's powerprofilesctl is optional."
+    check_item "$gpu_ok" "Discrete GPU stats and power limit" "Not applicable on Apple Silicon integrated GPU."
+    check_item "$rapl_ok" "Intel RAPL CPU power limits" "Not applicable on Apple Silicon; cpufreq/TuneD controls are used instead."
     check_item "$temp_ok" "CPU temperature sensor" "Install/configure lm-sensors if temperature is missing."
     check_item "$notify_actions" "Notification buttons" "Your notify-send may not support action buttons."
     check_item "$stats_ok" "Statistics history" "Run 'auto stats' once, or keep auto mode running for a minute."
@@ -584,7 +614,7 @@ case "${1:-start}" in
         web_state=$(systemctl is-active "$WEB_SERVICE" 2>/dev/null || true)
         [[ -z "$web_state" || "$web_state" == "inactive" ]] && web_state="inactive"
 
-        profile=$(powerprofilesctl get 2>/dev/null || echo unknown)
+        profile=$(current_power_profile)
         ambient=$(read_ambient_temp_c 2>/dev/null || true)
         echo "Auto helper: $service_state"
         echo "Web dashboard: $web_state (${WEB_URL})"
@@ -713,4 +743,3 @@ case "${1:-start}" in
 esac
 
 ensure_state_dir
-

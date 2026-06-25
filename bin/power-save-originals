@@ -9,9 +9,13 @@ ORIGINALS_FILE="/var/lib/power-profile/originals.env"
 
 mkdir -p "$(dirname "$ORIGINALS_FILE")"
 PPD_BIN="$(command -v powerprofilesctl 2>/dev/null)"
+TUNED_BIN="$(command -v tuned-adm 2>/dev/null)"
 ppd_profile=""
 if [[ -n "$PPD_BIN" ]]; then
     ppd_profile=$("$PPD_BIN" get 2>/dev/null) || true
+fi
+if [[ -z "$ppd_profile" && -n "$TUNED_BIN" ]]; then
+    ppd_profile=$("$TUNED_BIN" active 2>/dev/null | sed 's/^Current active profile: //' || true)
 fi
 _amd_gpu_hwmon=""
 for _card in /sys/class/drm/card*/; do
@@ -36,10 +40,15 @@ elif [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then
 elif [[ -f /sys/devices/system/cpu/amd_pstate/boost ]]; then
     _orig_turbo=$(cat /sys/devices/system/cpu/amd_pstate/boost 2>/dev/null)
     _orig_turbo_type="amd_pstate"
+elif [[ -f /sys/devices/system/cpu/cpufreq/policy0/boost ]]; then
+    _orig_turbo=$(cat /sys/devices/system/cpu/cpufreq/policy0/boost 2>/dev/null)
+    _orig_turbo_type="cpufreq_policy"
 fi
+_orig_gov=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null || cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || true)
+_orig_epp=$(cat /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference 2>/dev/null || cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null || true)
 cat > "$ORIGINALS_FILE" << EOF
-ORIG_GOV=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)
-ORIG_EPP=$(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null)
+ORIG_GOV=${_orig_gov}
+ORIG_EPP=${_orig_epp}
 ORIG_PPD_PROFILE=${ppd_profile}
 ORIG_TURBO=${_orig_turbo}
 ORIG_TURBO_TYPE=${_orig_turbo_type}

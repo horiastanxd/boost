@@ -32,7 +32,7 @@ if [[ -n "${ORIG_TURBO:-}" ]]; then
         intel)
             _turbo_state=$([[ "${ORIG_TURBO}" == "0" ]] && echo "on" || echo "off")
             ;;
-        cpufreq|amd_pstate)
+        cpufreq|cpufreq_policy|amd_pstate)
             _turbo_state=$([[ "${ORIG_TURBO}" == "1" ]] && echo "on" || echo "off")
             ;;
         *)

@@ -13,7 +13,8 @@ for _hwmon_dir in /sys/class/hwmon/hwmon*; do
     [[ -f "${_hwmon_dir}/pwm1_auto_point1_pwm" ]] && HWMON="$_hwmon_dir" && break
 done
 unset _hwmon_dir
-PPD_BIN="$(command -v powerprofilesctl 2>/dev/null)"
+PPD_BIN="$(command -v powerprofilesctl 2>/dev/null || true)"
+TUNED_BIN="$(command -v tuned-adm 2>/dev/null || true)"
 AUTO_CONF_FILE="/etc/boost-auto.conf"
 AUTO_SERVICE="boost-auto.service"
 STATS_FILE="/var/lib/power-profile/stats.csv"
@@ -166,14 +167,40 @@ set_cpu_profile() {
         return
     fi
 
-    # ppd not available - set manually
-    for gov_file in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-        echo "$gov" > "$gov_file"
+    if [[ -n "$TUNED_BIN" ]] && systemctl is-active --quiet tuned 2>/dev/null; then
+        local tuned_profile="balanced"
+        case "$ppd_profile" in
+            performance) tuned_profile="throughput-performance" ;;
+            power-saver) tuned_profile="powersave" ;;
+            throughput-performance|latency-performance|accelerator-performance|desktop|balanced|balanced-battery|powersave)
+                tuned_profile="$ppd_profile"
+                ;;
+            *) tuned_profile="balanced" ;;
+        esac
+        "$TUNED_BIN" profile "$tuned_profile" 2>/dev/null && \
+            echo "[CPU]  tuned -> $tuned_profile"
+    fi
+
+    local wrote_gov=0 wrote_epp=0 gov_file epp_file
+    for gov_file in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        [[ -f "$gov_file" ]] || continue
+        if echo "$gov" > "$gov_file" 2>/dev/null; then
+            wrote_gov=1
+        fi
     done
-    for epp_file in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
-        echo "$epp" > "$epp_file"
+    for epp_file in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
+        [[ -f "$epp_file" ]] || continue
+        if echo "$epp" > "$epp_file" 2>/dev/null; then
+            wrote_epp=1
+        fi
     done
-    echo "[CPU]  governor=$gov, EPP=$epp (manual)"
+    if [[ "$wrote_epp" == "1" ]]; then
+        echo "[CPU]  governor=$gov, EPP=$epp (manual)"
+    elif [[ "$wrote_gov" == "1" ]]; then
+        echo "[CPU]  governor=$gov (manual; EPP unsupported)"
+    else
+        echo "[CPU]  no writable cpufreq governor found"
+    fi
 }
 
 find_hwmon_by_name() {
@@ -211,14 +238,26 @@ get_cpu_temp_c() {
     fi
 
     local hwmon label_file input_file label
-    hwmon=$(find_hwmon_by_name '^(coretemp|k10temp|zenpower|amd_energy)$' 2>/dev/null || true)
+    hwmon=$(find_hwmon_by_name '^(coretemp|k10temp|zenpower|amd_energy|macsmc_hwmon)$' 2>/dev/null || true)
     [[ -z "$hwmon" ]] && return 1
+
+    if [[ "$(cat "${hwmon}/name" 2>/dev/null)" == "macsmc_hwmon" ]]; then
+        local max_raw=0 temp_input
+        for temp_input in "$hwmon"/temp*_input; do
+            [[ -r "$temp_input" ]] || continue
+            raw=$(cat "$temp_input" 2>/dev/null || echo 0)
+            [[ "$raw" -gt "$max_raw" ]] && max_raw="$raw" && _CACHED_CPU_TEMP_FILE="$temp_input"
+        done
+        [[ "$max_raw" -gt 0 ]] || return 1
+        echo $(( max_raw / 1000 ))
+        return 0
+    fi
 
     for label_file in "$hwmon"/temp*_label; do
         [[ -r "$label_file" ]] || continue
         label=$(cat "$label_file" 2>/dev/null)
         case "$label" in
-            "Package id 0"|"Tctl"|"Tdie"|"Tccd1"|"Tccd2")
+            "Package id 0"|"Tctl"|"Tdie"|"Tccd1"|"Tccd2"|"WiFi/BT Module Temp"|"NAND Flash Temperature"|"Composite"|"Battery Hotspot")
                 input_file="${label_file%_label}_input"
                 raw=$(cat "$input_file" 2>/dev/null || echo 0)
                 if [[ "$raw" -gt 0 ]]; then
@@ -267,15 +306,25 @@ get_rapl_limit_w() {
 }
 
 get_power_profile() {
-    powerprofilesctl get 2>/dev/null || echo unknown
+    if command -v powerprofilesctl >/dev/null 2>&1; then
+        powerprofilesctl get 2>/dev/null && return
+    fi
+    if command -v tuned-adm >/dev/null 2>&1; then
+        tuned-adm active 2>/dev/null | sed 's/^Current active profile: //' && return
+    fi
+    echo unknown
 }
 
 get_governor() {
-    cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown
+    cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null ||
+        cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null ||
+        echo unknown
 }
 
 get_epp() {
-    cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null || echo unknown
+    cat /sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference 2>/dev/null ||
+        cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null ||
+        echo unsupported
 }
 
 get_turbo_state() {
@@ -286,7 +335,7 @@ get_turbo_state() {
     elif [[ -f /sys/devices/system/cpu/amd_pstate/boost ]]; then
         [[ "$(cat /sys/devices/system/cpu/amd_pstate/boost 2>/dev/null)" = "1" ]] && echo ON || echo OFF
     else
-        echo "OFF"
+        echo "unsupported"
     fi
 }
 
@@ -356,8 +405,8 @@ save_originals() {
     local _amd_gpu_hwmon
     _amd_gpu_hwmon=$(find_amd_gpu_hwmon 2>/dev/null || true)
     cat > "$ORIGINALS_FILE" << EOF
-ORIG_GOV=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)
-ORIG_EPP=$(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null)
+ORIG_GOV=$(get_governor)
+ORIG_EPP=$(get_epp)
 ORIG_PPD_PROFILE=${ppd_profile}
 ORIG_TURBO=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null)
 ORIG_PL1=$([[ -d "$_rapl_base" ]] && cat "${_rapl_base}/constraint_0_power_limit_uw" 2>/dev/null || echo "")
@@ -497,6 +546,16 @@ set_turbo() {
         local val=1
         [[ "$state" == "off" ]] && val=0
         safe_write "$val" /sys/devices/system/cpu/amd_pstate/boost
+    elif [[ -f /sys/devices/system/cpu/cpufreq/policy0/boost ]]; then
+        local val=1 policy_boost
+        [[ "$state" == "off" ]] && val=0
+        for policy_boost in /sys/devices/system/cpu/cpufreq/policy*/boost; do
+            [[ -f "$policy_boost" ]] || continue
+            safe_write "$val" "$policy_boost" 2>/dev/null || true
+        done
+    else
+        echo "[CPU]  turbo unsupported on this platform"
+        return 0
     fi
     echo "[CPU]  turbo=${state^^}"
 }
@@ -695,9 +754,9 @@ show_status() {
     
     # PPD color
     local ppd_disp="$ppd"
-    if [[ "$ppd" == "performance" ]]; then ppd_disp="${C_RED}Performance (Boost)${C_RESET}"
+    if [[ "$ppd" == "performance" || "$ppd" == "throughput-performance" || "$ppd" == "latency-performance" || "$ppd" == "accelerator-performance" ]]; then ppd_disp="${C_RED}Performance (Boost)${C_RESET}"
     elif [[ "$ppd" == "balanced" ]]; then ppd_disp="${C_GREEN}Balanced (Powersave)${C_RESET}"
-    elif [[ "$ppd" == "power-saver" ]]; then ppd_disp="${C_CYAN}Power Saver (Silent)${C_RESET}"; fi
+    elif [[ "$ppd" == "power-saver" || "$ppd" == "powersave" || "$ppd" == "balanced-battery" ]]; then ppd_disp="${C_CYAN}Power Saver (Silent)${C_RESET}"; fi
     
     # Turbo color
     local turbo_disp="$turbo"

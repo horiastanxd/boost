@@ -265,7 +265,9 @@ drawHistoryChart(history);
 EOF
 } > "$REPORT_FILE"
 
-ln -sf "$REPORT_FILE" "${REPORT_DIR}/latest.html"
+if [[ "$(readlink -f "$REPORT_FILE")" != "$(readlink -f "${REPORT_DIR}/latest.html" 2>/dev/null || true)" ]]; then
+    ln -sf "$REPORT_FILE" "${REPORT_DIR}/latest.html"
+fi
 echo "Report: ${REPORT_FILE}"
 
 if [[ "$OPEN_REPORT" == "1" ]]; then
