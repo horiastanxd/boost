@@ -97,11 +97,26 @@ def get_cpu_temp():
 
     for hwmon in Path("/sys/class/hwmon").glob("hwmon*"):
         name = read_text(hwmon / "name", "")
-        if name not in {"coretemp", "k10temp", "zenpower", "amd_energy"}:
+        if name not in {"coretemp", "k10temp", "zenpower", "amd_energy", "macsmc_hwmon"}:
             continue
+        if name == "macsmc_hwmon":
+            best_file = None
+            best_raw = 0
+            for input_file in hwmon.glob("temp*_input"):
+                raw = int(read_text(input_file, "0") or "0")
+                if raw > best_raw:
+                    best_raw = raw
+                    best_file = input_file
+            if best_file:
+                _cached_temp_file = str(best_file)
+                return best_raw // 1000
         for label_file in hwmon.glob("temp*_label"):
             label = read_text(label_file, "")
-            if label in {"Package id 0", "Tctl", "Tdie", "Tccd1", "Tccd2"}:
+            if label in {
+                "Package id 0", "Tctl", "Tdie", "Tccd1", "Tccd2",
+                "WiFi/BT Module Temp", "NAND Flash Temperature",
+                "Composite", "Battery Hotspot",
+            }:
                 _cached_temp_file = str(label_file).replace("_label", "_input")
                 return int(read_text(_cached_temp_file, "0") or "0") // 1000
         input_file = hwmon / "temp1_input"
@@ -139,7 +154,18 @@ def get_profile():
             out = subprocess.check_output(['powerprofilesctl', 'get'], text=True).strip()
             _cached_profile = out
         except Exception:
-            _cached_profile = "balanced"
+            try:
+                tuned = subprocess.check_output(['tuned-adm', 'active'], text=True).strip()
+                tuned = tuned.replace("Current active profile: ", "")
+                _cached_profile = {
+                    "throughput-performance": "performance",
+                    "latency-performance": "performance",
+                    "accelerator-performance": "performance",
+                    "powersave": "power-saver",
+                    "balanced-battery": "power-saver",
+                }.get(tuned, "balanced")
+            except Exception:
+                _cached_profile = "balanced"
     return _cached_profile
 
 _TRAY_CACHE = {"time": 0, "mode": "dynamic", "snooze": 0, "off": False}
