@@ -39,9 +39,8 @@ boost --status
 powersave --status
 restore --status
 
-# RAPL bounds check triggers correctly
+# RAPL bounds check triggers correctly (clamps silently to max)
 sudo bash -c 'source /usr/local/lib/power-common.sh; set_rapl 0 999000000'
-# should print: [WARN] PL0: ... clamped
 
 # Fan curve backup exists after silent
 ls /var/lib/power-profile/fan-curve-backup.env

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # restore - revert to boot-time state
-# Version: 1.2.0
+# Version: 1.3.0
 
 # shellcheck source=/usr/local/lib/power-common.sh disable=SC1091
 source /usr/local/lib/power-common.sh
@@ -27,8 +27,10 @@ else
     set_cpu_profile "balanced" "${ORIG_GOV:-performance}" "${ORIG_EPP:-performance}"
 fi
 
-safe_write "${ORIG_TURBO:-0}" /sys/devices/system/cpu/intel_pstate/no_turbo
-echo "[CPU]  turbo=$([ "${ORIG_TURBO:-0}" = "0" ] && echo ON || echo OFF)"
+if [[ -n "${ORIG_TURBO:-}" ]]; then
+    safe_write "${ORIG_TURBO}" /sys/devices/system/cpu/intel_pstate/no_turbo
+    echo "[CPU]  turbo=$([ "${ORIG_TURBO}" = "0" ] && echo ON || echo OFF)"
+fi
 
 apply_hardware_limits restore
 set_io_schedulers

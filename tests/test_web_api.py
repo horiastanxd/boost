@@ -194,6 +194,7 @@ class TestGetStatus(TestServerBase):
                 "max_cpu": 0,
             },
             "history": [],
+            "profileSwitches": [],
         }
         with patch("boost_web.status_payload", return_value=fake_payload):
             status, body = self._get("/api/status")

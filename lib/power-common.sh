@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # /usr/local/lib/power-common.sh - shared helpers for boost/powersave/silent/restore
-# Version: 1.1.0
+# Version: 1.3.0
 
 # shellcheck disable=SC2034
 # Sourced by profile scripts for --version.

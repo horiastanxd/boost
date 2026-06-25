@@ -212,13 +212,10 @@ ls /sys/class/powercap/intel-rapl/                        # expects RAPL availab
 
 Reverting is easy and leaves no trace:
 ```bash
-sudo rm /usr/local/bin/{boost,powersave,silent,restore,power-save-originals,summer,auto,power-report,boost-web}
-sudo rm /usr/local/lib/power-common.sh
-sudo rm /usr/local/lib/boost-web.py
-sudo systemctl disable --now power-save-originals.service boost-auto.service boost-web.service
-sudo rm /etc/systemd/system/{power-save-originals,boost-auto,boost-web}.service
-sudo rm -rf /var/lib/power-profile
+sudo ./uninstall.sh
 ```
+
+The uninstaller restores BIOS power defaults first, then removes all binaries, systemd units, udev rules, desktop entries, and the state directory. Your `/etc/boost-auto.conf` is kept unless you choose to delete it.
 
 ---
 

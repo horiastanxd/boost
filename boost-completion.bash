@@ -32,7 +32,7 @@ _auto_completions() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     
     # Subcommands
-    opts="web open dashboard close-web setup doctor modes on off calm summer friendly active quiet mode quiet-hours summer-nights snooze today-off resume stats report logs config help -h --help"
+    opts="web open dashboard close-web setup doctor modes on off mode quiet-hours summer-nights snooze today-off resume stats report logs config help -h --help"
 
     # If completed first word
     if [ "$COMP_CWORD" -eq 1 ]; then
@@ -43,7 +43,7 @@ _auto_completions() {
     # Subcommands with values
     case "${prev}" in
         mode)
-            local modes="calm summer friendly active quiet off custom"
+            local modes="dynamic gaming creator quiet off"
             mapfile -t COMPREPLY < <(compgen -W "${modes}" -- "${cur}")
             return 0
             ;;

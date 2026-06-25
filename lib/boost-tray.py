@@ -19,7 +19,7 @@ gi.require_version('AyatanaAppIndicator3', '0.1')
 gi.require_version('Notify', '0.7')
 from gi.repository import Gtk, Gdk, GLib, AyatanaAppIndicator3, Notify
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 STATE_DIR = Path("/var/lib/power-profile")
 CONF_FILE = Path("/etc/boost-auto.conf")
 
