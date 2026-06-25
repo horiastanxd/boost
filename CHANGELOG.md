@@ -2,6 +2,27 @@
 
 All notable changes to Boost are documented here.
 
+## [1.3.0] - 2026-06-25
+
+### Added
+- **AMD GPU support** — power limit scaling via `amdgpu` sysfs (`power1_cap`). Fills the gap in the "Intel + AMD + NVIDIA" claim. Automatically detected; falls back gracefully when absent.
+- **Process-based workload detection** — daemon now detects creator workloads (`ffmpeg`, `blender`, `cargo build`, `make`, etc.) and video call apps (`zoom`, `teams`, `discord`, etc.), offering appropriate profile suggestions.
+- **Profile switch history in web dashboard** — telemetry chart now overlays colored bands when profile changes. "Recent Switches" log shows last 5 transitions.
+- **Python CI** — GitHub Actions workflow adds `ruff` linting and `pytest` test suite.
+- **SECURITY.md** — responsible disclosure policy and security notes.
+- **PR template** — `.github/PULL_REQUEST_TEMPLATE.md` with hardware test checklist.
+- **Hardware compatibility table** in README.
+- **FAQ section** in README.
+
+### Fixed
+- **CSRF protection on web server** — POST requests to `/api/action` now require matching `Origin` header. Prevents cross-origin requests from other local apps.
+- **RAPL path graceful handling** — `apply_hardware_limits()` and stats recording skip RAPL silently on AMD systems instead of writing to non-existent paths.
+- **Atomic state file writes** — `auto-snooze-until` and `auto-skip-date` written via tmp+rename to prevent race conditions between daemon and web server.
+- **Gaming preset missing from test suite** — `tests/auto-mode-presets.sh` now verifies gaming thresholds.
+
+### Changed
+- `save_originals()` now detects and saves AMD GPU power limit alongside NVIDIA.
+
 ## [1.2.0] - 2026-06-24
 
 ### Added

@@ -21,6 +21,12 @@ SKIP_TODAY_FILE = os.path.join(STATE_DIR, "auto-skip-date")
 # Known process names for automatic Game Mode
 GAME_PROCESSES = ['wine-preloader', 'wine64-preloader', 'proton', 'steam', 'cs2', 'dota2', 'hl2_linux']
 
+# Creator workloads — suggest Performance profile for sustained rendering/compilation
+CREATOR_PROCESSES = ['ffmpeg', 'blender', 'HandBrakeCLI', 'kdenlive', 'davinci', 'cargo', 'cmake', 'nvcc', 'julia']
+
+# Video call / meeting apps — suggest Quiet mode to keep fans down and latency low
+MEETING_PROCESSES = ['zoom', '.zoom', 'teams', 'slack', 'discord', 'obs', 'pipewire-camera']
+
 class BoostDaemon:
     def __init__(self):
         syslog.openlog("boost-auto", syslog.LOG_PID, syslog.LOG_USER)
@@ -41,6 +47,8 @@ class BoostDaemon:
         self.summer_nights = "no"
         
         self.cpu_temp_path = self.find_cpu_temp_path()
+        self.amd_gpu_hwmon = self.find_amd_gpu_hwmon()
+        self._meeting_notified = False
         self.prev_total = 0
         self.prev_idle = 0
         
@@ -58,6 +66,25 @@ class BoostDaemon:
         
     def log(self, msg, level=syslog.LOG_INFO):
         syslog.syslog(level, msg)
+
+    def find_amd_gpu_hwmon(self):
+        drm_base = "/sys/class/drm"
+        if not os.path.exists(drm_base):
+            return None
+        for card in os.listdir(drm_base):
+            hwmon_dir = os.path.join(drm_base, card, "device", "hwmon")
+            if not os.path.isdir(hwmon_dir):
+                continue
+            for hwmon in os.listdir(hwmon_dir):
+                hwmon_path = os.path.join(hwmon_dir, hwmon)
+                name_file = os.path.join(hwmon_path, "name")
+                try:
+                    with open(name_file, 'r') as f:
+                        if f.read().strip() == "amdgpu":
+                            return hwmon_path + "/"
+                except Exception:
+                    pass
+        return None
 
     def find_cpu_temp_path(self):
         hwmon_base = "/sys/class/hwmon"
@@ -180,13 +207,45 @@ class BoostDaemon:
         except: return default
 
     def get_gpu_stats(self):
+        # NVIDIA first
         try:
-            out = subprocess.check_output(['nvidia-smi', '--query-gpu=temperature.gpu,power.draw,power.limit', '--format=csv,noheader,nounits'], text=True).strip()
+            out = subprocess.check_output(
+                ['nvidia-smi', '--query-gpu=temperature.gpu,power.draw,power.limit',
+                 '--format=csv,noheader,nounits'], text=True).strip()
             if out:
                 parts = [x.strip() for x in out.split('\n')[0].split(',')]
-                if len(parts) == 3: return parts
-        except: pass
+                if len(parts) == 3:
+                    return parts
+        except Exception:
+            pass
+        # AMD GPU via amdgpu sysfs (µW → W)
+        if self.amd_gpu_hwmon:
+            try:
+                temp = int(self.read_text(self.amd_gpu_hwmon + "temp1_input", "0") or "0") // 1000
+                power_uw = int(self.read_text(self.amd_gpu_hwmon + "power1_average", "0") or "0")
+                cap_uw = int(self.read_text(self.amd_gpu_hwmon + "power1_cap", "0") or "0")
+                return [str(temp), f"{power_uw / 1_000_000:.2f}", f"{cap_uw / 1_000_000:.2f}"]
+            except Exception:
+                pass
         return ["0", "0", "0"]
+
+    def is_creator_running(self):
+        try:
+            return subprocess.run(
+                ['pgrep', '-f', '|'.join(CREATOR_PROCESSES)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ).returncode == 0
+        except Exception:
+            return False
+
+    def is_meeting_running(self):
+        try:
+            return subprocess.run(
+                ['pgrep', '-f', '|'.join(MEETING_PROCESSES)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ).returncode == 0
+        except Exception:
+            return False
 
     def record_stats(self, load, temp, profile):
         try:
@@ -195,8 +254,9 @@ class BoostDaemon:
                 self._state_dir_created = True
             
             gpu_temp, gpu_power, gpu_limit = self.get_gpu_stats()
-            pl1 = str(int(self.read_text('/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw', '0')) // 1000000)
-            pl2 = str(int(self.read_text('/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw', '0')) // 1000000)
+            rapl_base = '/sys/class/powercap/intel-rapl/intel-rapl:0'
+            pl1 = str(int(self.read_text(f'{rapl_base}/constraint_0_power_limit_uw', '0')) // 1000000) if os.path.isdir(rapl_base) else '0'
+            pl2 = str(int(self.read_text(f'{rapl_base}/constraint_1_power_limit_uw', '0')) // 1000000) if os.path.isdir(rapl_base) else '0'
             gov = self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor', 'unknown')
             epp = self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference', 'unknown')
             turbo = "ON" if self.read_text('/sys/devices/system/cpu/intel_pstate/no_turbo', '1') == '0' else "OFF"
@@ -302,12 +362,16 @@ class BoostDaemon:
                         self.run_command(action_cmd)
                     elif action == "snooze":
                         until = int(time.time()) + 7200
-                        with open(SNOOZE_FILE, 'w') as f:
+                        tmp = f"{SNOOZE_FILE}.tmp"
+                        with open(tmp, 'w') as f:
                             f.write(str(until))
+                        os.rename(tmp, SNOOZE_FILE)
                         self._snooze_cache = (time.time(), until, False)
                     elif action == "today":
-                        with open(SKIP_TODAY_FILE, 'w') as f:
+                        tmp = f"{SKIP_TODAY_FILE}.tmp"
+                        with open(tmp, 'w') as f:
                             f.write(datetime.now().strftime("%Y-%m-%d"))
+                        os.rename(tmp, SKIP_TODAY_FILE)
                         self._snooze_cache = (time.time(), 0, True)
                 except Exception:
                     pass
@@ -385,6 +449,8 @@ class BoostDaemon:
             load = self.read_cpu_load()
             profile = self.get_ppd_profile()
             is_game = self.is_game_running()
+            is_creator = self.is_creator_running()
+            is_meeting = self.is_meeting_running()
             
             if now - self.last_stats >= self.stats_interval:
                 self.record_stats(load, temp, profile)
@@ -411,6 +477,27 @@ class BoostDaemon:
                     self.send_notification("Game Mode Enabled", "Detected a game running. Switched to maximum performance.")
                     self.last_auto = now
                     continue
+
+            # Creator Workload Detection — suggest Performance for heavy rendering/compilation
+            if is_creator and not is_game and profile != "performance" and temp < self.boost_temp_limit:
+                if now - self.last_prompt > self.prompt_cooldown:
+                    self.send_notification(
+                        "Heavy workload detected",
+                        "Rendering or compilation in progress. Enable Boost for faster results.",
+                        "Enable Boost", "/usr/local/bin/boost"
+                    )
+                    self.last_prompt = now
+
+            # Meeting / Video Call Detection — suggest Quiet mode once per session
+            if is_meeting and not self._meeting_notified and profile == "performance":
+                self._meeting_notified = True
+                self.send_notification(
+                    "Video call detected",
+                    "Switch to Balanced mode to reduce fan noise during your call.",
+                    "Go Quiet", "/usr/local/bin/powersave"
+                )
+            elif not is_meeting:
+                self._meeting_notified = False
             
             # Critical Protection
             if temp >= self.temp_critical and profile == "performance" and self.allow_critical == "yes":

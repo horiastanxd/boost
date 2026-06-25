@@ -57,6 +57,19 @@ Tested on **i7-14700KF + RTX 5060 Ti** on Ubuntu 24.04 (one case fan):
 
 ---
 
+## 🖥️ Hardware Compatibility
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Intel CPU (RAPL PL1/PL2) | ✅ Full | Tested on 10th-14th gen |
+| AMD CPU (governor + EPP) | ✅ Full | Ryzen 5000/7000 series |
+| NVIDIA GPU (power limits) | ✅ Full | Requires `nvidia-smi` |
+| AMD GPU (power limits) | ✅ Full | Requires `amdgpu` driver (v1.3.0+) |
+| Intel Arc GPU | 🔜 Planned | No upstream power limit interface yet |
+| Laptop / battery | 🔜 Planned | AC event trigger exists; battery profiles coming |
+
+---
+
 ## 🚀 Quick Start
 
 **One line install:**
@@ -86,6 +99,34 @@ auto doctor      # 🩺 Check if sensors and drivers work
 
 ---
 
+## ⚙️ How It Works
+
+```
+┌─────────────────────────────────────────────────┐
+│  CLI commands      │  Web Dashboard  │  Tray     │
+│  boost / powersave │  localhost:8765 │  systray  │
+└──────────┬─────────┴────────┬────────┴──────────┘
+           │                  │
+           ▼                  ▼
+┌──────────────────────────────────────────────────┐
+│  power-common.sh  — applies CPU + GPU limits      │
+│  • Intel RAPL PL1/PL2     • NVIDIA/AMD GPU watt  │
+│  • CPU governor + EPP     • I/O scheduler         │
+│  • power-profiles-daemon (GNOME sync)             │
+└──────────────────────────────────────────────────┘
+           │
+           ▼
+┌──────────────────────────────────────────────────┐
+│  boost-daemon.py  — monitors and adapts          │
+│  • Polls CPU temp + load every 5s                │
+│  • Detects games, creator workloads, meetings    │
+│  • Sends desktop notifications with actions      │
+│  • Records stats CSV for history chart           │
+└──────────────────────────────────────────────────┘
+```
+
+---
+
 ## 🎨 Premium Interfaces
 
 ### 🖥️ The Web Dashboard
@@ -97,6 +138,25 @@ A sleek, realtime, glassmorphic local dashboard. Change profiles, tweak smart mo
 Fast, seamless profile switching right from your desktop environment panel.
 
 <img src="assets/tray.png" alt="Tray Applet" width="100%">
+
+---
+
+## ❓ FAQ
+
+**Q: Does Boost work without an NVIDIA GPU?**  
+Yes. GPU management is skipped gracefully. AMD GPU support added in v1.3.0 via `amdgpu` driver.
+
+**Q: Will Boost conflict with TLP or auto-cpufreq?**  
+Yes - running multiple power managers simultaneously causes conflicts. Disable TLP/auto-cpufreq before using Boost.
+
+**Q: Can I use Boost on a laptop?**  
+Partially. Profile switching works. Battery-aware profiles are planned. AC event trigger already fires when you plug/unplug.
+
+**Q: How do I undo everything?**  
+Run `restore` to return to BIOS defaults, then `sudo ./uninstall.sh` to remove all files.
+
+**Q: The tray applet doesn't appear.**  
+Install `gir1.2-ayatanaappindicator3-0.1` (Ubuntu/Debian) or `libayatana-appindicator3` (Fedora/Arch). Then run `boost-tray &`.
 
 ---
 

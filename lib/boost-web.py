@@ -406,30 +406,77 @@ def cpu_load_percent() -> int:
     return int((delta_total - delta_idle) * 100 / delta_total)
 
 
+_AMD_GPU_HWMON: str | None = None
+_AMD_GPU_HWMON_CHECKED = False
+
+def find_amd_gpu_hwmon() -> str | None:
+    global _AMD_GPU_HWMON, _AMD_GPU_HWMON_CHECKED
+    if _AMD_GPU_HWMON_CHECKED:
+        return _AMD_GPU_HWMON
+    _AMD_GPU_HWMON_CHECKED = True
+    drm = Path("/sys/class/drm")
+    if not drm.exists():
+        return None
+    for card in drm.iterdir():
+        hwmon_dir = card / "device" / "hwmon"
+        if not hwmon_dir.is_dir():
+            continue
+        for hwmon in hwmon_dir.iterdir():
+            if read_text(hwmon / "name", "") == "amdgpu":
+                _AMD_GPU_HWMON = str(hwmon) + "/"
+                return _AMD_GPU_HWMON
+    return None
+
+
 def gpu_stats() -> dict[str, str]:
+    # NVIDIA first
     out = cached_run("gpu", [
         "nvidia-smi",
         "--query-gpu=temperature.gpu,power.draw,power.limit",
         "--format=csv,noheader,nounits"
     ], 5)
-    if not out:
-        return {"temp": "0", "power": "0", "limit": "0"}
-    temp, power, limit = [part.strip() for part in out.splitlines()[0].split(",")]
-    return {"temp": temp, "power": power, "limit": limit}
+    if out:
+        parts = [part.strip() for part in out.splitlines()[0].split(",")]
+        if len(parts) == 3:
+            temp, power, limit = parts
+            return {"temp": temp, "power": power, "limit": limit, "vendor": "nvidia"}
+    # AMD GPU via amdgpu sysfs (values in µW → convert to W)
+    amd = find_amd_gpu_hwmon()
+    if amd:
+        try:
+            temp = int(read_text(f"{amd}temp1_input", "0") or "0") // 1000
+            power_uw = int(read_text(f"{amd}power1_average", "0") or "0")
+            cap_uw = int(read_text(f"{amd}power1_cap", "0") or "0")
+            return {
+                "temp": str(temp),
+                "power": f"{power_uw / 1_000_000:.1f}",
+                "limit": f"{cap_uw / 1_000_000:.1f}",
+                "vendor": "amd",
+            }
+        except Exception:
+            pass
+    return {"temp": "0", "power": "0", "limit": "0", "vendor": "none"}
 
 
-_RAPL_CACHE = {}
+_RAPL_CACHE: dict[int, dict[str, Any]] = {}
 _RAPL_LOCK = threading.Lock()
+_RAPL_BASE = "/sys/class/powercap/intel-rapl/intel-rapl:0"
 
 def rapl_w(constraint: int) -> int:
     now = time.time()
     with _RAPL_LOCK:
         if constraint in _RAPL_CACHE and now - _RAPL_CACHE[constraint]['time'] < 10:
             return _RAPL_CACHE[constraint]['val']
-            
-    path = f"/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_{constraint}_power_limit_uw"
+
+    if not Path(_RAPL_BASE).is_dir():
+        # AMD CPU or no Intel RAPL — return 0 gracefully
+        with _RAPL_LOCK:
+            _RAPL_CACHE[constraint] = {'time': now, 'val': 0}
+        return 0
+
+    path = f"{_RAPL_BASE}/constraint_{constraint}_power_limit_uw"
     val = int(read_text(path, "0") or "0") // 1_000_000
-    
+
     with _RAPL_LOCK:
         _RAPL_CACHE[constraint] = {'time': time.time(), 'val': val}
     return val
@@ -513,6 +560,18 @@ def summary(rows: list[dict[str, str]]) -> dict[str, float]:
     }
 
 
+def _extract_profile_switches(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    switches = []
+    prev = None
+    for row in rows:
+        p = row.get("profile", "")
+        if p and p != prev:
+            if prev is not None:
+                switches.append({"iso": row.get("iso", ""), "profile": p})
+            prev = p
+    return switches[-5:]  # last 5 transitions for the dashboard log
+
+
 def status_payload() -> dict[str, Any]:
     config = read_config()
     rows = history()
@@ -550,6 +609,7 @@ def status_payload() -> dict[str, Any]:
         "report": {"latestExists": LATEST_REPORT.exists(), "path": str(LATEST_REPORT)},
         "summary": summary(rows),
         "history": rows[-30:],
+        "profileSwitches": _extract_profile_switches(rows),
     }
 
 
@@ -1077,6 +1137,7 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
 
 <section style="margin-top:32px">
   <h2 style="font-family:var(--font-title);font-size:22px;font-weight:700;margin-bottom:12px">Sensor History Log</h2>
+  <div style="margin-bottom:10px;padding:8px 12px;background:rgba(13,24,45,0.4);border:1px solid rgba(255,255,255,0.05);border-radius:8px" id="profileSwitchLog"></div>
   <div class="table-wrap"><table>
     <thead><tr><th>Time</th><th>Profile</th><th>CPU Load</th><th>CPU Temp</th><th>GPU</th><th>RAPL</th></tr></thead>
     <tbody id="history"></tbody>
@@ -1084,7 +1145,7 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
 </section>
 
 <footer class="footer">
-  Boost Power Manager v1.2.0 — Keyboard: <kbd>1</kbd> Boost <kbd>2</kbd> Powersave <kbd>3</kbd> Silent <kbd>4</kbd> Restore <kbd>R</kbd> Refresh
+  Boost Power Manager v1.3.0 — Keyboard: <kbd>1</kbd> Boost <kbd>2</kbd> Powersave <kbd>3</kbd> Silent <kbd>4</kbd> Restore <kbd>R</kbd> Refresh
 </footer>
 </main>
 
@@ -1176,6 +1237,22 @@ function drawChart(history) {
   // GPU power mapped to 0-200W scale shown as percentage
   let gpuData = history.map(r => ({...r, gpu_pct: String((parseFloat(r.gpu_power||0)/200)*100)}));
 
+  // Profile transition bands — colored vertical strips when profile changes
+  const profileColors = {performance: '#f43f5e', balanced: '#10b981', 'power-saver': '#8b5cf6'};
+  let bands = '';
+  let prevProfile = history[0]?.profile;
+  for (let i = 1; i < n; i++) {
+    const p = history[i].profile;
+    if (p && p !== prevProfile) {
+      const x = pL + (i/(n-1)) * cW;
+      const color = profileColors[p] || '#94a3b8';
+      bands += `<line x1="${x}" y1="${pT}" x2="${x}" y2="${H-pB}" stroke="${color}" stroke-width="1.5" stroke-dasharray="3,2" opacity="0.6">
+                  <title>→ ${p}</title>
+                </line>`;
+      prevProfile = p;
+    }
+  }
+
   svg.innerHTML = `
     <defs>
       <linearGradient id="grad-#0ea5e9" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0ea5e9"/><stop offset="1" stop-color="#0ea5e9" stop-opacity="0"/></linearGradient>
@@ -1183,6 +1260,7 @@ function drawChart(history) {
       <linearGradient id="grad-#ec4899" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ec4899"/><stop offset="1" stop-color="#ec4899" stop-opacity="0"/></linearGradient>
     </defs>
     ${grid}
+    ${bands}
     ${makePath(history, 'cpu_load', 100, '#0ea5e9')}
     ${makePath(history, 'cpu_temp', 100, '#f59e0b')}
     ${makePath(gpuData, 'gpu_pct', 100, '#ec4899')}
@@ -1262,6 +1340,20 @@ function render(data) {
   const hChanged = !_prevData || !_prevData.history || data.history.length !== _prevData.history.length || (data.history.length > 0 && data.history[data.history.length-1].iso !== _prevData.history[_prevData.history.length-1].iso);
   if (hChanged) {
     drawChart(data.history);
+    // Profile switch log
+    const switchLog = $('profileSwitchLog');
+    if (switchLog && data.profileSwitches && data.profileSwitches.length) {
+      const profileLabels = {performance: 'Boost', balanced: 'Balanced', 'power-saver': 'Eco'};
+      const profileDots = {performance: '#f43f5e', balanced: '#10b981', 'power-saver': '#8b5cf6'};
+      switchLog.innerHTML = data.profileSwitches.slice().reverse().map(s => {
+        const label = profileLabels[s.profile] || s.profile;
+        const color = profileDots[s.profile] || '#94a3b8';
+        const time = s.iso ? s.iso.split('T')[1].substring(0,5) : '—';
+        return `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:12px;color:#94a3b8"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color}"></span>${time} → <strong style="color:#f1f5f9">${label}</strong></span>`;
+      }).join('');
+    } else if (switchLog) {
+      switchLog.innerHTML = '<span style="color:#475569;font-size:12px">No profile changes in current window</span>';
+    }
     $('history').innerHTML = data.history.slice().reverse().map(r => `
       <tr>
         <td>${r.iso ? r.iso.split('T')[1].substring(0,8) : '—'}</td>
@@ -1434,9 +1526,26 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_bytes(b"Not found", "text/plain; charset=utf-8", 404)
 
+    def _csrf_ok(self) -> bool:
+        host, port = self.server.server_address
+        allowed = (
+            f"http://{host}:{port}",
+            f"http://localhost:{port}",
+            f"http://127.0.0.1:{port}",
+        )
+        origin = self.headers.get("Origin", "")
+        referer = self.headers.get("Referer", "")
+        for header in (origin, referer):
+            if any(header.startswith(prefix) for prefix in allowed):
+                return True
+        return False
+
     def do_POST(self) -> None:
         if urllib.parse.urlparse(self.path).path != "/api/action":
             self.send_json({"ok": False, "message": "Not found"}, 404)
+            return
+        if not self._csrf_ok():
+            self.send_json({"ok": False, "message": "Forbidden"}, 403)
             return
         length = int(self.headers.get("Content-Length", "0"))
         try:

@@ -4,7 +4,7 @@
 
 # shellcheck disable=SC2034
 # Sourced by profile scripts for --version.
-readonly VERSION="1.2.0"
+readonly VERSION="1.3.0"
 ORIGINALS_FILE="/var/lib/power-profile/originals.env"
 FAN_BACKUP="/var/lib/power-profile/fan-curve-backup.env"
 # Fan controller hwmon — discovered at source time, not hardcoded
@@ -99,6 +99,19 @@ find_hwmon_by_name() {
     return 1
 }
 
+find_amd_gpu_hwmon() {
+    local card hwmon name
+    for card in /sys/class/drm/card*/; do
+        [[ -d "${card}device/hwmon" ]] || continue
+        for hwmon in "${card}device/hwmon/hwmon"*/; do
+            [[ -r "${hwmon}name" ]] || continue
+            name=$(cat "${hwmon}name" 2>/dev/null)
+            [[ "$name" == "amdgpu" ]] && printf '%s\n' "$hwmon" && return 0
+        done
+    done
+    return 1
+}
+
 _CACHED_CPU_TEMP_FILE=""
 get_cpu_temp_c() {
     local raw
@@ -158,8 +171,11 @@ get_cpu_load_percent() {
 }
 
 get_rapl_limit_w() {
-    local constraint="$1" value
-    value=$(cat "/sys/class/powercap/intel-rapl/intel-rapl:0/constraint_${constraint}_power_limit_uw" 2>/dev/null || echo 0)
+    local constraint="$1"
+    local base="/sys/class/powercap/intel-rapl/intel-rapl:0"
+    [[ -d "$base" ]] || { echo 0; return; }
+    local value
+    value=$(cat "${base}/constraint_${constraint}_power_limit_uw" 2>/dev/null || echo 0)
     echo $(( value / 1000000 ))
 }
 
@@ -188,8 +204,25 @@ get_turbo_state() {
 }
 
 get_gpu_csv() {
-    nvidia-smi --query-gpu=temperature.gpu,power.draw,power.limit \
-        --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ' || true
+    # NVIDIA first
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        local _out
+        _out=$(nvidia-smi --query-gpu=temperature.gpu,power.draw,power.limit \
+            --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ' || true)
+        [[ -n "$_out" ]] && echo "$_out" && return 0
+    fi
+    # AMD GPU via amdgpu sysfs (power values in µW)
+    local _amd_hwmon
+    _amd_hwmon=$(find_amd_gpu_hwmon 2>/dev/null || true)
+    if [[ -n "$_amd_hwmon" ]]; then
+        local _temp _power_uw _cap_uw
+        _temp=$(( $(cat "${_amd_hwmon}temp1_input" 2>/dev/null || echo 0) / 1000 ))
+        _power_uw=$(cat "${_amd_hwmon}power1_average" 2>/dev/null || echo 0)
+        _cap_uw=$(cat "${_amd_hwmon}power1_cap" 2>/dev/null || echo 0)
+        printf '%d,%d.00,%d.00\n' "$_temp" "$(( _power_uw / 1000000 ))" "$(( _cap_uw / 1000000 ))"
+        return 0
+    fi
+    true  # No GPU found; callers check for empty output
 }
 
 ensure_stats_file() {
@@ -228,14 +261,18 @@ save_originals() {
     if [[ -n "$PPD_BIN" ]]; then
         ppd_profile=$("$PPD_BIN" get 2>/dev/null) || true
     fi
+    local _rapl_base="/sys/class/powercap/intel-rapl/intel-rapl:0"
+    local _amd_gpu_hwmon
+    _amd_gpu_hwmon=$(find_amd_gpu_hwmon 2>/dev/null || true)
     cat > "$ORIGINALS_FILE" << EOF
 ORIG_GOV=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)
 ORIG_EPP=$(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null)
 ORIG_PPD_PROFILE=${ppd_profile}
 ORIG_TURBO=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null)
-ORIG_PL1=$(cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw 2>/dev/null)
-ORIG_PL2=$(cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw 2>/dev/null)
+ORIG_PL1=$([[ -d "$_rapl_base" ]] && cat "${_rapl_base}/constraint_0_power_limit_uw" 2>/dev/null || echo "")
+ORIG_PL2=$([[ -d "$_rapl_base" ]] && cat "${_rapl_base}/constraint_1_power_limit_uw" 2>/dev/null || echo "")
 ORIG_GPU_LIMIT=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits 2>/dev/null | awk '{printf "%d", $1}')
+ORIG_AMD_GPU_LIMIT=$([[ -n "$_amd_gpu_hwmon" ]] && echo $(( $(cat "${_amd_gpu_hwmon}power1_cap" 2>/dev/null || echo 0) / 1000000 )) || echo "0")
 ORIG_THP=$(grep -oP '\[\K[^\]]+' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)
 EOF
     logger -t power-profile "Originals saved"
@@ -254,6 +291,7 @@ safe_write() {
 set_rapl() {
     local constraint="$1" limit_uw="$2"
     local base="/sys/class/powercap/intel-rapl/intel-rapl:0"
+    [[ -d "$base" ]] || return 0  # No Intel RAPL on this system (AMD CPU) — skip silently
     local max_uw
     max_uw=$(cat "${base}/constraint_${constraint}_max_power_uw" 2>/dev/null || echo 0)
     if [[ "$max_uw" -gt 0 && "$limit_uw" -gt "$max_uw" ]]; then
@@ -270,9 +308,10 @@ apply_hardware_limits() {
         source "$ORIGINALS_FILE"
     fi
     
-    # Intel RAPL dynamic scaling
+    # Intel RAPL dynamic scaling (Intel CPUs only; AMD CPUs skip gracefully)
+    local rapl_base="/sys/class/powercap/intel-rapl/intel-rapl:0"
     local pl1="${ORIG_PL1:-}" pl2="${ORIG_PL2:-}"
-    if [[ -n "$pl1" && -n "$pl2" && "$pl1" -gt 0 ]]; then
+    if [[ -d "$rapl_base" && -n "$pl1" && -n "$pl2" && "$pl1" -gt 0 ]]; then
         local t_pl1 t_pl2
         case "$mode" in
             boost|restore)
@@ -288,13 +327,13 @@ apply_hardware_limits() {
         # Safety floor
         (( t_pl1 < 10000000 )) && t_pl1=10000000
         (( t_pl2 < 15000000 )) && t_pl2=15000000
-        
+
         set_rapl 0 "$t_pl1"
         set_rapl 1 "$t_pl2"
         echo "[CPU]  RAPL PL1=$((t_pl1 / 1000000))W, PL2=$((t_pl2 / 1000000))W (scaled for $mode)"
     fi
-    
-    # NVIDIA dynamic scaling
+
+    # NVIDIA GPU dynamic scaling
     if command -v nvidia-smi >/dev/null 2>&1; then
         nvidia-smi -pm 1 -i 0 >/dev/null 2>&1 || true
         local def_gpu="${ORIG_GPU_LIMIT:-}"
@@ -304,21 +343,51 @@ apply_hardware_limits() {
             IFS=',' read -r min_l max_l <<< "$limits"
             min_l=$(echo "$min_l" | awk '{print int($1)}')
             max_l=$(echo "$max_l" | awk '{print int($1)}')
-            
+
             [[ -z "$def_gpu" || "$def_gpu" -eq 0 ]] && def_gpu=$(( min_l + (max_l - min_l) / 2 ))
-            
+
             case "$mode" in
                 boost) t_gpu=$max_l ;;
                 restore) t_gpu=$def_gpu ;;
                 powersave) t_gpu=$(( min_l + (def_gpu - min_l) / 2 )) ;;
                 silent) t_gpu=$min_l ;;
             esac
-            
+
             (( t_gpu < min_l )) && t_gpu=$min_l
             (( t_gpu > max_l )) && t_gpu=$max_l
-            
+
             nvidia-smi --power-limit="${t_gpu}" -i 0 >/dev/null 2>&1 || true
             echo "[GPU]  NVIDIA limit=${t_gpu}W (scaled for $mode)"
+        fi
+    # AMD GPU dynamic scaling (amdgpu sysfs; power values in µW)
+    else
+        local amd_hwmon
+        amd_hwmon=$(find_amd_gpu_hwmon 2>/dev/null || true)
+        if [[ -n "$amd_hwmon" ]]; then
+            local cap_uw cap_max_uw cap_min_uw def_amd t_cap_uw
+            cap_uw=$(cat "${amd_hwmon}power1_cap" 2>/dev/null || echo 0)
+            cap_max_uw=$(cat "${amd_hwmon}power1_cap_max" 2>/dev/null || echo 0)
+            cap_min_uw=$(cat "${amd_hwmon}power1_cap_min" 2>/dev/null || echo 0)
+            def_amd="${ORIG_AMD_GPU_LIMIT:-0}"
+            # def_amd stored in W; convert to µW for comparison
+            local def_amd_uw=$(( def_amd * 1000000 ))
+            [[ "$def_amd_uw" -le 0 ]] && def_amd_uw="$cap_uw"
+
+            case "$mode" in
+                boost)    t_cap_uw="$cap_max_uw" ;;
+                restore)  t_cap_uw="$def_amd_uw" ;;
+                powersave) t_cap_uw=$(( cap_min_uw + (def_amd_uw - cap_min_uw) / 2 )) ;;
+                silent)   t_cap_uw="$cap_min_uw" ;;
+            esac
+
+            (( cap_min_uw > 0 && t_cap_uw < cap_min_uw )) && t_cap_uw="$cap_min_uw"
+            (( cap_max_uw > 0 && t_cap_uw > cap_max_uw )) && t_cap_uw="$cap_max_uw"
+
+            if echo "$t_cap_uw" > "${amd_hwmon}power1_cap" 2>/dev/null; then
+                echo "[GPU]  AMD limit=$(( t_cap_uw / 1000000 ))W (scaled for $mode)"
+            else
+                echo "  [WARN] AMD GPU power limit write failed (check amdgpu driver)" >&2
+            fi
         fi
     fi
 }
@@ -359,11 +428,11 @@ save_fan_curve() {
     [[ ! -d "$HWMON" ]] && return 1
     {
         for i in 1 2 3 4 5; do
-            echo "ORIG_PWM_PT${i}_PWM=$(cat ${HWMON}/pwm1_auto_point${i}_pwm 2>/dev/null)"
-            echo "ORIG_PWM_PT${i}_TEMP=$(cat ${HWMON}/pwm1_auto_point${i}_temp 2>/dev/null)"
+            echo "ORIG_PWM_PT${i}_PWM=$(cat "${HWMON}/pwm1_auto_point${i}_pwm" 2>/dev/null)"
+            echo "ORIG_PWM_PT${i}_TEMP=$(cat "${HWMON}/pwm1_auto_point${i}_temp" 2>/dev/null)"
         done
-        echo "ORIG_PWM1_ENABLE=$(cat ${HWMON}/pwm1_enable 2>/dev/null)"
-        echo "ORIG_PWM1_FLOOR=$(cat ${HWMON}/pwm1_floor 2>/dev/null)"
+        echo "ORIG_PWM1_ENABLE=$(cat "${HWMON}/pwm1_enable" 2>/dev/null)"
+        echo "ORIG_PWM1_FLOOR=$(cat "${HWMON}/pwm1_floor" 2>/dev/null)"
     } > "$FAN_BACKUP"
     logger -t power-profile "Fan curve backed up"
 }

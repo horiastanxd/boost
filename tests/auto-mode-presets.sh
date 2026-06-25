@@ -17,6 +17,7 @@ require_line() {
 }
 
 require_line "dynamic.*hot=78.*critical=85.*boost-below=78.*busy=75%/2m.*idle=8%/10m.*cooldown=15m.*balanced everyday"
+require_line "gaming.*hot=80.*critical=85.*boost-below=80.*busy=50%/30s.*idle=10%/10m.*cooldown=15m.*optimized for games"
 require_line "creator.*hot=82.*critical=85.*boost-below=82.*busy=85%/30s.*idle=15%/20m.*cooldown=5m.*gaming/rendering limits"
 require_line "quiet.*hot=70.*critical=85.*boost-below=70.*busy=90%/10m.*idle=5%/2m.*cooldown=1h 0m.*strictly low noise/heat"
 require_line "off.*hot=78.*critical=85.*boost-below=78.*busy=75%/2m.*idle=8%/10m.*cooldown=15m.*disabled"

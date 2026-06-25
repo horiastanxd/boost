@@ -1,0 +1,33 @@
+name: Python CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install ruff pytest
+
+      - name: Lint with ruff
+        run: |
+          ruff check lib/boost-web.py lib/boost-daemon.py \
+            tests/test_daemon.py tests/test_web_api.py \
+            --select E,F,W --ignore E501,E701,E722,W293,W291,F401,E402
+
+      - name: Python compile check
+        run: python -m py_compile lib/boost-web.py lib/boost-daemon.py
+
+      - name: Run tests
+        run: python -m pytest tests/test_daemon.py tests/test_web_api.py -v
