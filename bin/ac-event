@@ -22,6 +22,29 @@ fi
 ac_online=$(get_ac_online)
 [[ -z "$ac_online" ]] && exit 0
 
+STATE_DIR="/run/boost-power"
+STATE_FILE="$STATE_DIR/ac-event.state"
+LOCK_FILE="$STATE_DIR/ac-event.lock"
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
+
+should_handle_state() {
+    local current_state="$1"
+    local last_state
+
+    if [[ -r "$STATE_FILE" ]]; then
+        read -r last_state < "$STATE_FILE" 2>/dev/null || true
+    fi
+
+    if [[ "$last_state" == "$current_state" ]]; then
+        return 1
+    fi
+
+    printf '%s\n' "$current_state" > "$STATE_FILE" 2>/dev/null || true
+    return 0
+}
+
 get_user_env() {
     local session user uid wayland x11
     session=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$NF=="active" || NR==1 {print $1; exit}')
@@ -81,11 +104,13 @@ profile_label() {
 }
 
 if [[ "$ac_online" == "1" ]]; then
+    should_handle_state "ac" || exit 0
     logger -t boost-ac "AC connected. Applying profile: $AC_PROFILE"
     cmd=$(profile_cmd "$AC_PROFILE")
     $cmd >/dev/null 2>&1 || true
     notify_plain "AC Power Connected" "Switched to $(profile_label "$AC_PROFILE") profile." "normal"
 elif [[ "$ac_online" == "0" ]]; then
+    should_handle_state "battery" || exit 0
     logger -t boost-ac "On battery. Applying profile: $BATTERY_PROFILE"
     cmd=$(profile_cmd "$BATTERY_PROFILE")
     $cmd >/dev/null 2>&1 || true
