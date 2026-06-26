@@ -717,8 +717,8 @@ class BoostDaemon:
                     self.last_prompt = now
                     continue
             
-            # Game Mode Auto-Switching
-            if is_game and profile != "performance" and temp < self.boost_temp_limit:
+            # Game Mode Auto-Switching (skip if slow charge protection is active)
+            if is_game and not self._slow_charge_active and profile != "performance" and temp < self.boost_temp_limit:
                 if now - self.last_auto > 60:
                     self.log("Game detected. Switching to boost automatically.")
                     self.run_command("/usr/local/bin/boost")
