@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # /usr/local/lib/power-common.sh - shared helpers for boost/powersave/silent/restore
-# Version: 1.5.0
+# Version: 1.7.0
 
 # shellcheck disable=SC2034
 # Sourced by profile scripts for --version.
-readonly VERSION="1.6.0"
+readonly VERSION="1.7.0"
 ORIGINALS_FILE="/var/lib/power-profile/originals.env"
 FAN_BACKUP="/var/lib/power-profile/fan-curve-backup.env"
 # Fan controller hwmon — discovered at source time, not hardcoded

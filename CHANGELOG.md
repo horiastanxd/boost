@@ -2,6 +2,16 @@
 
 All notable changes to Boost are documented here.
 
+## [1.7.0] - 2026-06-26
+
+### Added
+- **Screen lock → silent Eco Mode** — when the GNOME screen locks, daemon silently switches to Eco Mode (no notification, no fan noise). Restores Performance automatically on unlock. Configurable via `SCREEN_LOCK_POWERSAVE=yes/no`.
+- **Battery charge limit** — `BATTERY_CHARGE_LIMIT=80` writes `charge_control_end_threshold` on Apple Silicon (and compatible hardware). Protects battery longevity when permanently plugged in. Default `0` (disabled, charges to 100%).
+- **Process detection O(1)** — replaced 3 separate `pgrep` subprocess calls with a single `/proc/*/comm` read, cached per poll cycle. Reduces subprocess overhead by ~60%.
+
+### Changed
+- **Meeting mode on battery** — when a video call is detected while on battery power, daemon now auto-switches to Eco Mode silently (instead of showing a suggestion). On AC power, behaviour is unchanged (suggestion with action button).
+
 ## [1.6.0] - 2026-06-26
 
 ### Added

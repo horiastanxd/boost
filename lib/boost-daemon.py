@@ -62,7 +62,12 @@ class BoostDaemon:
         self._slow_charge_active = False
         self._slow_charge_notified = False
         self._power_samples = []
-        
+        self._screen_locked = False
+        self._pre_lock_profile = None
+        self.screen_lock_powersave = "yes"
+        self._battery_charge_limit = 0
+        self._process_cache = (0, set())
+
         self.cpu_temp_path = self.find_cpu_temp_path()
         self.amd_gpu_hwmon = self.find_amd_gpu_hwmon()
         self._meeting_notified = False
@@ -246,6 +251,8 @@ class BoostDaemon:
                         elif k == "SLOW_CHARGE_THRESHOLD_W": self.slow_charge_threshold_uw = int(float(v) * 1_000_000)
                         elif k == "SLOW_CHARGE_BATTERY_PCT": self.slow_charge_battery_pct = int(v)
                         elif k == "SLOW_CHARGE_RECOVERY_PCT": self.slow_charge_recovery_pct = int(v)
+                        elif k == "SCREEN_LOCK_POWERSAVE": self.screen_lock_powersave = v
+                        elif k == "BATTERY_CHARGE_LIMIT": self._battery_charge_limit = int(v)
         except Exception: pass
 
     def apply_preset(self):
@@ -309,15 +316,29 @@ class BoostDaemon:
         except Exception:
             return 0
 
-    def is_game_running(self):
+    def read_process_set(self):
+        """Return set of running process names, cached for one poll cycle."""
+        now = int(time.time())
+        if now - self._process_cache[0] < self.poll_interval:
+            return self._process_cache[1]
+        procs = set()
         try:
-            return subprocess.run(
-                ['pgrep', '-f', '|'.join(GAME_PROCESSES)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            ).returncode == 0
+            for pid in os.listdir('/proc'):
+                if not pid.isdigit():
+                    continue
+                try:
+                    with open(f'/proc/{pid}/comm') as f:
+                        procs.add(f.read().strip())
+                except (OSError, IOError):
+                    pass
         except Exception:
-            return False
+            pass
+        self._process_cache = (now, procs)
+        return procs
+
+    def is_game_running(self):
+        procs = self.read_process_set()
+        return bool(procs.intersection(GAME_PROCESSES))
 
     def get_ppd_profile(self):
         self._profile_cycle_count += 1
@@ -369,22 +390,50 @@ class BoostDaemon:
         return ["0", "0", "0"]
 
     def is_creator_running(self):
+        return bool(self.read_process_set().intersection(CREATOR_PROCESSES))
+
+    def is_meeting_running(self):
+        return bool(self.read_process_set().intersection(MEETING_PROCESSES))
+
+    def is_screen_locked(self):
+        """Check if GNOME screen is locked via loginctl."""
         try:
-            return subprocess.run(
-                ['pgrep', '-f', '|'.join(CREATOR_PROCESSES)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            ).returncode == 0
+            if not self.cached_session:
+                self.get_user_env()
+            if not self.cached_session:
+                return False
+            locked = subprocess.check_output(
+                ['loginctl', 'show-session', self.cached_session,
+                 '--property=LockedHint', '--value'],
+                text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            return locked == "yes"
         except Exception:
             return False
 
-    def is_meeting_running(self):
+    def apply_charge_limit(self):
+        """Write charge_control_end_threshold if BATTERY_CHARGE_LIMIT is set."""
+        if self._battery_charge_limit <= 0:
+            return
+        supply = self.find_battery_supply()
+        if not supply:
+            return
+        end_path = os.path.join(supply, "charge_control_end_threshold")
+        start_path = os.path.join(supply, "charge_control_start_threshold")
+        if not os.path.exists(end_path):
+            return
         try:
-            return subprocess.run(
-                ['pgrep', '-f', '|'.join(MEETING_PROCESSES)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            ).returncode == 0
-        except Exception:
-            return False
+            current = int(self.read_text(end_path, "100"))
+            if current != self._battery_charge_limit:
+                with open(end_path, 'w') as f:
+                    f.write(str(self._battery_charge_limit))
+                start_val = max(self._battery_charge_limit - 5, 0)
+                if os.path.exists(start_path):
+                    with open(start_path, 'w') as f:
+                        f.write(str(start_val))
+                self.log(f"Battery charge limit set to {self._battery_charge_limit}%")
+        except Exception as e:
+            self.log(f"Failed to set charge limit: {e}")
 
     def record_stats(self, load, temp, profile):
         try:
@@ -704,9 +753,28 @@ class BoostDaemon:
                     self._slow_charge_active = False
                 self._power_samples.clear()
 
+            # ── Screen lock → silent powersave ──────────────────────
+            if self.screen_lock_powersave == "yes" and self.mode != "off":
+                locked = self.is_screen_locked()
+                if locked and not self._screen_locked:
+                    self._screen_locked = True
+                    self._pre_lock_profile = profile
+                    if profile != "power-saver":
+                        self.log("Screen locked. Silently switching to powersave.")
+                        self.run_command("/usr/local/bin/powersave")
+                elif not locked and self._screen_locked:
+                    self._screen_locked = False
+                    if self._pre_lock_profile == "performance":
+                        self.log("Screen unlocked. Restoring performance profile.")
+                        self.run_command("/usr/local/bin/boost")
+                    self._pre_lock_profile = None
+
+            # ── Charge limit enforcement ─────────────────────────────
+            self.apply_charge_limit()
+
             if self.mode == "off":
                 continue
-                
+
             # Summer Night Mode Auto-Silent
             if self.summer_nights == "yes" and self.in_quiet_hours() and profile != "power-saver":
                 if now - self.last_auto > 3600:
@@ -736,14 +804,24 @@ class BoostDaemon:
                     )
                     self.last_prompt = now
 
-            # Meeting / Video Call Detection — suggest Quiet mode once per session
+            # Meeting / Video Call Detection
+            # On battery: auto-switch to powersave (quiet fans, save battery)
+            # On AC: suggest once per session
             if is_meeting and not self._meeting_notified and profile == "performance":
                 self._meeting_notified = True
-                self.send_notification(
-                    "Video call detected",
-                    "Switch to Balanced mode to reduce fan noise during your call.",
-                    "Go Quiet", "/usr/local/bin/powersave"
-                )
+                if ac_online == 0:
+                    self.log("Meeting detected on battery. Auto-switching to powersave.")
+                    self.run_command("/usr/local/bin/powersave")
+                    self.send_notification(
+                        "Video call — Eco Mode",
+                        "Switched to Eco Mode to keep fans quiet and save battery during your call.",
+                    )
+                else:
+                    self.send_notification(
+                        "Video call detected",
+                        "Switch to Balanced mode to reduce fan noise during your call.",
+                        "Go Quiet", "/usr/local/bin/powersave"
+                    )
             elif not is_meeting:
                 self._meeting_notified = False
             
