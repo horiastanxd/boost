@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # /usr/local/lib/power-common.sh - shared helpers for boost/powersave/silent/restore
-# Version: 1.4.0
+# Version: 1.5.0
 
 # shellcheck disable=SC2034
 # Sourced by profile scripts for --version.
@@ -754,9 +754,9 @@ show_status() {
     
     # PPD color
     local ppd_disp="$ppd"
-    if [[ "$ppd" == "performance" || "$ppd" == "throughput-performance" || "$ppd" == "latency-performance" || "$ppd" == "accelerator-performance" ]]; then ppd_disp="${C_RED}Performance (Boost)${C_RESET}"
-    elif [[ "$ppd" == "balanced" ]]; then ppd_disp="${C_GREEN}Balanced (Powersave)${C_RESET}"
-    elif [[ "$ppd" == "power-saver" || "$ppd" == "powersave" || "$ppd" == "balanced-battery" ]]; then ppd_disp="${C_CYAN}Power Saver (Silent)${C_RESET}"; fi
+    if [[ "$ppd" == "performance" || "$ppd" == "throughput-performance" || "$ppd" == "latency-performance" || "$ppd" == "accelerator-performance" ]]; then ppd_disp="${C_RED}Performance${C_RESET}"
+    elif [[ "$ppd" == "balanced" ]]; then ppd_disp="${C_GREEN}Balanced${C_RESET}"
+    elif [[ "$ppd" == "power-saver" || "$ppd" == "powersave" || "$ppd" == "balanced-battery" ]]; then ppd_disp="${C_CYAN}Eco Mode${C_RESET}"; fi
     
     # Turbo color
     local turbo_disp="$turbo"

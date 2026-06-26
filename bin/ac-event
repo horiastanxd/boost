@@ -2,7 +2,11 @@
 # ac-event - Handles AC/Battery power events from udev
 # Version: 1.5.0
 
-sleep 1 # Wait briefly for hardware state to settle
+# --boot: called at startup (no graphical session yet; skip notifications, skip sleep)
+BOOT_MODE=0
+[[ "${1:-}" == "--boot" ]] && BOOT_MODE=1
+
+[[ "$BOOT_MODE" == "0" ]] && sleep 1 # Wait briefly for hardware state to settle
 
 # Source shared helpers for battery detection
 # shellcheck source=/dev/null
@@ -103,29 +107,34 @@ profile_label() {
     esac
 }
 
+# Prevent profile scripts from disabling auto mode when triggered by ac-event
+export AUTO_HELPER_INTERNAL=1
+
 if [[ "$ac_online" == "1" ]]; then
     should_handle_state "ac" || exit 0
     logger -t boost-ac "AC connected. Applying profile: $AC_PROFILE"
     cmd=$(profile_cmd "$AC_PROFILE")
     $cmd >/dev/null 2>&1 || true
-    notify_plain "AC Power Connected" "Switched to $(profile_label "$AC_PROFILE") profile." "normal"
+    [[ "$BOOT_MODE" == "0" ]] && notify_plain "AC Power Connected" "Switched to $(profile_label "$AC_PROFILE") profile." "normal"
 elif [[ "$ac_online" == "0" ]]; then
     should_handle_state "battery" || exit 0
     logger -t boost-ac "On battery. Applying profile: $BATTERY_PROFILE"
     cmd=$(profile_cmd "$BATTERY_PROFILE")
     $cmd >/dev/null 2>&1 || true
 
-    # Check battery level and notify if low
-    if [[ "$BATTERY_LOW_NOTIFY" == "yes" ]]; then
-        bat_pct=$(get_battery_pct 2>/dev/null || echo "")
-        if [[ -n "$bat_pct" && "$bat_pct" -le "$BATTERY_CRITICAL_PCT" ]]; then
-            notify_plain "Battery Critical" "Only ${bat_pct}% remaining. System is in maximum power saving mode." "critical"
-        elif [[ -n "$bat_pct" && "$bat_pct" -le "$BATTERY_LOW_PCT" ]]; then
-            notify_plain "Battery Low" "${bat_pct}% remaining. Switched to $(profile_label "$BATTERY_PROFILE") profile." "normal"
+    if [[ "$BOOT_MODE" == "0" ]]; then
+        # Check battery level and notify if low
+        if [[ "$BATTERY_LOW_NOTIFY" == "yes" ]]; then
+            bat_pct=$(get_battery_pct 2>/dev/null || echo "")
+            if [[ -n "$bat_pct" && "$bat_pct" -le "$BATTERY_CRITICAL_PCT" ]]; then
+                notify_plain "Battery Critical" "Only ${bat_pct}% remaining. System is in maximum power saving mode." "critical"
+            elif [[ -n "$bat_pct" && "$bat_pct" -le "$BATTERY_LOW_PCT" ]]; then
+                notify_plain "Battery Low" "${bat_pct}% remaining. Switched to $(profile_label "$BATTERY_PROFILE") profile." "normal"
+            else
+                notify_plain "On Battery" "Switched to $(profile_label "$BATTERY_PROFILE") profile." "normal"
+            fi
         else
             notify_plain "On Battery" "Switched to $(profile_label "$BATTERY_PROFILE") profile." "normal"
         fi
-    else
-        notify_plain "On Battery" "Switched to $(profile_label "$BATTERY_PROFILE") profile." "normal"
     fi
 fi
