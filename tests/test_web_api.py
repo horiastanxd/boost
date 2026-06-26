@@ -4,8 +4,10 @@ import io
 import json
 import os
 import sys
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 import urllib.request
 import urllib.error
@@ -58,6 +60,44 @@ class TestValidHHMM(unittest.TestCase):
         self.assertFalse(valid_hhmm("-1:00"))
 
 
+class TestConfigValidation(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".conf", delete=False)
+        self.tmp.write("LOAD_HIGH=50\nTEMP_CRITICAL=85\nTEMP_HOT=78\nBOOST_TEMP_LIMIT=78\n")
+        self.tmp.close()
+        self.orig_conf = boost_web.CONF_FILE
+        self.orig_mtime = boost_web._CONFIG_CACHE_MTIME
+        self.orig_data = boost_web._CONFIG_CACHE_DATA.copy()
+        boost_web.CONF_FILE = Path(self.tmp.name)
+        with boost_web._CONFIG_LOCK:
+            boost_web._CONFIG_CACHE_MTIME = -1
+            boost_web._CONFIG_CACHE_DATA = {}
+
+    def tearDown(self):
+        boost_web.CONF_FILE = self.orig_conf
+        with boost_web._CONFIG_LOCK:
+            boost_web._CONFIG_CACHE_MTIME = self.orig_mtime
+            boost_web._CONFIG_CACHE_DATA = self.orig_data
+        os.unlink(self.tmp.name)
+
+    def test_save_config_rejects_invalid_number(self):
+        result = boost_web.run_action("save-config", json.dumps({"LOAD_HIGH": "abc"}))
+        self.assertFalse(result["ok"])
+        self.assertIn("whole number", result["message"])
+        self.assertEqual(boost_web.read_config()["LOAD_HIGH"], "50")
+
+    def test_save_config_rejects_invalid_cross_field_thresholds(self):
+        result = boost_web.run_action("save-config", json.dumps({"TEMP_HOT": "95"}))
+        self.assertFalse(result["ok"])
+        self.assertIn("TEMP_CRITICAL", result["message"])
+
+    def test_save_config_invalidates_config_cache(self):
+        self.assertEqual(boost_web.read_config()["LOAD_HIGH"], "50")
+        result = boost_web.run_action("save-config", json.dumps({"LOAD_HIGH": "60"}))
+        self.assertTrue(result["ok"])
+        self.assertEqual(boost_web.read_config()["LOAD_HIGH"], "60")
+
+
 # ---------------------------------------------------------------------------
 # Live test server - spins up on a free port, torn down after the class.
 # ---------------------------------------------------------------------------
@@ -87,6 +127,9 @@ class TestServerBase(unittest.TestCase):
 
     def _post(self, path, headers, payload):
         body = json.dumps(payload).encode()
+        return self._post_raw(path, headers, body)
+
+    def _post_raw(self, path, headers, body):
         req = urllib.request.Request(
             self._base + path,
             data=body,
@@ -132,6 +175,23 @@ class TestCSRFProtection(TestServerBase):
             {"action": "boost"},
         )
         self.assertEqual(status, 403)
+
+    def test_post_with_origin_prefix_attack_returns_403(self):
+        status, _ = self._post(
+            "/api/action",
+            {"Origin": f"http://127.0.0.1:{self._port}.evil.example.com"},
+            {"action": "boost"},
+        )
+        self.assertEqual(status, 403)
+
+    def test_post_with_non_object_json_returns_400(self):
+        status, body = self._post_raw(
+            "/api/action",
+            {"Origin": f"http://127.0.0.1:{self._port}"},
+            b'["boost"]',
+        )
+        self.assertEqual(status, 400)
+        self.assertFalse(body.get("ok", True))
 
     def test_post_with_referer_allowed(self):
         with patch("boost_web.run_action", return_value={"ok": True, "message": "ok"}):

@@ -298,6 +298,41 @@ class TestReadConfig(unittest.TestCase):
             bd.CONF_FILE = orig
             os.unlink(path)
 
+    def test_invalid_values_do_not_abort_config_read(self):
+        content = "\n".join([
+            "AUTO_MODE=banana",
+            "TEMP_HOT=not-a-number",
+            "TEMP_CRITICAL=90",
+            "QUIET_HOURS_START=25:00",
+            "QUIET_HOURS_END=07:30",
+            "AC_PROFILE=/bin/sh",
+            "BATTERY_PROFILE=silent",
+            "SLOW_CHARGE_THRESHOLD_W=bad",
+        ])
+        with tempfile.NamedTemporaryFile("w", suffix=".conf", delete=False) as f:
+            f.write(content)
+            path = f.name
+
+        import boost_daemon as bd
+        orig = bd.CONF_FILE
+        bd.CONF_FILE = path
+        try:
+            d = _make_daemon(mode="dynamic")
+            d.temp_hot = 78
+            d.slow_charge_threshold_uw = 2_000_000
+            d.read_config()
+            self.assertEqual(d.mode, "dynamic")
+            self.assertEqual(d.temp_hot, 78)
+            self.assertEqual(d.temp_critical, 90)
+            self.assertEqual(d.quiet_start, "22:00")
+            self.assertEqual(d.quiet_end, "07:30")
+            self.assertEqual(d.ac_profile, "restore")
+            self.assertEqual(d.battery_profile, "silent")
+            self.assertEqual(d.slow_charge_threshold_uw, 2_000_000)
+        finally:
+            bd.CONF_FILE = orig
+            os.unlink(path)
+
 
 if __name__ == "__main__":
     unittest.main()

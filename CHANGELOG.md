@@ -12,6 +12,12 @@ All notable changes to Boost are documented here.
 ### Changed
 - **Meeting mode on battery** — when a video call is detected while on battery power, daemon now auto-switches to Eco Mode silently (instead of showing a suggestion). On AC power, behaviour is unchanged (suggestion with action button).
 
+### Fixed
+- **Dashboard config validation** — rejects invalid numbers, times, enum values, and unsafe threshold combinations before writing `/etc/boost-auto.conf`.
+- **Dashboard CSRF hardening** — validates parsed local origins exactly instead of prefix matching and returns clean 400/413 errors for malformed POST bodies.
+- **Daemon config resilience** — ignores invalid manual config values per key instead of aborting the whole config reload.
+- **Dashboard telemetry escaping** — escapes CSV-derived values before inserting history tables into the page.
+
 ## [1.6.0] - 2026-06-26
 
 ### Added

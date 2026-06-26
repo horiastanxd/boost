@@ -132,6 +132,71 @@ def config_payload() -> dict[str, Any]:
     }
 
 
+CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
+    "TEMP_CRITICAL": {"type": "int", "min": 50, "max": 110},
+    "TEMP_HOT": {"type": "int", "min": 40, "max": 100},
+    "BOOST_TEMP_LIMIT": {"type": "int", "min": 40, "max": 100},
+    "LOAD_HIGH": {"type": "int", "min": 1, "max": 100},
+    "LOAD_HIGH_DURATION": {"type": "int", "min": 5, "max": 86400},
+    "LOAD_IDLE": {"type": "int", "min": 0, "max": 100},
+    "LOAD_IDLE_DURATION": {"type": "int", "min": 5, "max": 86400},
+    "PROMPT_COOLDOWN": {"type": "int", "min": 0, "max": 86400},
+    "QUIET_HOURS_START": {"type": "hhmm"},
+    "QUIET_HOURS_END": {"type": "hhmm"},
+    "SUMMER_SILENT_NIGHTS": {"type": "choice", "values": {"yes", "no"}},
+    "ALLOW_CRITICAL_AUTO": {"type": "choice", "values": {"yes", "no"}},
+    "POLL_INTERVAL": {"type": "int", "min": 1, "max": 3600},
+    "STATS_INTERVAL": {"type": "int", "min": 10, "max": 86400},
+    "AC_PROFILE": {"type": "choice", "values": {"boost", "powersave", "silent", "restore"}},
+    "BATTERY_PROFILE": {"type": "choice", "values": {"boost", "powersave", "silent", "restore"}},
+    "BATTERY_LOW_PCT": {"type": "int", "min": 1, "max": 100},
+    "BATTERY_CRITICAL_PCT": {"type": "int", "min": 1, "max": 100},
+    "BATTERY_LOW_NOTIFY": {"type": "choice", "values": {"yes", "no"}},
+}
+
+
+def validate_config_updates(updates: dict[str, Any]) -> tuple[dict[str, str], str | None]:
+    sanitized: dict[str, str] = {}
+    current_config = read_config()
+    for key, raw_value in updates.items():
+        spec = CONFIG_SCHEMA.get(key)
+        if spec is None:
+            return {}, f"Unknown config key: {key}"
+
+        value = str(raw_value).strip()
+        if spec["type"] == "int":
+            if not re.fullmatch(r"[0-9]+", value):
+                return {}, f"{key} must be a whole number."
+            number = int(value)
+            if number < spec["min"] or number > spec["max"]:
+                return {}, f"{key} must be between {spec['min']} and {spec['max']}."
+            sanitized[key] = str(number)
+        elif spec["type"] == "hhmm":
+            if not valid_hhmm(value):
+                return {}, f"{key} must use HH:MM."
+            sanitized[key] = value
+        elif spec["type"] == "choice":
+            if value not in spec["values"]:
+                allowed = ", ".join(sorted(spec["values"]))
+                return {}, f"{key} must be one of: {allowed}."
+            sanitized[key] = value
+
+    low = int(sanitized.get("BATTERY_LOW_PCT", str(number_config(current_config, "BATTERY_LOW_PCT", 20))))
+    critical = int(sanitized.get("BATTERY_CRITICAL_PCT", str(number_config(current_config, "BATTERY_CRITICAL_PCT", 10))))
+    if critical > low:
+        return {}, "BATTERY_CRITICAL_PCT cannot be higher than BATTERY_LOW_PCT."
+
+    temp_critical = int(sanitized.get("TEMP_CRITICAL", str(number_config(current_config, "TEMP_CRITICAL", 85))))
+    temp_hot = int(sanitized.get("TEMP_HOT", str(number_config(current_config, "TEMP_HOT", 78))))
+    boost_limit = int(sanitized.get("BOOST_TEMP_LIMIT", str(number_config(current_config, "BOOST_TEMP_LIMIT", 78))))
+    if temp_hot > temp_critical:
+        return {}, "TEMP_HOT cannot be higher than TEMP_CRITICAL."
+    if boost_limit > temp_critical:
+        return {}, "BOOST_TEMP_LIMIT cannot be higher than TEMP_CRITICAL."
+
+    return sanitized, None
+
+
 
 DEFAULT_THRESHOLDS = {
     "tempCritical": 85,
@@ -288,6 +353,8 @@ def apply_ambient_adjustment(thresholds: dict[str, int | str], ambient: dict[str
 
 def quiet_active(start: str, end: str) -> bool:
     if start == end:
+        return False
+    if not valid_hhmm(start) or not valid_hhmm(end):
         return False
     now = time.localtime()
     now_m = now.tm_hour * 60 + now.tm_min
@@ -760,6 +827,8 @@ def status_payload() -> dict[str, Any]:
     base_thresholds = mode_thresholds(mode, config)
     thresholds = apply_ambient_adjustment(base_thresholds, ambient)
     pause = pause_payload(config)
+    low_pct = number_config(config, "BATTERY_LOW_PCT", 20)
+    critical_pct = number_config(config, "BATTERY_CRITICAL_PCT", 10)
     return {
         "ok": True,
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -793,13 +862,14 @@ def status_payload() -> dict[str, Any]:
             "drainRatePctPerHour": battery_drain_rate(rows),
             "acProfile": config.get("AC_PROFILE", "restore"),
             "batteryProfile": config.get("BATTERY_PROFILE", "powersave"),
-            "lowPct": int(config.get("BATTERY_LOW_PCT", "20")),
-            "criticalPct": int(config.get("BATTERY_CRITICAL_PCT", "10")),
+            "lowPct": low_pct,
+            "criticalPct": critical_pct,
         },
     }
 
 
 def run_action(action: str, value: str | None = None) -> dict[str, Any]:
+    global _CONFIG_CACHE_MTIME
     global _SNOOZE_WEB_CACHE
     allowed_modes = {"dynamic", "gaming", "creator", "quiet", "off"}
     allowed_durations = {"30m", "1h", "2h", "4h"}
@@ -846,18 +916,9 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
             return {"ok": False, "message": "Invalid JSON for config update."}
         if not isinstance(updates, dict):
             return {"ok": False, "message": "Config must be a JSON object."}
-        # Validate known keys
-        known_keys = {
-            "TEMP_CRITICAL", "TEMP_HOT", "BOOST_TEMP_LIMIT",
-            "LOAD_HIGH", "LOAD_HIGH_DURATION", "LOAD_IDLE", "LOAD_IDLE_DURATION",
-            "PROMPT_COOLDOWN", "QUIET_HOURS_START", "QUIET_HOURS_END",
-            "SUMMER_SILENT_NIGHTS", "ALLOW_CRITICAL_AUTO",
-            "POLL_INTERVAL", "STATS_INTERVAL",
-            "AC_PROFILE", "BATTERY_PROFILE", "BATTERY_LOW_PCT", "BATTERY_CRITICAL_PCT", "BATTERY_LOW_NOTIFY",
-        }
-        for key in updates:
-            if key not in known_keys:
-                return {"ok": False, "message": f"Unknown config key: {key}"}
+        updates, error = validate_config_updates(updates)
+        if error:
+            return {"ok": False, "message": error}
         if write_config(updates):
             with _CONFIG_LOCK:
                 _CONFIG_CACHE_MTIME = -1  # force re-read
@@ -1493,6 +1554,12 @@ function setGauge(id, value, max = 100) {
   text.textContent = Math.round(value);
 }
 
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
 function tempColor(temp) {
   if (temp >= 85) return '#ef4444';
   if (temp >= 75) return '#f59e0b';
@@ -1693,9 +1760,9 @@ function render(data) {
       const profileLabels = {performance: 'Boost', balanced: 'Balanced', 'power-saver': 'Eco'};
       const profileDots = {performance: '#f43f5e', balanced: '#10b981', 'power-saver': '#8b5cf6'};
       switchLog.innerHTML = data.profileSwitches.slice().reverse().map(s => {
-        const label = profileLabels[s.profile] || s.profile;
+        const label = esc(profileLabels[s.profile] || s.profile);
         const color = profileDots[s.profile] || '#94a3b8';
-        const time = s.iso ? s.iso.split('T')[1].substring(0,5) : '—';
+        const time = esc(s.iso ? s.iso.split('T')[1].substring(0,5) : '—');
         return `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:12px;color:#94a3b8"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color}"></span>${time} → <strong style="color:#f1f5f9">${label}</strong></span>`;
       }).join('');
     } else if (switchLog) {
@@ -1703,12 +1770,12 @@ function render(data) {
     }
     $('history').innerHTML = data.history.slice().reverse().map(r => `
       <tr>
-        <td>${r.iso ? r.iso.split('T')[1].substring(0,8) : '—'}</td>
-        <td style="text-transform:capitalize">${{performance:'Boost',balanced:'Balanced','power-saver':'Silent'}[r.profile]||r.profile}</td>
-        <td><strong>${r.cpu_load||0}%</strong></td>
-        <td style="color:${tempColor(parseInt(r.cpu_temp||0))}">${r.cpu_temp||0}°C</td>
-        <td>${r.gpu_temp||0}°C / ${r.gpu_power||0}W</td>
-        <td>${r.pl1||0}/${r.pl2||0}W</td>
+        <td>${esc(r.iso ? r.iso.split('T')[1].substring(0,8) : '—')}</td>
+        <td style="text-transform:capitalize">${esc({performance:'Boost',balanced:'Balanced','power-saver':'Silent'}[r.profile]||r.profile)}</td>
+        <td><strong>${esc(r.cpu_load||0)}%</strong></td>
+        <td style="color:${tempColor(parseInt(r.cpu_temp||0))}">${esc(r.cpu_temp||0)}°C</td>
+        <td>${esc(r.gpu_temp||0)}°C / ${esc(r.gpu_power||0)}W</td>
+        <td>${esc(r.pl1||0)}/${esc(r.pl2||0)}W</td>
       </tr>`).join('');
   }
 
@@ -1736,11 +1803,11 @@ function render(data) {
   if (mChanged) {
     $('modes').innerHTML = data.auto.modes.map(m => `
       <tr class="${data.auto.mode === m.mode ? 'active-preset' : ''}">
-        <td style="font-weight:600;text-transform:capitalize">${m.mode}</td>
-        <td>${m.tempHot}°C</td><td>${m.tempCritical}°C</td><td>${m.boostTempLimit}°C</td>
-        <td>${m.loadHigh}% / ${secondsText(m.loadHighDuration)}</td>
-        <td>${m.loadIdle}% / ${secondsText(m.loadIdleDuration)}</td>
-        <td>${secondsText(m.promptCooldown)}</td>
+        <td style="font-weight:600;text-transform:capitalize">${esc(m.mode)}</td>
+        <td>${esc(m.tempHot)}°C</td><td>${esc(m.tempCritical)}°C</td><td>${esc(m.boostTempLimit)}°C</td>
+        <td>${esc(m.loadHigh)}% / ${esc(secondsText(m.loadHighDuration))}</td>
+        <td>${esc(m.loadIdle)}% / ${esc(secondsText(m.loadIdleDuration))}</td>
+        <td>${esc(secondsText(m.promptCooldown))}</td>
       </tr>`).join('');
   }
 
@@ -1919,15 +1986,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def _csrf_ok(self) -> bool:
         host, port = self.server.server_address
-        allowed = (
-            f"http://{host}:{port}",
-            f"http://localhost:{port}",
-            f"http://127.0.0.1:{port}",
-        )
+        allowed = {
+            (host, port),
+            ("localhost", port),
+            ("127.0.0.1", port),
+        }
         origin = self.headers.get("Origin", "")
         referer = self.headers.get("Referer", "")
         for header in (origin, referer):
-            if any(header.startswith(prefix) for prefix in allowed):
+            if not header:
+                continue
+            parsed = urllib.parse.urlparse(header)
+            if parsed.scheme != "http":
+                continue
+            try:
+                parsed_port = parsed.port or 80
+            except ValueError:
+                continue
+            if (parsed.hostname, parsed_port) in allowed:
                 return True
         return False
 
@@ -1938,12 +2014,20 @@ class Handler(BaseHTTPRequestHandler):
         if not self._csrf_ok():
             self.send_json({"ok": False, "message": "Forbidden"}, 403)
             return
-        length = int(self.headers.get("Content-Length", "0"))
         try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 0 or length > 64 * 1024:
+                self.send_json({"ok": False, "message": "Request body too large"}, 413)
+                return
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(payload, dict):
+                self.send_json({"ok": False, "message": "JSON body must be an object"}, 400)
+                return
             action = str(payload.get("action", ""))
             value = payload.get("value")
             self.send_json(run_action(action, None if value is None else str(value)))
+        except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+            self.send_json({"ok": False, "message": "Invalid JSON request"}, 400)
         except Exception as exc:  # noqa: BLE001 - local UI should return readable errors
             self.send_json({"ok": False, "message": html.escape(str(exc))}, 500)
 

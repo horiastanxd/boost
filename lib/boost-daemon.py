@@ -27,6 +27,11 @@ CREATOR_PROCESSES = ['ffmpeg', 'blender', 'HandBrakeCLI', 'kdenlive', 'davinci',
 
 # Video call / meeting apps — suggest Quiet mode to keep fans down and latency low
 MEETING_PROCESSES = ['zoom', '.zoom', 'teams', 'slack', 'discord', 'obs', 'pipewire-camera']
+AUTO_MODES = {"dynamic", "gaming", "creator", "quiet", "off", "custom"}
+PROFILE_COMMANDS = {"boost", "powersave", "silent", "restore"}
+YES_NO = {"yes", "no"}
+LOG_WARNING = getattr(syslog, "LOG_WARNING", syslog.LOG_INFO)
+
 
 class BoostDaemon:
     def __init__(self):
@@ -88,6 +93,49 @@ class BoostDaemon:
         
     def log(self, msg, level=syslog.LOG_INFO):
         syslog.syslog(level, msg)
+
+    def _config_int(self, key, value, current, minimum=None, maximum=None):
+        try:
+            parsed = int(str(value).strip())
+        except (TypeError, ValueError):
+            self.log(f"Ignoring invalid config {key}={value!r}; expected number", LOG_WARNING)
+            return current
+        if minimum is not None and parsed < minimum:
+            self.log(f"Ignoring invalid config {key}={value!r}; below {minimum}", LOG_WARNING)
+            return current
+        if maximum is not None and parsed > maximum:
+            self.log(f"Ignoring invalid config {key}={value!r}; above {maximum}", LOG_WARNING)
+            return current
+        return parsed
+
+    def _config_choice(self, key, value, current, allowed):
+        if value in allowed:
+            return value
+        self.log(f"Ignoring invalid config {key}={value!r}; expected one of {sorted(allowed)}", LOG_WARNING)
+        return current
+
+    def _config_hhmm(self, key, value, current):
+        parts = value.split(":", 1)
+        if len(parts) == 2:
+            try:
+                hour, minute = int(parts[0]), int(parts[1])
+                if len(value) == 5 and 0 <= hour <= 23 and 0 <= minute <= 59:
+                    return value
+            except ValueError:
+                pass
+        self.log(f"Ignoring invalid config {key}={value!r}; expected HH:MM", LOG_WARNING)
+        return current
+
+    def _config_watts_uw(self, key, value, current):
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            self.log(f"Ignoring invalid config {key}={value!r}; expected watts", LOG_WARNING)
+            return current
+        if parsed < 0:
+            self.log(f"Ignoring invalid config {key}={value!r}; below 0", LOG_WARNING)
+            return current
+        return int(parsed * 1_000_000)
 
     def find_amd_gpu_hwmon(self):
         drm_base = "/sys/class/drm"
@@ -228,31 +276,31 @@ class BoostDaemon:
                     if not line or line.startswith('#'): continue
                     if '=' in line:
                         k, v = [x.strip() for x in line.split('=', 1)]
-                        if k == "AUTO_MODE": self.mode = v
-                        elif k == "ALLOW_CRITICAL_AUTO": self.allow_critical = v
-                        elif k == "TEMP_CRITICAL": self.temp_critical = int(v)
-                        elif k == "TEMP_HOT": self.temp_hot = int(v)
-                        elif k == "BOOST_TEMP_LIMIT": self.boost_temp_limit = int(v)
-                        elif k == "LOAD_HIGH": self.load_high = int(v)
-                        elif k == "LOAD_HIGH_DURATION": self.load_high_duration = int(v)
-                        elif k == "LOAD_IDLE": self.load_idle = int(v)
-                        elif k == "LOAD_IDLE_DURATION": self.load_idle_duration = int(v)
-                        elif k == "PROMPT_COOLDOWN": self.prompt_cooldown = int(v)
-                        elif k == "POLL_INTERVAL": self.poll_interval = max(1, int(v))
-                        elif k == "STATS_INTERVAL": self.stats_interval = max(10, int(v))
-                        elif k == "QUIET_HOURS_START": self.quiet_start = v
-                        elif k == "QUIET_HOURS_END": self.quiet_end = v
-                        elif k == "SUMMER_SILENT_NIGHTS": self.summer_nights = v
-                        elif k == "AC_PROFILE": self.ac_profile = v
-                        elif k == "BATTERY_PROFILE": self.battery_profile = v
-                        elif k == "BATTERY_LOW_PCT": self.battery_low_pct = int(v)
-                        elif k == "BATTERY_CRITICAL_PCT": self.battery_critical_pct = int(v)
-                        elif k == "BATTERY_LOW_NOTIFY": self.battery_low_notify = v
-                        elif k == "SLOW_CHARGE_THRESHOLD_W": self.slow_charge_threshold_uw = int(float(v) * 1_000_000)
-                        elif k == "SLOW_CHARGE_BATTERY_PCT": self.slow_charge_battery_pct = int(v)
-                        elif k == "SLOW_CHARGE_RECOVERY_PCT": self.slow_charge_recovery_pct = int(v)
-                        elif k == "SCREEN_LOCK_POWERSAVE": self.screen_lock_powersave = v
-                        elif k == "BATTERY_CHARGE_LIMIT": self._battery_charge_limit = int(v)
+                        if k == "AUTO_MODE": self.mode = self._config_choice(k, v, self.mode, AUTO_MODES)
+                        elif k == "ALLOW_CRITICAL_AUTO": self.allow_critical = self._config_choice(k, v, self.allow_critical, YES_NO)
+                        elif k == "TEMP_CRITICAL": self.temp_critical = self._config_int(k, v, self.temp_critical, 50, 110)
+                        elif k == "TEMP_HOT": self.temp_hot = self._config_int(k, v, self.temp_hot, 40, 100)
+                        elif k == "BOOST_TEMP_LIMIT": self.boost_temp_limit = self._config_int(k, v, self.boost_temp_limit, 40, 100)
+                        elif k == "LOAD_HIGH": self.load_high = self._config_int(k, v, self.load_high, 1, 100)
+                        elif k == "LOAD_HIGH_DURATION": self.load_high_duration = self._config_int(k, v, self.load_high_duration, 5, 86400)
+                        elif k == "LOAD_IDLE": self.load_idle = self._config_int(k, v, self.load_idle, 0, 100)
+                        elif k == "LOAD_IDLE_DURATION": self.load_idle_duration = self._config_int(k, v, self.load_idle_duration, 5, 86400)
+                        elif k == "PROMPT_COOLDOWN": self.prompt_cooldown = self._config_int(k, v, self.prompt_cooldown, 0, 86400)
+                        elif k == "POLL_INTERVAL": self.poll_interval = self._config_int(k, v, self.poll_interval, 1, 3600)
+                        elif k == "STATS_INTERVAL": self.stats_interval = self._config_int(k, v, self.stats_interval, 10, 86400)
+                        elif k == "QUIET_HOURS_START": self.quiet_start = self._config_hhmm(k, v, self.quiet_start)
+                        elif k == "QUIET_HOURS_END": self.quiet_end = self._config_hhmm(k, v, self.quiet_end)
+                        elif k == "SUMMER_SILENT_NIGHTS": self.summer_nights = self._config_choice(k, v, self.summer_nights, YES_NO)
+                        elif k == "AC_PROFILE": self.ac_profile = self._config_choice(k, v, self.ac_profile, PROFILE_COMMANDS)
+                        elif k == "BATTERY_PROFILE": self.battery_profile = self._config_choice(k, v, self.battery_profile, PROFILE_COMMANDS)
+                        elif k == "BATTERY_LOW_PCT": self.battery_low_pct = self._config_int(k, v, self.battery_low_pct, 1, 100)
+                        elif k == "BATTERY_CRITICAL_PCT": self.battery_critical_pct = self._config_int(k, v, self.battery_critical_pct, 1, 100)
+                        elif k == "BATTERY_LOW_NOTIFY": self.battery_low_notify = self._config_choice(k, v, self.battery_low_notify, YES_NO)
+                        elif k == "SLOW_CHARGE_THRESHOLD_W": self.slow_charge_threshold_uw = self._config_watts_uw(k, v, self.slow_charge_threshold_uw)
+                        elif k == "SLOW_CHARGE_BATTERY_PCT": self.slow_charge_battery_pct = self._config_int(k, v, self.slow_charge_battery_pct, 1, 100)
+                        elif k == "SLOW_CHARGE_RECOVERY_PCT": self.slow_charge_recovery_pct = self._config_int(k, v, self.slow_charge_recovery_pct, 1, 100)
+                        elif k == "SCREEN_LOCK_POWERSAVE": self.screen_lock_powersave = self._config_choice(k, v, self.screen_lock_powersave, YES_NO)
+                        elif k == "BATTERY_CHARGE_LIMIT": self._battery_charge_limit = self._config_int(k, v, self._battery_charge_limit, 0, 100)
         except Exception: pass
 
     def apply_preset(self):
