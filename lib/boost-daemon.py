@@ -51,11 +51,17 @@ class BoostDaemon:
         self.battery_low_pct = 20
         self.battery_critical_pct = 10
         self.battery_low_notify = "yes"
+        self.slow_charge_threshold_uw = 2_000_000  # 2W default
+        self.slow_charge_battery_pct = 25
+        self.slow_charge_recovery_pct = 35
         self._battery_supply = None
         self._battery_notified_low = False
         self._battery_notified_critical = False
         self._last_battery_pct = 100
         self._last_ac_online = None
+        self._slow_charge_active = False
+        self._slow_charge_notified = False
+        self._power_samples = []
         
         self.cpu_temp_path = self.find_cpu_temp_path()
         self.amd_gpu_hwmon = self.find_amd_gpu_hwmon()
@@ -196,6 +202,18 @@ class BoostDaemon:
         if not supply:
             return "Unknown"
         return self.read_text(os.path.join(supply, "status"), "Unknown")
+
+    def read_battery_power_uw(self):
+        """Return absolute charging power in µW, or None if unavailable."""
+        supply = self.find_battery_supply()
+        if not supply:
+            return None
+        try:
+            val = int(self.read_text(os.path.join(supply, "power_now"), "") or "0")
+            return abs(val)
+        except (ValueError, OSError):
+            return None
+
     def read_config(self):
         if not os.path.exists(CONF_FILE): return
         try:
@@ -225,6 +243,9 @@ class BoostDaemon:
                         elif k == "BATTERY_LOW_PCT": self.battery_low_pct = int(v)
                         elif k == "BATTERY_CRITICAL_PCT": self.battery_critical_pct = int(v)
                         elif k == "BATTERY_LOW_NOTIFY": self.battery_low_notify = v
+                        elif k == "SLOW_CHARGE_THRESHOLD_W": self.slow_charge_threshold_uw = int(float(v) * 1_000_000)
+                        elif k == "SLOW_CHARGE_BATTERY_PCT": self.slow_charge_battery_pct = int(v)
+                        elif k == "SLOW_CHARGE_RECOVERY_PCT": self.slow_charge_recovery_pct = int(v)
         except Exception: pass
 
     def apply_preset(self):
@@ -639,7 +660,50 @@ class BoostDaemon:
                 # Reset battery notifications when plugged in
                 self._battery_notified_low = False
                 self._battery_notified_critical = False
-                
+
+            # ── Slow charge protection ───────────────────────────────
+            if ac_online == 1 and battery_pct is not None:
+                power_uw = self.read_battery_power_uw()
+                if power_uw is not None:
+                    self._power_samples.append(power_uw)
+                    if len(self._power_samples) > 12:
+                        self._power_samples.pop(0)
+                    avg_uw = sum(self._power_samples) / len(self._power_samples)
+                    batt_status = self.read_battery_status_text()
+
+                    if not self._slow_charge_active:
+                        if (batt_status == "Charging"
+                                and battery_pct < self.slow_charge_battery_pct
+                                and len(self._power_samples) >= 6
+                                and avg_uw < self.slow_charge_threshold_uw
+                                and profile != "power-saver"):
+                            self._slow_charge_active = True
+                            self._slow_charge_notified = True
+                            avg_w = avg_uw / 1_000_000
+                            self.log(f"Slow charge detected ({avg_w:.1f}W avg). Switching to powersave.")
+                            self.run_command("/usr/local/bin/powersave")
+                            self.send_notification(
+                                "Slow Charging Detected",
+                                f"Charger barely keeping up ({avg_w:.1f}W net to battery). "
+                                f"Switched to Eco Mode to speed up charging.",
+                            )
+                    else:
+                        if (battery_pct >= self.slow_charge_recovery_pct
+                                or avg_uw >= self.slow_charge_threshold_uw * 2):
+                            self._slow_charge_active = False
+                            self._power_samples.clear()
+                            restore = self.ac_profile if self.ac_profile in ("boost", "powersave", "silent") else "boost"
+                            self.log(f"Slow charge resolved. Battery at {battery_pct}%. Restoring {restore}.")
+                            self.run_command(f"/usr/local/bin/{restore}")
+                            self.send_notification(
+                                "Charging Recovered",
+                                f"Battery at {battery_pct}%. Switched back to {restore.capitalize()} profile.",
+                            )
+            else:
+                if self._slow_charge_active:
+                    self._slow_charge_active = False
+                self._power_samples.clear()
+
             if self.mode == "off":
                 continue
                 

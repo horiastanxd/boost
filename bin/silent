@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # silent - overnight mode: minimum power, quiet fans, priority process
-# Version: 1.5.0
+# Version: 1.6.0
 
 # shellcheck source=/usr/local/lib/power-common.sh disable=SC1091
 source /usr/local/lib/power-common.sh

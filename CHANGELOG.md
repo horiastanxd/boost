@@ -2,6 +2,11 @@
 
 All notable changes to Boost are documented here.
 
+## [1.6.0] - 2026-06-26
+
+### Added
+- **Slow charge protection** — auto daemon now detects when AC is connected but net charging rate is too low (default < 2W, rolling 60s average). Automatically switches to Eco Mode so the charger can keep up with system load. Restores the AC profile once battery recovers to 35%. Configurable via `SLOW_CHARGE_THRESHOLD_W`, `SLOW_CHARGE_BATTERY_PCT`, `SLOW_CHARGE_RECOVERY_PCT` in `boost-auto.conf`.
+
 ## [1.5.0] - 2026-06-26
 
 ### Added

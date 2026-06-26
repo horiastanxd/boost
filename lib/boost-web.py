@@ -1458,7 +1458,7 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
 </section>
 
 <footer class="footer">
-  Boost Power Manager v1.5.0 — Keyboard: <kbd>1</kbd> Boost <kbd>2</kbd> Powersave <kbd>3</kbd> Silent <kbd>4</kbd> Restore <kbd>R</kbd> Refresh
+  Boost Power Manager v1.6.0 — Keyboard: <kbd>1</kbd> Boost <kbd>2</kbd> Powersave <kbd>3</kbd> Silent <kbd>4</kbd> Restore <kbd>R</kbd> Refresh
 </footer>
 </main>
 
