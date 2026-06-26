@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # power-report - text and HTML reports for boost power statistics
-# Version: 1.3.0
+# Version: 1.5.0
 
 set -euo pipefail
 

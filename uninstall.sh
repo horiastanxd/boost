@@ -12,7 +12,7 @@ echo "[uninstall] Restoring BIOS power defaults first..."
 
 echo ""
 echo "[uninstall] Stopping and disabling services..."
-for svc in boost-auto.service boost-web.service power-save-originals.service; do
+for svc in boost-auto.service boost-web.service power-save-originals.service boost-ac-init.service; do
     systemctl stop "$svc" 2>/dev/null || true
     systemctl disable "$svc" 2>/dev/null || true
 done
@@ -21,6 +21,7 @@ echo "[uninstall] Removing systemd units..."
 rm -f /etc/systemd/system/boost-auto.service
 rm -f /etc/systemd/system/boost-web.service
 rm -f /etc/systemd/system/power-save-originals.service
+rm -f /etc/systemd/system/boost-ac-init.service
 systemctl daemon-reload
 
 echo "[uninstall] Removing binaries..."

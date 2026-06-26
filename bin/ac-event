@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ac-event - Handles AC/Battery power events from udev
-# Version: 1.4.0
+# Version: 1.5.0
 
 sleep 1 # Wait briefly for hardware state to settle
 

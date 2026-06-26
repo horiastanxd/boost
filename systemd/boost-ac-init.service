@@ -1,0 +1,13 @@
+[Unit]
+Description=Apply AC/Battery profile at boot
+Documentation=https://github.com/horiastanxd/boost
+After=power-save-originals.service
+Requires=power-save-originals.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ac-event
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

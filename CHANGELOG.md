@@ -2,6 +2,15 @@
 
 All notable changes to Boost are documented here.
 
+## [1.5.0] - 2026-06-26
+
+### Added
+- **Boot-time profile init** — new `boost-ac-init.service` runs `ac-event` at boot, applying the correct AC or battery profile automatically. Previously, the profile was only applied on plug/unplug events, not at startup.
+- **Default `AC_PROFILE=boost`** — on AC power, Boost profile is applied by default. Previously defaulted to `restore`.
+
+### Fixed
+- **Tray profile label mismatch** — "Profile: Boost" now correctly shows "Profile: Performance" when the performance profile is active. `power-saver` now shows "Eco Mode" instead of "Powersave", matching the menu labels.
+
 ## [1.3.0] - 2026-06-25
 
 ### Added

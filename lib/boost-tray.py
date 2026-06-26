@@ -19,7 +19,7 @@ gi.require_version('AyatanaAppIndicator3', '0.1')
 gi.require_version('Notify', '0.7')
 from gi.repository import Gtk, Gdk, GLib, AyatanaAppIndicator3, Notify
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 STATE_DIR = Path("/var/lib/power-profile")
 CONF_FILE = Path("/etc/boost-auto.conf")
 
@@ -455,8 +455,8 @@ class BoostTray:
         self.item_stats.set_label(stats_label)
 
         # Mode line – show snoozed/paused indicator
-        friendly = {"performance": "Boost", "balanced": "Balanced",
-                     "power-saver": "Powersave"}.get(prof, prof)
+        friendly = {"performance": "Performance", "balanced": "Balanced",
+                     "power-saver": "Eco Mode"}.get(prof, prof)
         auto_suffix = amode
         if snooze_mins > 0:
             auto_suffix += " · Snoozed"
