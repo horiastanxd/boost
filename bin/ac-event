@@ -51,7 +51,10 @@ should_handle_state() {
 
 get_user_env() {
     local session user uid wayland x11
-    session=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$NF=="active" || NR==1 {print $1; exit}')
+    session=$(loginctl list-sessions --no-legend 2>/dev/null | awk '
+        $NF=="active" { print $1; found=1; exit }
+        NR==1 { first=$1 }
+        END { if (!found && first) print first }')
     [[ -z "$session" ]] && return 1
     user=$(loginctl show-session "$session" -p Name --value 2>/dev/null)
     uid=$(id -u "$user" 2>/dev/null) || return 1

@@ -497,7 +497,8 @@ class BoostDaemon:
             epp = self.read_text('/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference', '') or self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference', 'unsupported')
             turbo = self.read_turbo_state()
             
-            battery_pct = self.read_battery_pct() or ""
+            pct = self.read_battery_pct()
+            battery_pct = "" if pct is None else str(pct)
             battery_status = self.read_battery_status_text()
             iso_time = datetime.now().astimezone().replace(microsecond=0).isoformat()
             row = f"{int(time.time())},{iso_time},{profile},{load},{temp},{gpu_temp},{gpu_power},{gpu_limit},{pl1},{pl2},{gov},{epp},{turbo},{battery_pct},{battery_status}\n"
@@ -522,7 +523,13 @@ class BoostDaemon:
             self.log(f"Error recording stats: {e}")
 
     def run_command(self, cmd):
-        subprocess.Popen(shlex.split(cmd), env=dict(os.environ, AUTO_HELPER_INTERNAL="1"))
+        try:
+            proc = subprocess.Popen(shlex.split(cmd), env=dict(os.environ, AUTO_HELPER_INTERNAL="1"))
+        except OSError as e:
+            self.log(f"Failed to run {cmd}: {e}", LOG_WARNING)
+            return
+        # Reap the child in the background so it never lingers as a zombie
+        threading.Thread(target=proc.wait, daemon=True).start()
         self._cached_profile = None
 
     def get_user_env(self):
@@ -617,12 +624,16 @@ class BoostDaemon:
                         self._snooze_cache = (time.time(), 0, True)
                 except Exception:
                     pass
-            threading.Thread(target=handle_notify).start()
+            threading.Thread(target=handle_notify, daemon=True).start()
         else:
             env_args = [f"{k}={v}" for k, v in env_vars.items()]
             cmd = ['sudo', '-u', user, 'env'] + env_args + [
                 'notify-send', '-u', level, '-a', 'Auto power helper', title, body]
-            subprocess.Popen(cmd, env=cmd_env)
+            try:
+                proc = subprocess.Popen(cmd, env=cmd_env)
+                threading.Thread(target=proc.wait, daemon=True).start()
+            except OSError:
+                pass
         
         self.log(f"NOTIFY: {title}")
 
@@ -674,245 +685,257 @@ class BoostDaemon:
         self.log("Boost Daemon started in Python High-Performance mode")
         while True:
             time.sleep(self.poll_interval)
-            
             try:
-                current_mtime = os.stat(CONF_FILE).st_mtime if os.path.exists(CONF_FILE) else 0
-            except Exception:
-                current_mtime = 0
-                
-            if current_mtime != self.last_conf_mtime or self.last_conf_mtime == -1:
-                self.read_config()    # get new mode and all values
-                self.apply_preset()   # apply mode defaults
-                self.read_config()    # re-apply explicit config overrides on top
-                self.last_conf_mtime = current_mtime
-            
-            now = int(time.time())
-            temp = self.read_cpu_temp()
-            load = self.read_cpu_load()
-            profile = self.get_ppd_profile()
-            is_game = self.is_game_running()
-            is_creator = self.is_creator_running()
-            is_meeting = self.is_meeting_running()
-            
-            if now - self.last_stats >= self.stats_interval:
-                self.record_stats(load, temp, profile)
-                self.last_stats = now
+                self._tick()
+            except Exception as e:
+                # Never let a single bad poll cycle kill the daemon
+                self.log(f"Poll cycle error (recovered): {e!r}", LOG_WARNING)
 
-            # ── Battery & AC monitoring ──────────────────────────────
-            ac_online = self.read_ac_online()
-            battery_pct = self.read_battery_pct()
+    def _tick(self):
+        try:
+            current_mtime = os.stat(CONF_FILE).st_mtime if os.path.exists(CONF_FILE) else 0
+        except Exception:
+            current_mtime = 0
 
-            # AC plug/unplug event: switch profiles
-            if ac_online is not None and ac_online != self._last_ac_online:
-                self._last_ac_online = ac_online
-                if ac_online == 1:
-                    self.log(f"AC connected. Applying profile: {self.ac_profile}")
-                    self.run_command(f"/usr/local/bin/{self.ac_profile}")
-                    self.send_notification("AC Power Connected",
-                        f"Switched to {self.ac_profile} profile.")
-                elif ac_online == 0:
-                    self.log(f"On battery. Applying profile: {self.battery_profile}")
-                    self.run_command(f"/usr/local/bin/{self.battery_profile}")
-                    if battery_pct is not None and battery_pct <= self.battery_critical_pct:
-                        self.send_notification("Battery Critical",
-                            f"Only {battery_pct}% remaining. Maximum power saving.", level="critical")
-                    elif battery_pct is not None and battery_pct <= self.battery_low_pct:
-                        self.send_notification("Battery Low",
-                            f"{battery_pct}% remaining. Switched to {self.battery_profile} profile.")
-                    else:
-                        self.send_notification("On Battery",
-                            f"Switched to {self.battery_profile} profile.")
-                self._battery_notified_low = False
-                self._battery_notified_critical = False
+        if current_mtime != self.last_conf_mtime or self.last_conf_mtime == -1:
+            self.read_config()    # get new mode and all values
+            self.apply_preset()   # apply mode defaults
+            self.read_config()    # re-apply explicit config overrides on top
+            self.last_conf_mtime = current_mtime
 
-            # Track battery drain while on battery
-            if ac_online == 0 and battery_pct is not None:
-                self._last_battery_pct = battery_pct
+        now = int(time.time())
+        temp = self.read_cpu_temp()
+        load = self.read_cpu_load()
+        profile = self.get_ppd_profile()
+        is_game = self.is_game_running()
+        is_creator = self.is_creator_running()
+        is_meeting = self.is_meeting_running()
 
-                # Critical battery: auto-switch to powersave/silent
-                if battery_pct <= self.battery_critical_pct and not self._battery_notified_critical:
-                    self._battery_notified_critical = True
-                    self._battery_notified_low = True  # don't also fire low notification
-                    if profile != "power-saver":
-                        self.log(f"Battery critical ({battery_pct}%). Auto powersave.")
-                        self.run_command("/usr/local/bin/powersave")
-                    if self.battery_low_notify == "yes":
-                        self.send_notification("Battery Critical",
-                            f"Only {battery_pct}% remaining. System is in maximum power saving mode.",
-                            level="critical")
+        if now - self.last_stats >= self.stats_interval:
+            self.record_stats(load, temp, profile)
+            self.last_stats = now
 
-                # Low battery: notify once
-                elif battery_pct <= self.battery_low_pct and not self._battery_notified_low:
-                    self._battery_notified_low = True
-                    if self.battery_low_notify == "yes":
-                        self.send_notification("Battery Low",
-                            f"{battery_pct}% remaining. Consider plugging in your charger.")
+        # ── Battery & AC monitoring ──────────────────────────────
+        ac_online = self.read_ac_online()
+        battery_pct = self.read_battery_pct()
 
-                # Reset notifications if battery goes back above thresholds (e.g. plugged in briefly)
-                if battery_pct > self.battery_low_pct:
-                    self._battery_notified_low = False
-                if battery_pct > self.battery_critical_pct:
-                    self._battery_notified_critical = False
+        # AC plug/unplug event: switch profiles
+        if ac_online is not None and ac_online != self._last_ac_online:
+            first_observation = self._last_ac_online is None
+            self._last_ac_online = ac_online
+            if first_observation:
+                # Daemon (re)start: record state only. ac-event/udev already
+                # applied the right profile at boot; re-applying here would
+                # force a profile switch and notification on every restart.
+                pass
             elif ac_online == 1:
-                # Reset battery notifications when plugged in
-                self._battery_notified_low = False
-                self._battery_notified_critical = False
-
-            # ── Slow charge protection ───────────────────────────────
-            if ac_online == 1 and battery_pct is not None:
-                power_uw = self.read_battery_power_uw()
-                if power_uw is not None:
-                    self._power_samples.append(power_uw)
-                    if len(self._power_samples) > 12:
-                        self._power_samples.pop(0)
-                    avg_uw = sum(self._power_samples) / len(self._power_samples)
-                    batt_status = self.read_battery_status_text()
-
-                    if not self._slow_charge_active:
-                        if (batt_status == "Charging"
-                                and battery_pct < self.slow_charge_battery_pct
-                                and len(self._power_samples) >= 6
-                                and avg_uw < self.slow_charge_threshold_uw
-                                and profile != "power-saver"):
-                            self._slow_charge_active = True
-                            self._slow_charge_notified = True
-                            avg_w = avg_uw / 1_000_000
-                            self.log(f"Slow charge detected ({avg_w:.1f}W avg). Switching to powersave.")
-                            self.run_command("/usr/local/bin/powersave")
-                            self.send_notification(
-                                "Slow Charging Detected",
-                                f"Charger barely keeping up ({avg_w:.1f}W net to battery). "
-                                f"Switched to Eco Mode to speed up charging.",
-                            )
-                    else:
-                        if (battery_pct >= self.slow_charge_recovery_pct
-                                or avg_uw >= self.slow_charge_threshold_uw * 2):
-                            self._slow_charge_active = False
-                            self._power_samples.clear()
-                            restore = self.ac_profile if self.ac_profile in ("boost", "powersave", "silent") else "boost"
-                            self.log(f"Slow charge resolved. Battery at {battery_pct}%. Restoring {restore}.")
-                            self.run_command(f"/usr/local/bin/{restore}")
-                            self.send_notification(
-                                "Charging Recovered",
-                                f"Battery at {battery_pct}%. Switched back to {restore.capitalize()} profile.",
-                            )
-            else:
-                if self._slow_charge_active:
-                    self._slow_charge_active = False
-                self._power_samples.clear()
-
-            # ── Screen lock → silent powersave ──────────────────────
-            if self.screen_lock_powersave == "yes" and self.mode != "off":
-                locked = self.is_screen_locked()
-                if locked and not self._screen_locked:
-                    self._screen_locked = True
-                    self._pre_lock_profile = profile
-                    if profile != "power-saver":
-                        self.log("Screen locked. Silently switching to powersave.")
-                        self.run_command("/usr/local/bin/powersave")
-                elif not locked and self._screen_locked:
-                    self._screen_locked = False
-                    if self._pre_lock_profile == "performance":
-                        self.log("Screen unlocked. Restoring performance profile.")
-                        self.run_command("/usr/local/bin/boost")
-                    self._pre_lock_profile = None
-
-            # ── Charge limit enforcement ─────────────────────────────
-            self.apply_charge_limit()
-
-            if self.mode == "off":
-                continue
-
-            # Summer Night Mode Auto-Silent
-            if self.summer_nights == "yes" and self.in_quiet_hours() and profile != "power-saver":
-                if now - self.last_auto > 3600:
-                    self.log("Summer quiet hours: auto silent")
-                    self.run_command("/usr/local/bin/silent --auto")
-                    self.send_notification("Summer night mode", "Quiet hours are active, so Auto applied Silent mode.")
-                    self.last_auto = now
-                    self.last_prompt = now
-                    continue
-            
-            # Game Mode Auto-Switching (skip if slow charge protection is active)
-            if is_game and not self._slow_charge_active and profile != "performance" and temp < self.boost_temp_limit:
-                if now - self.last_auto > 60:
-                    self.log("Game detected. Switching to boost automatically.")
-                    self.run_command("/usr/local/bin/boost")
-                    self.send_notification("Game Mode Enabled", "Detected a game running. Switched to maximum performance.")
-                    self.last_auto = now
-                    continue
-
-            # Creator Workload Detection — suggest Performance for heavy rendering/compilation
-            if is_creator and not is_game and profile != "performance" and temp < self.boost_temp_limit:
-                if now - self.last_prompt > self.prompt_cooldown:
-                    self.send_notification(
-                        "Heavy workload detected",
-                        "Rendering or compilation in progress. Enable Boost for faster results.",
-                        "Enable Boost", "/usr/local/bin/boost"
-                    )
-                    self.last_prompt = now
-
-            # Meeting / Video Call Detection
-            # On battery: auto-switch to powersave (quiet fans, save battery)
-            # On AC: suggest once per session
-            if is_meeting and not self._meeting_notified and profile == "performance":
-                self._meeting_notified = True
-                if ac_online == 0:
-                    self.log("Meeting detected on battery. Auto-switching to powersave.")
-                    self.run_command("/usr/local/bin/powersave")
-                    self.send_notification(
-                        "Video call — Eco Mode",
-                        "Switched to Eco Mode to keep fans quiet and save battery during your call.",
-                    )
+                self.log(f"AC connected. Applying profile: {self.ac_profile}")
+                self.run_command(f"/usr/local/bin/{self.ac_profile}")
+                self.send_notification("AC Power Connected",
+                    f"Switched to {self.ac_profile} profile.")
+            elif ac_online == 0:
+                self.log(f"On battery. Applying profile: {self.battery_profile}")
+                self.run_command(f"/usr/local/bin/{self.battery_profile}")
+                if battery_pct is not None and battery_pct <= self.battery_critical_pct:
+                    self.send_notification("Battery Critical",
+                        f"Only {battery_pct}% remaining. Maximum power saving.", level="critical")
+                elif battery_pct is not None and battery_pct <= self.battery_low_pct:
+                    self.send_notification("Battery Low",
+                        f"{battery_pct}% remaining. Switched to {self.battery_profile} profile.")
                 else:
-                    self.send_notification(
-                        "Video call detected",
-                        "Switch to Balanced mode to reduce fan noise during your call.",
-                        "Go Quiet", "/usr/local/bin/powersave"
-                    )
-            elif not is_meeting:
-                self._meeting_notified = False
-            
-            # Critical Protection
-            if temp >= self.temp_critical and profile == "performance" and self.allow_critical == "yes":
-                if now - self.last_auto > 120:
-                    self.log(f"Critical heat {temp}C. Emergency powersave.")
+                    self.send_notification("On Battery",
+                        f"Switched to {self.battery_profile} profile.")
+            self._battery_notified_low = False
+            self._battery_notified_critical = False
+
+        # Track battery drain while on battery
+        if ac_online == 0 and battery_pct is not None:
+            self._last_battery_pct = battery_pct
+
+            # Critical battery: auto-switch to powersave/silent
+            if battery_pct <= self.battery_critical_pct and not self._battery_notified_critical:
+                self._battery_notified_critical = True
+                self._battery_notified_low = True  # don't also fire low notification
+                if profile != "power-saver":
+                    self.log(f"Battery critical ({battery_pct}%). Auto powersave.")
                     self.run_command("/usr/local/bin/powersave")
-                    self.send_notification("Critical Heat Warning", f"CPU reached {temp}C. Switched to cooler mode to protect hardware.", level="critical")
-                    self.last_auto = now
-                    self.last_prompt = now
+                if self.battery_low_notify == "yes":
+                    self.send_notification("Battery Critical",
+                        f"Only {battery_pct}% remaining. System is in maximum power saving mode.",
+                        level="critical")
+
+            # Low battery: notify once
+            elif battery_pct <= self.battery_low_pct and not self._battery_notified_low:
+                self._battery_notified_low = True
+                if self.battery_low_notify == "yes":
+                    self.send_notification("Battery Low",
+                        f"{battery_pct}% remaining. Consider plugging in your charger.")
+
+            # Reset notifications if battery goes back above thresholds (e.g. plugged in briefly)
+            if battery_pct > self.battery_low_pct:
+                self._battery_notified_low = False
+            if battery_pct > self.battery_critical_pct:
+                self._battery_notified_critical = False
+        elif ac_online == 1:
+            # Reset battery notifications when plugged in
+            self._battery_notified_low = False
+            self._battery_notified_critical = False
+
+        # ── Slow charge protection ───────────────────────────────
+        if ac_online == 1 and battery_pct is not None:
+            power_uw = self.read_battery_power_uw()
+            if power_uw is not None:
+                self._power_samples.append(power_uw)
+                if len(self._power_samples) > 12:
+                    self._power_samples.pop(0)
+                avg_uw = sum(self._power_samples) / len(self._power_samples)
+                batt_status = self.read_battery_status_text()
+
+                if not self._slow_charge_active:
+                    if (batt_status == "Charging"
+                            and battery_pct < self.slow_charge_battery_pct
+                            and len(self._power_samples) >= 6
+                            and avg_uw < self.slow_charge_threshold_uw
+                            and profile != "power-saver"):
+                        self._slow_charge_active = True
+                        self._slow_charge_notified = True
+                        avg_w = avg_uw / 1_000_000
+                        self.log(f"Slow charge detected ({avg_w:.1f}W avg). Switching to powersave.")
+                        self.run_command("/usr/local/bin/powersave")
+                        self.send_notification(
+                            "Slow Charging Detected",
+                            f"Charger barely keeping up ({avg_w:.1f}W net to battery). "
+                            f"Switched to Eco Mode to speed up charging.",
+                        )
+                else:
+                    if (battery_pct >= self.slow_charge_recovery_pct
+                            or avg_uw >= self.slow_charge_threshold_uw * 2):
+                        self._slow_charge_active = False
+                        self._power_samples.clear()
+                        restore = self.ac_profile if self.ac_profile in ("boost", "powersave", "silent") else "boost"
+                        self.log(f"Slow charge resolved. Battery at {battery_pct}%. Restoring {restore}.")
+                        self.run_command(f"/usr/local/bin/{restore}")
+                        self.send_notification(
+                            "Charging Recovered",
+                            f"Battery at {battery_pct}%. Switched back to {restore.capitalize()} profile.",
+                        )
+        else:
+            if self._slow_charge_active:
+                self._slow_charge_active = False
+            self._power_samples.clear()
+
+        # ── Screen lock → silent powersave ──────────────────────
+        if self.screen_lock_powersave == "yes" and self.mode != "off":
+            locked = self.is_screen_locked()
+            if locked and not self._screen_locked:
+                self._screen_locked = True
+                self._pre_lock_profile = profile
+                if profile != "power-saver":
+                    self.log("Screen locked. Silently switching to powersave.")
+                    self.run_command("/usr/local/bin/powersave")
+            elif not locked and self._screen_locked:
+                self._screen_locked = False
+                if self._pre_lock_profile == "performance":
+                    self.log("Screen unlocked. Restoring performance profile.")
+                    self.run_command("/usr/local/bin/boost")
+                self._pre_lock_profile = None
+
+        # ── Charge limit enforcement ─────────────────────────────
+        self.apply_charge_limit()
+
+        if self.mode == "off":
+            return
+
+        # Summer Night Mode Auto-Silent
+        if self.summer_nights == "yes" and self.in_quiet_hours() and profile != "power-saver":
+            if now - self.last_auto > 3600:
+                self.log("Summer quiet hours: auto silent")
+                self.run_command("/usr/local/bin/silent --auto")
+                self.send_notification("Summer night mode", "Quiet hours are active, so Auto applied Silent mode.")
+                self.last_auto = now
+                self.last_prompt = now
+                return
             
-            if self.suggestions_paused():
-                continue
-                
-            # Hot Warning
-            if temp >= self.temp_hot and profile == "performance":
-                if now - self.last_prompt > self.prompt_cooldown:
-                    self.send_notification("The computer is getting warm", "I can switch to a cooler mode.", "Cool it down", "/usr/local/bin/powersave")
-                    self.last_prompt = now
-            
-            # High Load Warning (Non-game)
-            elif load >= self.load_high and not is_game:
-                if self.high_since == 0: self.high_since = now
-                elif now - self.high_since >= self.load_high_duration and profile != "performance" and temp < self.boost_temp_limit:
-                    if now - self.last_prompt > self.prompt_cooldown:
-                        self.send_notification("It looks like you need more power", "I can enable Boost for heavy work.", "Enable Boost", "/usr/local/bin/boost")
-                        self.last_prompt = now
-                        self.high_since = 0
-                self.idle_since = 0
-            
-            # Idle Warning
-            elif load <= self.load_idle and not is_game:
-                if self.idle_since == 0: self.idle_since = now
-                elif now - self.idle_since >= self.load_idle_duration and profile == "performance":
-                    if now - self.last_prompt > self.prompt_cooldown:
-                        self.send_notification("The PC looks quiet now", "I can leave Boost to reduce heat.", "Cool down", "/usr/local/bin/powersave")
-                        self.last_prompt = now
-                        self.idle_since = 0
-                self.high_since = 0
+        # Game Mode Auto-Switching (skip if slow charge protection is active)
+        if is_game and not self._slow_charge_active and profile != "performance" and temp < self.boost_temp_limit:
+            if now - self.last_auto > 60:
+                self.log("Game detected. Switching to boost automatically.")
+                self.run_command("/usr/local/bin/boost")
+                self.send_notification("Game Mode Enabled", "Detected a game running. Switched to maximum performance.")
+                self.last_auto = now
+                return
+
+        # Creator Workload Detection — suggest Performance for heavy rendering/compilation
+        if is_creator and not is_game and profile != "performance" and temp < self.boost_temp_limit:
+            if now - self.last_prompt > self.prompt_cooldown:
+                self.send_notification(
+                    "Heavy workload detected",
+                    "Rendering or compilation in progress. Enable Boost for faster results.",
+                    "Enable Boost", "/usr/local/bin/boost"
+                )
+                self.last_prompt = now
+
+        # Meeting / Video Call Detection
+        # On battery: auto-switch to powersave (quiet fans, save battery)
+        # On AC: suggest once per session
+        if is_meeting and not self._meeting_notified and profile == "performance":
+            self._meeting_notified = True
+            if ac_online == 0:
+                self.log("Meeting detected on battery. Auto-switching to powersave.")
+                self.run_command("/usr/local/bin/powersave")
+                self.send_notification(
+                    "Video call — Eco Mode",
+                    "Switched to Eco Mode to keep fans quiet and save battery during your call.",
+                )
             else:
-                self.high_since = 0
-                self.idle_since = 0
+                self.send_notification(
+                    "Video call detected",
+                    "Switch to Balanced mode to reduce fan noise during your call.",
+                    "Go Quiet", "/usr/local/bin/powersave"
+                )
+        elif not is_meeting:
+            self._meeting_notified = False
+            
+        # Critical Protection
+        if temp >= self.temp_critical and profile == "performance" and self.allow_critical == "yes":
+            if now - self.last_auto > 120:
+                self.log(f"Critical heat {temp}C. Emergency powersave.")
+                self.run_command("/usr/local/bin/powersave")
+                self.send_notification("Critical Heat Warning", f"CPU reached {temp}C. Switched to cooler mode to protect hardware.", level="critical")
+                self.last_auto = now
+                self.last_prompt = now
+            
+        if self.suggestions_paused():
+            return
+                
+        # Hot Warning
+        if temp >= self.temp_hot and profile == "performance":
+            if now - self.last_prompt > self.prompt_cooldown:
+                self.send_notification("The computer is getting warm", "I can switch to a cooler mode.", "Cool it down", "/usr/local/bin/powersave")
+                self.last_prompt = now
+            
+        # High Load Warning (Non-game)
+        elif load >= self.load_high and not is_game:
+            if self.high_since == 0: self.high_since = now
+            elif now - self.high_since >= self.load_high_duration and profile != "performance" and temp < self.boost_temp_limit:
+                if now - self.last_prompt > self.prompt_cooldown:
+                    self.send_notification("It looks like you need more power", "I can enable Boost for heavy work.", "Enable Boost", "/usr/local/bin/boost")
+                    self.last_prompt = now
+                    self.high_since = 0
+            self.idle_since = 0
+            
+        # Idle Warning
+        elif load <= self.load_idle and not is_game:
+            if self.idle_since == 0: self.idle_since = now
+            elif now - self.idle_since >= self.load_idle_duration and profile == "performance":
+                if now - self.last_prompt > self.prompt_cooldown:
+                    self.send_notification("The PC looks quiet now", "I can leave Boost to reduce heat.", "Cool down", "/usr/local/bin/powersave")
+                    self.last_prompt = now
+                    self.idle_since = 0
+            self.high_since = 0
+        else:
+            self.high_since = 0
+            self.idle_since = 0
 
 if __name__ == "__main__":
     daemon = BoostDaemon()

@@ -689,7 +689,8 @@ def history(limit: int = 80) -> list[dict[str, str]]:
             _HISTORY_CACHE_DATA = []
         return []
 
-    data = list(csv.DictReader([lines[0]] + lines[-limit:]))
+    # Slice only data rows so a short file never feeds the header in twice
+    data = list(csv.DictReader([lines[0]] + lines[1:][-limit:]))
     with _HISTORY_LOCK:
         _HISTORY_CACHE_DATA = data
         _HISTORY_CACHE_MTIME = current_mtime
@@ -1967,22 +1968,30 @@ class Handler(BaseHTTPRequestHandler):
         self.send_bytes(json.dumps(payload).encode("utf-8"), "application/json", status)
 
     def do_GET(self) -> None:
-        parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/":
-            self.send_bytes(INDEX_HTML_BYTES, "text/html; charset=utf-8")
-        elif parsed.path == "/favicon.ico":
-            self.send_bytes(b"", "image/x-icon")
-        elif parsed.path == "/api/status":
-            self.send_json(status_payload())
-        elif parsed.path == "/api/config":
-            self.send_json(config_payload())
-        elif parsed.path == "/report":
-            if LATEST_REPORT.exists():
-                self.send_bytes(LATEST_REPORT.read_bytes(), "text/html; charset=utf-8")
+        try:
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == "/":
+                self.send_bytes(INDEX_HTML_BYTES, "text/html; charset=utf-8")
+            elif parsed.path == "/favicon.ico":
+                self.send_bytes(b"", "image/x-icon")
+            elif parsed.path == "/api/status":
+                self.send_json(status_payload())
+            elif parsed.path == "/api/config":
+                self.send_json(config_payload())
+            elif parsed.path == "/report":
+                if LATEST_REPORT.exists():
+                    self.send_bytes(LATEST_REPORT.read_bytes(), "text/html; charset=utf-8")
+                else:
+                    self.send_bytes(b"No report yet. Click Generate report first.", "text/plain; charset=utf-8", 404)
             else:
-                self.send_bytes(b"No report yet. Click Generate report first.", "text/plain; charset=utf-8", 404)
-        else:
-            self.send_bytes(b"Not found", "text/plain; charset=utf-8", 404)
+                self.send_bytes(b"Not found", "text/plain; charset=utf-8", 404)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client went away mid-response; nothing to do
+        except Exception as exc:  # noqa: BLE001 - keep the server thread alive
+            try:
+                self.send_json({"ok": False, "message": html.escape(str(exc))}, 500)
+            except OSError:
+                pass
 
     def _csrf_ok(self) -> bool:
         host, port = self.server.server_address
@@ -2026,10 +2035,15 @@ class Handler(BaseHTTPRequestHandler):
             action = str(payload.get("action", ""))
             value = payload.get("value")
             self.send_json(run_action(action, None if value is None else str(value)))
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client went away mid-response; nothing to do
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
             self.send_json({"ok": False, "message": "Invalid JSON request"}, 400)
         except Exception as exc:  # noqa: BLE001 - local UI should return readable errors
-            self.send_json({"ok": False, "message": html.escape(str(exc))}, 500)
+            try:
+                self.send_json({"ok": False, "message": html.escape(str(exc))}, 500)
+            except OSError:
+                pass
 
 
 def main() -> None:

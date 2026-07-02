@@ -2,6 +2,21 @@
 
 All notable changes to Boost are documented here.
 
+## [1.7.1] - 2026-07-02
+
+### Fixed
+- **Daemon crash resilience** — the poll loop now recovers from any per-cycle error instead of dying and waiting for a systemd restart.
+- **No forced profile switch on daemon restart** — the first AC/battery poll after a (re)start only records the state; previously every `auto mode` change or service restart re-applied the AC profile and fired an "AC Power Connected" notification.
+- **Zombie process cleanup** — profile commands and notifications spawned by the daemon are now reaped in the background; notification threads are daemonized.
+- **Stats CSV: 0% battery** was recorded as an empty field.
+- **Dashboard history parsing** — when the stats file had fewer rows than the requested window, the CSV header leaked in as a bogus data row, skewing averages and the profile-switch log.
+- **Dashboard error handling** — GET/POST handlers survive client disconnects and internal errors instead of killing the connection thread with a traceback.
+- **Turbo restore on AMD** — `save_originals` now records `ORIG_TURBO_TYPE` (matching the boot capture script), so `restore` interprets the saved turbo value correctly on AMD/cpufreq platforms.
+- **Originals file is parsed, not sourced** — a malformed value can no longer abort a profile switch or restore.
+- **Config writer hardening** — `set_config_value`/`set_auto_config_value` escape sed metacharacters (`\ & |`); `read_safe_config` refuses to clobber shell-critical variables (`PATH`, `IFS`, `LD_*`, …).
+- **`auto snooze` input validation** — garbage durations no longer produce arithmetic errors or corrupt snooze state (falls back to 2h).
+- **ac-event session detection** — prefers the *active* login session instead of the first listed one, fixing notifications when multiple sessions exist.
+
 ## [1.7.0] - 2026-06-26
 
 ### Added

@@ -16,12 +16,12 @@ if [[ ! -f "$ORIGINALS_FILE" ]]; then
     echo "[RESTORE] No originals at $ORIGINALS_FILE" >&2; exit 1
 fi
 
-# shellcheck source=/dev/null
-source "$ORIGINALS_FILE"
+# Parse, don't source: a malformed value must never abort the restore
+read_safe_config "$ORIGINALS_FILE"
 echo "[RESTORE] Reverting to saved originals..."
 
 # Restore CPU via ppd or manual
-if [[ -n "${ORIG_PPD_PROFILE}" ]]; then
+if [[ -n "${ORIG_PPD_PROFILE:-}" ]]; then
     set_cpu_profile "$ORIG_PPD_PROFILE" "${ORIG_GOV:-performance}" "${ORIG_EPP:-performance}"
 else
     set_cpu_profile "balanced" "${ORIG_GOV:-performance}" "${ORIG_EPP:-performance}"

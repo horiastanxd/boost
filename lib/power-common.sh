@@ -66,6 +66,10 @@ read_safe_config() {
         val="${line#*=}"
         # Validate key: alphanumeric + underscore only
         [[ "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || continue
+        # Never clobber shell-critical variables from a config file
+        case "$key" in
+            PATH|IFS|HOME|SHELL|ENV|BASH_ENV|PS1|PS4|EUID|UID|PPID|BASH*|LD_*) continue ;;
+        esac
         # Strip quotes from value if present
         val="${val%\"}"
         val="${val#\"}"
@@ -132,10 +136,12 @@ get_battery_voltage() {
 }
 
 set_auto_config_value() {
-    local key="$1" value="$2"
+    local key="$1" value="$2" escaped
     touch "$AUTO_CONF_FILE"
     if grep -qE "^[[:space:]]*${key}=" "$AUTO_CONF_FILE"; then
-        sed -i -E "s|^[[:space:]]*${key}=.*|${key}=${value}|" "$AUTO_CONF_FILE"
+        # Escape sed replacement metacharacters so values with \ & | never corrupt the file
+        escaped=$(printf '%s' "$value" | sed -e 's/[\\&|]/\\&/g')
+        sed -i -E "s|^[[:space:]]*${key}=.*|${key}=${escaped}|" "$AUTO_CONF_FILE"
     else
         printf '%s=%s\n' "$key" "$value" >> "$AUTO_CONF_FILE"
     fi
@@ -404,11 +410,27 @@ save_originals() {
     local _rapl_base="/sys/class/powercap/intel-rapl/intel-rapl:0"
     local _amd_gpu_hwmon
     _amd_gpu_hwmon=$(find_amd_gpu_hwmon 2>/dev/null || true)
+    # Detect turbo state across Intel and AMD platforms (mirrors power-save-originals)
+    local _orig_turbo="" _orig_turbo_type="none"
+    if [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+        _orig_turbo=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null)
+        _orig_turbo_type="intel"
+    elif [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then
+        _orig_turbo=$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null)
+        _orig_turbo_type="cpufreq"
+    elif [[ -f /sys/devices/system/cpu/amd_pstate/boost ]]; then
+        _orig_turbo=$(cat /sys/devices/system/cpu/amd_pstate/boost 2>/dev/null)
+        _orig_turbo_type="amd_pstate"
+    elif [[ -f /sys/devices/system/cpu/cpufreq/policy0/boost ]]; then
+        _orig_turbo=$(cat /sys/devices/system/cpu/cpufreq/policy0/boost 2>/dev/null)
+        _orig_turbo_type="cpufreq_policy"
+    fi
     cat > "$ORIGINALS_FILE" << EOF
 ORIG_GOV=$(get_governor)
 ORIG_EPP=$(get_epp)
 ORIG_PPD_PROFILE=${ppd_profile}
-ORIG_TURBO=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null)
+ORIG_TURBO=${_orig_turbo}
+ORIG_TURBO_TYPE=${_orig_turbo_type}
 ORIG_PL1=$([[ -d "$_rapl_base" ]] && cat "${_rapl_base}/constraint_0_power_limit_uw" 2>/dev/null || echo "")
 ORIG_PL2=$([[ -d "$_rapl_base" ]] && cat "${_rapl_base}/constraint_1_power_limit_uw" 2>/dev/null || echo "")
 ORIG_GPU_LIMIT=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits 2>/dev/null | awk '{printf "%d", $1}')
@@ -444,8 +466,8 @@ apply_hardware_limits() {
     local mode="$1" # boost, powersave, silent, restore
     
     if [[ -f "$ORIGINALS_FILE" ]]; then
-        # shellcheck disable=SC1090
-        source "$ORIGINALS_FILE"
+        # Parse, don't source: a malformed value must never abort a profile switch
+        read_safe_config "$ORIGINALS_FILE"
     fi
     
     # Intel RAPL dynamic scaling (Intel CPUs only; AMD CPUs skip gracefully)

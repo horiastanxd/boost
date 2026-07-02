@@ -224,11 +224,13 @@ need_root() {
 }
 
 set_config_value() {
-    local key="$1" value="$2"
+    local key="$1" value="$2" escaped
     ensure_state_dir
     touch "$CONF_FILE"
     if grep -qE "^[[:space:]]*${key}=" "$CONF_FILE"; then
-        sed -i -E "s|^[[:space:]]*${key}=.*|${key}=${value}|" "$CONF_FILE"
+        # Escape sed replacement metacharacters so values with \ & | never corrupt the file
+        escaped=$(printf '%s' "$value" | sed -e 's/[\\&|]/\\&/g')
+        sed -i -E "s|^[[:space:]]*${key}=.*|${key}=${escaped}|" "$CONF_FILE"
     else
         printf '%s=%s\n' "$key" "$value" >> "$CONF_FILE"
     fi
@@ -236,6 +238,8 @@ set_config_value() {
 
 parse_duration() {
     local value="${1:-120}"
+    # Reject anything that is not digits with an optional h/m/s suffix (default: 2h)
+    [[ "$value" =~ ^[0-9]+[hms]?$ ]] || { echo 7200; return; }
     case "$value" in
         *h) echo $(( ${value%h} * 3600 )) ;;
         *m) echo $(( ${value%m} * 60 )) ;;
