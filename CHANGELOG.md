@@ -7,6 +7,7 @@ All notable changes to Boost are documented here.
 ### Fixed
 - **Eco/Default mode reverting to Performance** — `silent` and `restore` never disabled the auto daemon like `boost`/`powersave` did. If auto mode (e.g. `dynamic`) was still active, the daemon's next tick would re-apply its own profile decision on top, flipping the UI back to Performance seconds after manually selecting Eco Mode or Default. Both scripts now call `disable_auto_for_manual_profile` like the other profile commands.
 - **Silent profile switch to Performance when power-profiles-daemon rejects the request** — `set_cpu_profile` returned immediately after calling `powerprofilesctl set`, even when that call failed (e.g. `Device or resource busy` on hybrid CPUs), leaving the governor/EPP unchanged while the script reported success. It now falls back to the manual governor/EPP write path whenever the ppd call fails.
+- **Keyboard/mouse becoming unresponsive after switching to Eco/Balanced mode** — `set_usb_autosuspend` forced `power/control=auto` on every USB device, including keyboard/mouse dongles and receivers. Kernel USB autosuspend can leave these devices asleep until a wake event, making input appear to freeze. HID devices (driver `usbhid`) are now always kept at `power/control=on`.
 
 ## [1.7.1] - 2026-07-02
 

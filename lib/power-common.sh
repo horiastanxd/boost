@@ -663,17 +663,31 @@ set_bt_power() {
 }
 
 # Set USB autosuspend (auto|on)
+# HID input devices (keyboards, mice) are always kept at "on" — autosuspend
+# on these can leave them unresponsive until a wake event, especially over
+# hubs or wireless dongles.
 set_usb_autosuspend() {
     local state="$1"  # powersave | performance
     local val="on"
     [[ "$state" == "powersave" ]] && val="auto"
     local count=0
-    local dev
+    local dev devdir devname iface is_hid
     for dev in /sys/bus/usb/devices/*/power/control; do
         [[ -f "$dev" ]] || continue
+        devdir="${dev%/power/control}"
+        devname="${devdir##*/}"
+        is_hid=0
+        for iface in "${devdir}/${devname}":*; do
+            [[ -e "$iface" ]] || continue
+            [[ "$(readlink -f "${iface}/driver" 2>/dev/null)" == */usbhid ]] && { is_hid=1; break; }
+        done
+        if [[ "$is_hid" == "1" ]]; then
+            safe_write "on" "$dev" 2>/dev/null
+            continue
+        fi
         safe_write "$val" "$dev" 2>/dev/null && ((count++))
     done
-    [[ $count -gt 0 ]] && echo "  [USB] $count devices power/control=$val"
+    [[ $count -gt 0 ]] && echo "  [USB] $count devices power/control=$val (keyboards/mice excluded)"
 }
 
 # Set PCI Express ASPM (via sysfs)
