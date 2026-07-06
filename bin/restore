@@ -12,6 +12,8 @@ check_root "$@"
 
 ORIG_USER="${SUDO_USER:-$(logname 2>/dev/null)}"
 
+disable_auto_for_manual_profile "Restore"
+
 if [[ ! -f "$ORIGINALS_FILE" ]]; then
     echo "[RESTORE] No originals at $ORIGINALS_FILE" >&2; exit 1
 fi

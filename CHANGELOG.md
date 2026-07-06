@@ -2,6 +2,11 @@
 
 All notable changes to Boost are documented here.
 
+## [1.7.2] - 2026-07-06
+
+### Fixed
+- **Eco/Default mode reverting to Performance** — `silent` and `restore` never disabled the auto daemon like `boost`/`powersave` did. If auto mode (e.g. `dynamic`) was still active, the daemon's next tick would re-apply its own profile decision on top, flipping the UI back to Performance seconds after manually selecting Eco Mode or Default. Both scripts now call `disable_auto_for_manual_profile` like the other profile commands.
+
 ## [1.7.1] - 2026-07-02
 
 ### Fixed

@@ -18,6 +18,8 @@ fi
 
 ORIG_USER="${SUDO_USER:-$(logname 2>/dev/null)}"
 
+disable_auto_for_manual_profile "Silent"
+
 apply_quiet_fan_curve() {
     [[ ! -d "$HWMON" ]] && echo "[FAN]  hwmon not found, skipping" && return
     save_fan_curve
