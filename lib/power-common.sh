@@ -168,9 +168,11 @@ set_cpu_profile() {
     local epp="$3"            # fallback EPP
 
     if [[ -n "$PPD_BIN" ]] && systemctl is-active --quiet power-profiles-daemon 2>/dev/null; then
-        "$PPD_BIN" set "$ppd_profile" 2>/dev/null && \
+        if "$PPD_BIN" set "$ppd_profile" 2>/dev/null; then
             echo "[CPU]  power-profiles-daemon -> $ppd_profile (GNOME synced)"
-        return
+            return
+        fi
+        echo "[CPU]  power-profiles-daemon rejected $ppd_profile, falling back to manual governor/EPP"
     fi
 
     if [[ -n "$TUNED_BIN" ]] && systemctl is-active --quiet tuned 2>/dev/null; then
