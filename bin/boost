@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# boost - maximum performance profile
-# Version: 1.6.0
+# boost - maximum performance profile (thermal-aware)
+# Version: 1.8.0
 
 # shellcheck source=/dev/null
 source /usr/local/lib/power-common.sh
@@ -16,8 +16,18 @@ disable_auto_for_manual_profile "Boost"
 echo "[BOOST] Applying performance profile..."
 save_originals
 
-# CPU via ppd (syncs GNOME) or manual fallback
-set_cpu_profile "performance" "performance" "performance"
+# Thermal-aware EPP: balance_performance keeps full turbo under sustained load
+# but lets cores downclock at light load (much cooler and quieter at idle).
+# Override with BOOST_EPP=performance in /etc/boost-auto.conf for the old behavior.
+read_safe_config "$AUTO_CONF_FILE" 2>/dev/null || true
+BOOST_EPP="${BOOST_EPP:-balance_performance}"
+case "$BOOST_EPP" in
+    performance|balance_performance) ;;
+    *) BOOST_EPP="balance_performance" ;;
+esac
+
+# CPU via ppd (syncs GNOME) or manual fallback; EPP forced after ppd applies
+set_cpu_profile "performance" "performance" "$BOOST_EPP" "$BOOST_EPP"
 
 set_turbo on
 apply_hardware_limits boost

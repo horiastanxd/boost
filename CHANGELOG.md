@@ -2,6 +2,15 @@
 
 All notable changes to Boost are documented here.
 
+## [1.8.0] - 2026-07-09
+
+### Added
+- **Thermal-aware Performance profile** — Boost no longer pins the CPU at maximum turbo regardless of load. New config keys in `/etc/boost-auto.conf`:
+  - `BOOST_EPP` (default `balance_performance`) — full turbo under sustained load, but cores downclock at light load. Cuts idle/light-load package temps and fan noise dramatically on hot chips (e.g. Raptor Lake). Set to `performance` for the legacy always-max behavior.
+  - `BOOST_PL1_PCT` / `BOOST_PL2_PCT` (defaults `100` / `80`) — scale the RAPL sustained/burst power limits applied by Boost. Capping PL2 to 80% trades a few percent of all-core burst throughput for a large peak-temperature drop.
+- `set_cpu_profile` accepts an optional EPP override applied after power-profiles-daemon sets its profile (ppd `performance` otherwise forces `EPP=performance`).
+- RAPL guard: scaled PL2 can never drop below PL1.
+
 ## [1.7.2] - 2026-07-06
 
 ### Fixed

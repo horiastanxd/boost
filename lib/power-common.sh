@@ -4,7 +4,7 @@
 
 # shellcheck disable=SC2034
 # Sourced by profile scripts for --version.
-readonly VERSION="1.7.0"
+readonly VERSION="1.8.0"
 ORIGINALS_FILE="/var/lib/power-profile/originals.env"
 FAN_BACKUP="/var/lib/power-profile/fan-curve-backup.env"
 # Fan controller hwmon — discovered at source time, not hardcoded
@@ -160,16 +160,30 @@ disable_auto_for_manual_profile() {
     fi
 }
 
+# Write an EPP value to every cpufreq policy; returns 0 if at least one write succeeded
+write_epp_all() {
+    local epp="$1" epp_file wrote=1
+    for epp_file in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do
+        [[ -f "$epp_file" ]] || continue
+        echo "$epp" > "$epp_file" 2>/dev/null && wrote=0
+    done
+    return "$wrote"
+}
+
 # Set GNOME power mode via power-profiles-daemon if available
 # Falls back to manual governor/EPP when ppd is absent
 set_cpu_profile() {
     local ppd_profile="$1"   # performance | balanced | power-saver
     local gov="$2"            # fallback governor
     local epp="$3"            # fallback EPP
+    local epp_override="${4:-}"  # optional: EPP forced after ppd applies its profile
 
     if [[ -n "$PPD_BIN" ]] && systemctl is-active --quiet power-profiles-daemon 2>/dev/null; then
         if "$PPD_BIN" set "$ppd_profile" 2>/dev/null; then
             echo "[CPU]  power-profiles-daemon -> $ppd_profile (GNOME synced)"
+            if [[ -n "$epp_override" ]] && write_epp_all "$epp_override"; then
+                echo "[CPU]  EPP override -> $epp_override (thermal-aware)"
+            fi
             return
         fi
         echo "[CPU]  power-profiles-daemon rejected $ppd_profile, falling back to manual governor/EPP"
@@ -466,19 +480,33 @@ set_rapl() {
 
 apply_hardware_limits() {
     local mode="$1" # boost, powersave, silent, restore
-    
+
     if [[ -f "$ORIGINALS_FILE" ]]; then
         # Parse, don't source: a malformed value must never abort a profile switch
         read_safe_config "$ORIGINALS_FILE"
     fi
-    
+    if [[ -f "$AUTO_CONF_FILE" ]]; then
+        read_safe_config "$AUTO_CONF_FILE"
+    fi
+
     # Intel RAPL dynamic scaling (Intel CPUs only; AMD CPUs skip gracefully)
     local rapl_base="/sys/class/powercap/intel-rapl/intel-rapl:0"
     local pl1="${ORIG_PL1:-}" pl2="${ORIG_PL2:-}"
     if [[ -d "$rapl_base" && -n "$pl1" && -n "$pl2" && "$pl1" -gt 0 ]]; then
         local t_pl1 t_pl2
+        # Thermal-aware boost: sustained (PL1) and burst (PL2) power scale from
+        # BOOST_PL1_PCT / BOOST_PL2_PCT in /etc/boost-auto.conf. Capping PL2
+        # trades a few percent of all-core throughput for a large temp drop.
+        local b_pl1_pct="${BOOST_PL1_PCT:-100}" b_pl2_pct="${BOOST_PL2_PCT:-80}"
+        [[ "$b_pl1_pct" =~ ^[0-9]+$ ]] || b_pl1_pct=100
+        [[ "$b_pl2_pct" =~ ^[0-9]+$ ]] || b_pl2_pct=80
+        (( b_pl1_pct < 40 )) && b_pl1_pct=40; (( b_pl1_pct > 100 )) && b_pl1_pct=100
+        (( b_pl2_pct < 40 )) && b_pl2_pct=40; (( b_pl2_pct > 100 )) && b_pl2_pct=100
         case "$mode" in
-            boost|restore)
+            boost)
+                t_pl1=$(( pl1 * b_pl1_pct / 100 )); t_pl2=$(( pl2 * b_pl2_pct / 100 ))
+                ;;
+            restore)
                 t_pl1=$pl1; t_pl2=$pl2
                 ;;
             powersave)
@@ -491,6 +519,8 @@ apply_hardware_limits() {
         # Safety floor
         (( t_pl1 < 10000000 )) && t_pl1=10000000
         (( t_pl2 < 15000000 )) && t_pl2=15000000
+        # PL2 (burst) must never drop below PL1 (sustained)
+        (( t_pl2 < t_pl1 )) && t_pl2=$t_pl1
 
         set_rapl 0 "$t_pl1"
         set_rapl 1 "$t_pl2"
