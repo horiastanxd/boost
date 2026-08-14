@@ -2,6 +2,11 @@
 
 All notable changes to Boost are documented here.
 
+## [1.8.1] - 2026-08-14
+
+### Fixed
+- **Inflated CPU package temperature from a single outlier core** — coretemp reports "Package id 0" as the max of all per-core Digital Thermal Sensors. On systems where one core's DTS is miscalibrated (reads persistently 20-40C above the others even at idle), Boost's temperature reading, dashboard, and daemon thresholds all followed that single core's spurious spikes instead of the actual package temperature — visibly diverging from the BIOS/PECI reading and from `sensors`' own per-core breakdown. `find_cpu_temp_path`/`get_cpu_temp`/`cpu_temp_c` now compare the package reading against the median of per-core sensors and fall back to the median when the gap exceeds 15C.
+
 ## [1.8.0] - 2026-07-09
 
 ### Added

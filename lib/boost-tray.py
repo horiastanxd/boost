@@ -86,14 +86,41 @@ def read_text(path, default="unknown"):
         return default
 
 _cached_temp_file = None
+_cached_coretemp_dir = None
+
+def _coretemp_corrected(hwmon_dir, package_raw):
+    """Reject a "Package id 0" reading inflated by a single outlier core.
+
+    coretemp reports Package id 0 as the max of all per-core Digital
+    Thermal Sensors; a single miscalibrated core can pin that value well
+    above the motherboard's own PECI-based reading. Fall back to the
+    median of per-core "Core N" sensors when the gap is implausible.
+    """
+    core_raws = []
+    for label_file in hwmon_dir.glob("temp*_label"):
+        if read_text(label_file, "").startswith("Core "):
+            try:
+                core_raws.append(int(read_text(str(label_file).replace("_label", "_input"), "0") or "0"))
+            except ValueError:
+                pass
+    if len(core_raws) < 2:
+        return package_raw
+    core_raws.sort()
+    mid = len(core_raws) // 2
+    median_raw = core_raws[mid] if len(core_raws) % 2 else (core_raws[mid - 1] + core_raws[mid]) // 2
+    return median_raw if package_raw - median_raw > 15000 else package_raw
 
 def get_cpu_temp():
-    global _cached_temp_file
+    global _cached_temp_file, _cached_coretemp_dir
     if _cached_temp_file:
         try:
-            return int(read_text(_cached_temp_file, "0") or "0") // 1000
+            raw = int(read_text(_cached_temp_file, "0") or "0")
+            if _cached_coretemp_dir:
+                raw = _coretemp_corrected(_cached_coretemp_dir, raw)
+            return raw // 1000
         except ValueError:
             _cached_temp_file = None
+            _cached_coretemp_dir = None
 
     for hwmon in Path("/sys/class/hwmon").glob("hwmon*"):
         name = read_text(hwmon / "name", "")
@@ -118,7 +145,11 @@ def get_cpu_temp():
                 "Composite", "Battery Hotspot",
             }:
                 _cached_temp_file = str(label_file).replace("_label", "_input")
-                return int(read_text(_cached_temp_file, "0") or "0") // 1000
+                raw = int(read_text(_cached_temp_file, "0") or "0")
+                if name == "coretemp" and label == "Package id 0":
+                    _cached_coretemp_dir = hwmon
+                    raw = _coretemp_corrected(hwmon, raw)
+                return raw // 1000
         input_file = hwmon / "temp1_input"
         raw = int(read_text(input_file, "0") or "0")
         if raw > 0:

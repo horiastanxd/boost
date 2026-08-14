@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # boost - maximum performance profile (thermal-aware)
-# Version: 1.8.0
+# Version: 1.8.1
 
 # shellcheck source=/dev/null
 source /usr/local/lib/power-common.sh

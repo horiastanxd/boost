@@ -73,7 +73,7 @@ class BoostDaemon:
         self._battery_charge_limit = 0
         self._process_cache = (0, set())
 
-        self.cpu_temp_path = self.find_cpu_temp_path()
+        self.cpu_temp_path, self.cpu_temp_coretemp_dir = self.find_cpu_temp_path()
         self.amd_gpu_hwmon = self.find_amd_gpu_hwmon()
         self._meeting_notified = False
         self.prev_total = 0
@@ -157,9 +157,18 @@ class BoostDaemon:
         return None
 
     def find_cpu_temp_path(self):
+        """Returns (temp_input_path, coretemp_hwmon_dir_or_None).
+
+        The second element is set only when the resolved sensor is
+        coretemp's "Package id 0" label, which is defined as the max of
+        all per-core Digital Thermal Sensors. A single miscalibrated
+        core can pin that reading well above the motherboard's own
+        PECI-based package temp; read_cpu_temp() uses the hwmon dir to
+        sanity-check against the per-core median before trusting it.
+        """
         hwmon_base = "/sys/class/hwmon"
         if not os.path.exists(hwmon_base):
-            return None
+            return None, None
         for hwmon in os.listdir(hwmon_base):
             hwmon_path = os.path.join(hwmon_base, hwmon)
             name_file = os.path.join(hwmon_path, "name")
@@ -181,7 +190,7 @@ class BoostDaemon:
                                     best_temp = temp
                                     best_path = temp_path
                         if best_path:
-                            return best_path
+                            return best_path, None
                     for f in os.listdir(hwmon_path):
                         if f.endswith('_label') and f.startswith('temp'):
                             try:
@@ -192,12 +201,42 @@ class BoostDaemon:
                                     "WiFi/BT Module Temp", "NAND Flash Temperature",
                                     "Composite", "Battery Hotspot",
                                 }:
-                                    return os.path.join(hwmon_path, f.replace('_label', '_input'))
+                                    path = os.path.join(hwmon_path, f.replace('_label', '_input'))
+                                    return path, (hwmon_path if name == "coretemp" and label == "Package id 0" else None)
                             except Exception: pass
                     fallback = os.path.join(hwmon_path, "temp1_input")
                     if os.path.exists(fallback):
-                        return fallback
-        return None
+                        return fallback, None
+        return None, None
+
+    def read_coretemp_corrected(self, package_raw):
+        """Reject a package reading inflated by a single outlier core.
+
+        Compares against the median of per-core "Core N" sensors; if the
+        package value exceeds that median by more than 15C, the median is
+        used instead (mirrors how motherboard PECI/BIOS readings behave).
+        """
+        core_raws = []
+        try:
+            for f in os.listdir(self.cpu_temp_coretemp_dir):
+                if f.startswith("temp") and f.endswith("_label"):
+                    label = self.read_text(os.path.join(self.cpu_temp_coretemp_dir, f), "")
+                    if label.startswith("Core "):
+                        try:
+                            core_raws.append(int(self.read_text(
+                                os.path.join(self.cpu_temp_coretemp_dir, f.replace("_label", "_input")), "0") or "0"))
+                        except (ValueError, OSError):
+                            pass
+        except OSError:
+            return package_raw
+        if len(core_raws) < 2:
+            return package_raw
+        core_raws.sort()
+        mid = len(core_raws) // 2
+        median_raw = core_raws[mid] if len(core_raws) % 2 else (core_raws[mid - 1] + core_raws[mid]) // 2
+        if package_raw - median_raw > 15000:
+            return median_raw
+        return package_raw
 
 
     # ── Battery helpers ──────────────────────────────────────────────
@@ -344,7 +383,10 @@ class BoostDaemon:
         if not self.cpu_temp_path: return 0
         try:
             with open(self.cpu_temp_path, 'r') as f:
-                return int(f.read().strip()) // 1000
+                raw = int(f.read().strip())
+            if self.cpu_temp_coretemp_dir:
+                raw = self.read_coretemp_corrected(raw)
+            return raw // 1000
         except Exception:
             return 0
 

@@ -502,12 +502,37 @@ def power_profile() -> str:
 
 
 _CACHED_TEMP_FILE: str | None = None
+_CACHED_CORETEMP_DIR: Path | None = None
+
+def _coretemp_corrected(hwmon_dir: Path, package_raw: int) -> int:
+    """Reject a "Package id 0" reading inflated by a single outlier core.
+
+    coretemp reports Package id 0 as the max of all per-core Digital
+    Thermal Sensors; a single miscalibrated core can pin that value well
+    above the motherboard's own PECI-based reading. Fall back to the
+    median of per-core "Core N" sensors when the gap is implausible.
+    """
+    core_raws = []
+    for label_file in hwmon_dir.glob("temp*_label"):
+        if read_text(label_file, "").startswith("Core "):
+            try:
+                core_raws.append(int(read_text(str(label_file).replace("_label", "_input"), "0") or "0"))
+            except ValueError:
+                pass
+    if len(core_raws) < 2:
+        return package_raw
+    core_raws.sort()
+    mid = len(core_raws) // 2
+    median_raw = core_raws[mid] if len(core_raws) % 2 else (core_raws[mid - 1] + core_raws[mid]) // 2
+    return median_raw if package_raw - median_raw > 15000 else package_raw
 
 def cpu_temp_c() -> int:
-    global _CACHED_TEMP_FILE
+    global _CACHED_TEMP_FILE, _CACHED_CORETEMP_DIR
     if _CACHED_TEMP_FILE:
         raw = int(read_text(_CACHED_TEMP_FILE, "0") or "0")
         if raw > 0:
+            if _CACHED_CORETEMP_DIR:
+                raw = _coretemp_corrected(_CACHED_CORETEMP_DIR, raw)
             return raw // 1000
 
     for hwmon in Path("/sys/class/hwmon").glob("hwmon*"):
@@ -535,6 +560,9 @@ def cpu_temp_c() -> int:
                 target = str(label_file).replace("_label", "_input")
                 raw = int(read_text(target, "0") or "0")
                 _CACHED_TEMP_FILE = target
+                if name == "coretemp" and label == "Package id 0":
+                    _CACHED_CORETEMP_DIR = hwmon
+                    raw = _coretemp_corrected(hwmon, raw)
                 return raw // 1000
         target = str(hwmon / "temp1_input")
         raw = int(read_text(target, "0") or "0")
