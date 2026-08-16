@@ -4,7 +4,7 @@
 
 # shellcheck disable=SC2034
 # Sourced by profile scripts for --version.
-readonly VERSION="1.8.1"
+readonly VERSION="1.9.0"
 ORIGINALS_FILE="/var/lib/power-profile/originals.env"
 FAN_BACKUP="/var/lib/power-profile/fan-curve-backup.env"
 SILENT_PENDING_FILE="/var/lib/power-profile/silent-pending"

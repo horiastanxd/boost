@@ -2,6 +2,27 @@
 
 All notable changes to Boost are documented here.
 
+## [1.9.0] - 2026-08-16
+
+### Added
+- **Smart fan curve control** (`lib/fancontrol.py`, `/etc/boost-fans.json`, `auto fans ...`) — per-fan curves with hysteresis, step limiting and response delay, one curve per profile (Performance/Balanced/Eco), edited by dragging points in the dashboard or applied with 1-click Silent/Balanced/Aggressive presets. Design decisions come straight from what breaks in the existing tools:
+  - Fans are addressed as `chip:pwmN` (e.g. `nct6798:pwm1`), never `hwmonN` — kernel hwmon numbering is probe-order dependent and reshuffles across reboots, which is what silently repoints a saved curve at the wrong fan.
+  - **Curves are requests, not orders.** Every tick the engine derives a safety floor from CPU/GPU/NVMe/VRM temperature and raises the fans above the requested curve when the hardware needs it — so an Eco curve can never cook the machine — and the dashboard says exactly which sensor forced it.
+  - **Failsafe:** the daemon is now `Type=notify` with `WatchdogSec=120`, and `ExecStopPost` runs `fancontrol.py failsafe`, which returns every pwm channel to its original BIOS/Smart Fan mode on stop, crash, upgrade or uninstall. `pwmN_enable` is also re-asserted every tick, so a suspend/resume that resets it cannot leave fans stuck.
+  - **One writer per channel:** an external tool moving a pwm Boost owns is detected by read-back mismatch, logged, and that channel is backed off instead of fought over. `auto doctor` refuses to start the engine when fancontrol/CoolerControl/thinkfan is running.
+  - **Calibration wizard** (`auto fans calibrate`) measures start/stop pwm and the RPM curve of each fan into `/var/lib/power-profile/fans-calibration.json`, and regenerates the presets from the measured minimum speed. Fans that never stop are recorded as such instead of failing the run (where `pwmconfig` gives up).
+  - Boards that expose pwm read-only (several Dell/server designs) are detected on the first write and reported, not retried every tick. GPU fans are deliberately out of scope.
+- **Dumb-proof Eco interlock** — `silent` no longer applies a quiet profile while the machine is hot or under sustained load. The request is *queued* ("silent-pending") and the daemon applies it by itself once temperature and load come down, with a notification. The dashboard shows the reason and countdown on the Eco button; `silent --force` overrides.
+- **Every component temperature** (`lib/sensors.py`, `auto sensors`, `/api/sensors`) — one unified layer over `/sys/class/hwmon` with stable `chip:label` ids, covering CPU package and per-core, GPU edge/junction/memory, NVMe, SATA (`drivetemp`), DDR5 DIMMs (`spd5118`), VRM, chipset, motherboard, network and battery sensors, each with per-component warn/critical thresholds (NVMe 65 °C, RAM 60 °C, VRM 90 °C). New "Component Temperatures" dashboard section with per-category cards, trend sparklines and a collapsible per-sensor breakdown. `install.sh` now loads `spd5118`/`drivetemp` and writes `/etc/modules-load.d/boost.conf`; `auto doctor` reports which sensors are missing and the exact command to fix them.
+- **GPU power limit in watts** (`auto gpu-limit <W> [profile]`, dashboard slider, `GPU_PL_BOOST_W`/`GPU_PL_POWERSAVE_W`/`GPU_PL_SILENT_W`) — clamped to the range the driver itself reports (`nvidia-smi -q -d POWER`, `power1_cap_min/max`), stored per profile, re-applied on every profile switch, at boot and after resume. Raising the limit is refused while the GPU is at 85 °C or hotter.
+- **Suspend/resume hook** (`/usr/lib/systemd/system-sleep/boost`) — re-applies RAPL PL1/PL2 and the GPU power limit after waking, which previously reverted to firmware defaults while the dashboard still claimed otherwise.
+- **Simple / Advanced dashboard modes** — Simple shows profiles, temperatures and fan presets; Advanced adds curve editors, GPU limit, thresholds, history and the full config grid. The choice is remembered per browser.
+- `stats.csv` gained `nvme_temp,ram_temp,vrm_temp,board_temp` columns (existing files are migrated in place, keeping their history), and `power-report` shows them.
+
+### Changed
+- **The dashboard no longer polls.** `/api/stream` (Server-Sent Events) pushes a payload when the daemon's snapshot changes, so an idle machine costs one cheap `stat()` per second instead of a full JSON build every 2 s in every open tab. Polling remains as the automatic fallback.
+- The daemon reads all hwmon sensors once per tick and publishes them in the live snapshot; the dashboard and tray consume that instead of re-polling sysfs per request.
+
 ## [1.8.1] - 2026-08-14
 
 ### Fixed

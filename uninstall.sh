@@ -11,6 +11,9 @@ echo "[uninstall] Restoring BIOS power defaults first..."
 /usr/local/bin/restore 2>/dev/null && echo "  -> Power defaults restored." || echo "  -> restore skipped (already uninstalled or not applied)."
 
 echo ""
+echo "[uninstall] Handing the fans back to the motherboard..."
+python3 /usr/local/lib/fancontrol.py failsafe 2>/dev/null || true
+
 echo "[uninstall] Stopping and disabling services..."
 for svc in boost-auto.service boost-web.service power-save-originals.service boost-ac-init.service; do
     systemctl stop "$svc" 2>/dev/null || true
@@ -34,6 +37,10 @@ echo "[uninstall] Removing libraries..."
 rm -f /usr/local/lib/power-common.sh
 rm -f /usr/local/lib/boost-web.py
 rm -f /usr/local/lib/boost-daemon.py
+rm -f /usr/local/lib/sensors.py
+rm -f /usr/local/lib/fancontrol.py
+rm -f /usr/lib/systemd/system-sleep/boost
+rm -f /etc/modules-load.d/boost.conf
 rm -rf /usr/local/share/boost
 
 echo "[uninstall] Removing shell completions..."
@@ -56,6 +63,8 @@ echo "[uninstall] Removing state directory..."
 rm -rf /var/lib/power-profile
 
 pkill -f boost-tray 2>/dev/null || true
+
+rm -f /etc/boost-fans.json
 
 printf '\n[uninstall] Remove /etc/boost-auto.conf? [y/N]: '
 read -r CONFIRM

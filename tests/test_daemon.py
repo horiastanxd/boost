@@ -334,5 +334,122 @@ class TestReadConfig(unittest.TestCase):
             os.unlink(path)
 
 
+class TestSilentInterlock(unittest.TestCase):
+    """A Silent request is held back while the machine still needs cooling."""
+
+    def _daemon(self):
+        d = _make_daemon()
+        d.boost_temp_limit = 78
+        d.load_high = 75
+        d.high_since = 0
+        return d
+
+    def test_cool_and_idle_is_allowed(self):
+        blocked, reason = self._daemon().silent_interlock(45, 10, 1000)
+        self.assertFalse(blocked)
+        self.assertEqual(reason, "")
+
+    def test_hot_cpu_blocks(self):
+        blocked, reason = self._daemon().silent_interlock(84, 10, 1000)
+        self.assertTrue(blocked)
+        self.assertIn("84", reason)
+
+    def test_brief_load_spike_does_not_block(self):
+        d = self._daemon()
+        d.high_since = 995      # only 5s of high load
+        blocked, _ = d.silent_interlock(50, 90, 1000)
+        self.assertFalse(blocked)
+
+    def test_sustained_load_blocks(self):
+        d = self._daemon()
+        d.high_since = 900      # 100s of high load
+        blocked, reason = d.silent_interlock(50, 90, 1000)
+        self.assertTrue(blocked)
+        self.assertIn("90%", reason)
+
+
+class TestPendingSilent(unittest.TestCase):
+    """The queued Silent request applies itself once the machine cools down."""
+
+    def setUp(self):
+        import boost_daemon as bd
+        self.bd = bd
+        self.tmpdir = tempfile.mkdtemp()
+        self.orig = bd.PENDING_SILENT_FILE
+        bd.PENDING_SILENT_FILE = os.path.join(self.tmpdir, "silent-pending")
+
+    def tearDown(self):
+        self.bd.PENDING_SILENT_FILE = self.orig
+
+    def _daemon(self):
+        d = _make_daemon()
+        d.boost_temp_limit = 78
+        d.load_high = 75
+        d.high_since = 0
+        d.run_command = MagicMock()
+        d.send_notification = MagicMock()
+        return d
+
+    def _queue(self, when=None):
+        with open(self.bd.PENDING_SILENT_FILE, "w") as f:
+            f.write(f"{when if when is not None else int(time.time())} the CPU is 84 C\n")
+
+    def test_nothing_queued_does_nothing(self):
+        d = self._daemon()
+        d.handle_pending_silent(45, 5, int(time.time()))
+        d.run_command.assert_not_called()
+
+    def test_still_hot_keeps_the_request_queued(self):
+        d = self._daemon()
+        self._queue()
+        d.handle_pending_silent(84, 5, int(time.time()))
+        d.run_command.assert_not_called()
+        self.assertTrue(os.path.exists(self.bd.PENDING_SILENT_FILE))
+        d.send_notification.assert_called_once()
+
+    def test_cooled_down_applies_silent_and_clears_the_queue(self):
+        d = self._daemon()
+        self._queue()
+        d.handle_pending_silent(45, 5, int(time.time()))
+        d.run_command.assert_called_once_with("/usr/local/bin/silent --force --auto")
+        self.assertFalse(os.path.exists(self.bd.PENDING_SILENT_FILE))
+
+    def test_stale_request_is_dropped(self):
+        d = self._daemon()
+        self._queue(when=int(time.time()) - self.bd.PENDING_SILENT_MAX_AGE_S - 60)
+        d.handle_pending_silent(84, 90, int(time.time()))
+        self.assertFalse(os.path.exists(self.bd.PENDING_SILENT_FILE))
+        d.run_command.assert_not_called()
+
+
+class TestStatsHeaderMigration(unittest.TestCase):
+    def setUp(self):
+        import boost_daemon as bd
+        self.bd = bd
+        self.tmpdir = tempfile.mkdtemp()
+        self.orig = bd.STATS_FILE
+        bd.STATS_FILE = os.path.join(self.tmpdir, "stats.csv")
+
+    def tearDown(self):
+        self.bd.STATS_FILE = self.orig
+
+    def test_creates_the_file_with_the_component_columns(self):
+        _make_daemon().ensure_stats_header()
+        with open(self.bd.STATS_FILE) as f:
+            self.assertEqual(f.readline().strip(), self.bd.STATS_HEADER)
+
+    def test_widens_an_old_header_and_keeps_the_rows(self):
+        old_header = "epoch,iso,profile,cpu_load,cpu_temp,gpu_temp,gpu_power,gpu_limit,pl1,pl2,governor,epp,turbo,battery_pct,battery_status"
+        with open(self.bd.STATS_FILE, "w") as f:
+            f.write(old_header + "\n")
+            f.write("1,2026-01-01T00:00:00,balanced,5,40,0,0,0,0,0,powersave,power,OFF,,Unknown\n")
+        _make_daemon().ensure_stats_header()
+        with open(self.bd.STATS_FILE) as f:
+            lines = f.readlines()
+        self.assertEqual(lines[0].strip(), self.bd.STATS_HEADER)
+        self.assertEqual(len(lines), 2)
+        self.assertIn("balanced", lines[1])
+
+
 if __name__ == "__main__":
     unittest.main()

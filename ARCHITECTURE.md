@@ -194,7 +194,53 @@ snooze controls, and live CPU telemetry.
 - `set_turbo` — enable/disable turbo boost
 - `set_rapl` — write RAPL power limits with max cap check
 
-### 6. Utility Scripts
+### 6. Sensor Layer (`lib/sensors.py`)
+
+**Language:** Python 3 (stdlib only)
+**Purpose:** One unified view of every `/sys/class/hwmon` temperature.
+
+- Enumerates all chips once, caches the topology, re-reads only `tempN_input`.
+- **Stable ids:** `chip:label` (`nct6798:SYSTIN`, `nvme-nvme0:Composite`), never
+  `hwmonN` — kernel hwmon numbering is probe-order dependent and changes across
+  reboots. Duplicate chip names are disambiguated by the device they hang off.
+- Classifies each sensor into a component category (cpu, cpu_core, gpu, nvme,
+  sata, ram, vrm, chipset, board, network, battery) with per-category warn and
+  critical thresholds; chip-reported `tempN_max`/`tempN_crit` only ever *tighten*
+  those defaults.
+- Drops readings of 0 or >=200 °C (unconnected superio channels).
+- `missing_drivers()` reports hardware present without a driver (DDR5 SPD hub
+  without `spd5118`, SATA disks without `drivetemp`) and the exact fix command;
+  used by `auto doctor`.
+- Called by the daemon once per tick; the web layer only falls back to reading it
+  directly when the daemon snapshot is stale.
+
+### 7. Fan Curve Engine (`lib/fancontrol.py`)
+
+**Language:** Python 3 (stdlib only)
+**Purpose:** Per-fan curve control with a safety floor that cannot be overridden.
+
+- Discovery: every `pwmN` with a `pwmN_enable` under `/sys/class/hwmon`, keyed
+  `chip:pwmN`. GPU chips are skipped by design.
+- Config: `/etc/boost-fans.json` — per fan a source (sensor category or explicit
+  ids, `max`/`avg` mix), `min_pwm`, `stop_allowed`, `hyst_up`/`hyst_down`,
+  `response_delay_s`, `step_limit`, and one curve per profile
+  (`boost`/`balanced`/`silent`).
+- Validation refuses curves that fall as temperature rises or that do not reach
+  80% by 85 °C, so a saved curve is always able to cool the machine.
+- `guard_floor()` derives a minimum pwm from live CPU/GPU/NVMe/VRM temperature
+  every tick and raises the fan above the requested curve when needed; the reason
+  string is published for the UI.
+- Ownership: `pwmN_enable` is set to 1 (manual) only after saving the original
+  value to `fans-original-enable.json`, and is re-asserted every tick (suspend
+  resets it). `failsafe_all()` restores the board's own mode and is wired to the
+  unit's `ExecStopPost`.
+- Conflict handling: read-back mismatch marks another writer and backs that
+  channel off for 120 s; an active fancontrol/CoolerControl/thinkfan unit blocks
+  the engine entirely.
+- CLI: `fancontrol.py discover|status|init|enable|disable|calibrate|preset|test|failsafe`,
+  driven by `auto fans ...`.
+
+### 8. Utility Scripts
 
 | Script | Purpose |
 |--------|---------|
@@ -204,15 +250,16 @@ snooze controls, and live CPU telemetry.
 | `bin/summer` | shortcut for `auto summer-nights on/off` |
 | `bin/boost-web` | thin wrapper: `exec python3 /usr/local/lib/boost-web.py` |
 
-### 7. Systemd Services
+### 9. Systemd Services
 
 | Service | Type | Purpose |
 |---------|------|---------|
 | `power-save-originals.service` | oneshot (boot) | Captures boot state before any profile |
-| `boost-auto.service` | simple | Auto daemon (restart on failure, 10s delay) |
+| `boost-auto.service` | notify | Auto daemon + fan engine. `WatchdogSec=120`; `ExecStopPost` runs `fancontrol.py failsafe` so fans always return to board control |
 | `boost-web.service` | simple | Web dashboard (restart on failure, 5s delay) |
+| `/usr/lib/systemd/system-sleep/boost` | sleep hook | Re-applies RAPL + GPU power limits after resume |
 
-### 8. udev Rules
+### 10. udev Rules
 
 `99-boost-power.rules` triggers `ac-event` when AC power supply status changes.
 
@@ -250,7 +297,12 @@ is_game_running() → pgrep
 is_creator_running() → pgrep
 is_meeting_running() → pgrep
 
+read_all_sensors() → lib/sensors.py, every hwmon temperature (once per tick)
+run_fan_engine() → lib/fancontrol.py tick: curve + guard floor + pwm writes
+handle_pending_silent() → apply a queued Silent request once the machine cools
+
 if stats_interval elapsed → record_stats() → append CSV
+write_live_snapshot() → live.json (cpu, gpu, sensors, fans, interlock, limits)
 
 Decision tree (checked in order):
   1. mode == "off" → skip
@@ -264,10 +316,15 @@ Decision tree (checked in order):
   9. load <= idle for duration → suggest powersave
 ```
 
-### Web dashboard poll (every 2s)
+### Web dashboard updates (Server-Sent Events)
 
 ```
-Browser polls GET /api/status
+Browser opens GET /api/stream
+  → the handler stats live.json once a second and pushes a full status payload
+    whenever the daemon's snapshot changes (or every 10s as a heartbeat)
+  → EventSource unavailable or stream dropped → falls back to polling /api/status
+
+GET /api/status
   → status_payload()
      → read_config()
      → history() → read stats CSV, parse last 80 rows
@@ -296,7 +353,14 @@ User clicks "Boost" button
 | `/var/lib/power-profile/stats.csv` | CSV | Telemetry (rotated at 250KB) |
 | `/var/lib/power-profile/auto-snooze-until` | Unix timestamp | Snooze expiration |
 | `/var/lib/power-profile/auto-skip-date` | `YYYY-MM-DD` | "Skip today" marker |
-| `/var/lib/power-profile/fan-curve-backup.env` | `KEY=VALUE` | Original fan curve |
+| `/var/lib/power-profile/fan-curve-backup.env` | `KEY=VALUE` | Original Smart Fan IV curve |
+| `/etc/boost-fans.json` | JSON | Fan curve configuration (per fan, per profile) |
+| `/var/lib/power-profile/fans-calibration.json` | JSON | Measured start/stop pwm and RPM curve |
+| `/var/lib/power-profile/fans-original-enable.json` | JSON | Original `pwmN_enable` per channel (failsafe) |
+| `/var/lib/power-profile/fan-override.json` | JSON | Temporary "test this fan" override |
+| `/var/lib/power-profile/fan-engine-pause` | Unix timestamp | Engine paused until (calibration) |
+| `/var/lib/power-profile/silent-pending` | `epoch reason` | Queued Silent request held by the interlock |
+| `/var/lib/power-profile/live.json` | JSON | Per-tick snapshot shared with web/tray |
 | `/var/lib/power-profile/reports/latest.html` | HTML | Latest generated report |
 
 ## Key Design Decisions
@@ -304,11 +368,13 @@ User clicks "Boost" button
 1. **No IPC bus** — Components communicate through filesystem (config + state files).
    Simplifies debugging but means no real-time coordination.
 
-2. **`shell=True` in daemon** — Historical; used because daemon calls CLI scripts
-   by name. Should be refactored to direct sysfs writes.
+2. **No shell in the daemon** — profile commands are spawned with
+   `subprocess.Popen(shlex.split(cmd))`; there is no `shell=True` anywhere.
 
-3. **Config as shell source** — `/etc/boost-auto.conf` is valid Bash. Convenient
-   for CLI scripts but a security risk (command injection possible).
+3. **Config is parsed, never sourced** — `/etc/boost-auto.conf` is `KEY=VALUE`
+   read by `read_safe_config()` (shell) and an explicit parser (Python). Keys that
+   could hijack a shell (`PATH`, `LD_*`, `BASH*`, ...) are ignored. Structured data
+   (fan curves) lives in JSON instead: `/etc/boost-fans.json`.
 
 4. **Stdlib-only web server** — Zero pip dependencies. Works out of the box on any
    Python 3 install. Trade-off: no async, no routing framework.
@@ -318,3 +384,11 @@ User clicks "Boost" button
 
 6. **Notification actions** — Uses `notify-send --action` for interactive
    notifications. Falls back to plain notifications if actions are unsupported.
+
+7. **Fan curves are requests** — the engine treats a user curve as a target and
+   clamps it against a live safety floor, so no configuration reachable from the
+   UI or a hand-edited JSON file can hold the fans down on hot hardware.
+
+8. **One writer per pwm** — Boost takes ownership of a channel explicitly, checks
+   read-back every tick, and gives the channel back to the board on stop, crash,
+   watchdog timeout or uninstall.

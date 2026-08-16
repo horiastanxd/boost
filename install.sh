@@ -32,7 +32,8 @@ migrate_config() {
         AC_PROFILE BATTERY_PROFILE BATTERY_LOW_PCT BATTERY_CRITICAL_PCT BATTERY_LOW_NOTIFY \
         BOOST_EPP BOOST_PL1_PCT BOOST_PL2_PCT \
         SCREEN_LOCK_POWERSAVE BATTERY_CHARGE_LIMIT \
-        SLOW_CHARGE_THRESHOLD_W SLOW_CHARGE_BATTERY_PCT SLOW_CHARGE_RECOVERY_PCT
+        SLOW_CHARGE_THRESHOLD_W SLOW_CHARGE_BATTERY_PCT SLOW_CHARGE_RECOVERY_PCT \
+        GPU_PL_BOOST_W GPU_PL_POWERSAVE_W GPU_PL_SILENT_W
     do
         value=$(awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1); found=1} END {exit found ? 0 : 1}' "$backup" 2>/dev/null || true)
         [[ -n "$value" ]] && set_config_value "$key" "$value"
@@ -50,6 +51,8 @@ echo "[install] Copying lib to /usr/local/lib..."
 install -m 644 "$REPO_DIR/lib/power-common.sh" /usr/local/lib/power-common.sh
 install -m 644 "$REPO_DIR/lib/boost-web.py" /usr/local/lib/boost-web.py
 install -m 755 "$REPO_DIR/lib/boost-daemon.py" /usr/local/lib/boost-daemon.py
+install -m 755 "$REPO_DIR/lib/sensors.py" /usr/local/lib/sensors.py
+install -m 755 "$REPO_DIR/lib/fancontrol.py" /usr/local/lib/fancontrol.py
 install -m 755 "$REPO_DIR/lib/boost-tray.py" /usr/local/bin/boost-tray
 
 echo "[install] Installing canonical mode presets..."
@@ -73,6 +76,23 @@ if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/local/share/applications >/dev/null 2>&1 || true
 fi
 
+echo "[install] Loading component temperature drivers..."
+# DDR5 DIMM and SATA temperatures need drivers that are not autoloaded on most
+# distributions. Failures are expected on hardware without them.
+install -m 644 /dev/stdin /etc/modules-load.d/boost.conf <<'MODEOF'
+# Loaded by Boost so RAM (DDR5 SPD hub) and SATA drive temperatures show up
+# in /sys/class/hwmon. Harmless on machines without that hardware.
+spd5118
+drivetemp
+MODEOF
+for module in spd5118 drivetemp; do
+    if modprobe "$module" 2>/dev/null; then
+        echo "  -> loaded $module"
+    else
+        echo "  -> $module unavailable on this kernel/hardware (skipped)"
+    fi
+done
+
 echo "[install] Installing systemd services..."
 install -m 644 "$REPO_DIR/systemd/power-save-originals.service" \
     /etc/systemd/system/power-save-originals.service
@@ -82,6 +102,9 @@ install -m 644 "$REPO_DIR/systemd/boost-web.service" \
     /etc/systemd/system/boost-web.service
 install -m 644 "$REPO_DIR/systemd/boost-ac-init.service" \
     /etc/systemd/system/boost-ac-init.service
+echo "[install] Installing suspend/resume hook..."
+mkdir -p /usr/lib/systemd/system-sleep
+install -m 755 "$REPO_DIR/systemd/boost-sleep-hook" /usr/lib/systemd/system-sleep/boost
 systemctl daemon-reload
 systemctl enable power-save-originals.service
 systemctl enable boost-ac-init.service
@@ -112,6 +135,9 @@ echo "  boost | powersave | silent | summer | restore    — main shortcuts"
 echo "  auto start | stop | status | logs       — intelligent auto-daemon"
 echo "  auto stats | auto report                — text and web statistics"
 echo "  auto web                                — local web dashboard"
+echo "  auto sensors                            — every component temperature"
+echo "  auto fans status|on|off|calibrate       — smart fan curves"
+echo "  auto gpu-limit <watts>                  — GPU power limit"
 echo ""
 echo "Run 'powersave' now to start saving power."
 echo "Run 'auto start' to enable automatic switching."

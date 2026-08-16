@@ -650,10 +650,12 @@ class FanEngine:
             else:
                 target = max(requested, min_pwm)
 
-            guarded = False
+            # "Guarded" means the safety floor is what is holding this fan up,
+            # whether it had to raise the curve or the curve happens to agree.
+            guarded = floor > 0 and floor >= target
             if floor > target:
                 target = floor
-                guarded = True
+            if guarded:
                 status["guard"]["active"] = True
 
             override_pwm = override.get(fan_id)

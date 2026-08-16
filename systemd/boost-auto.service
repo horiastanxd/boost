@@ -4,8 +4,14 @@ After=network.target power-profiles-daemon.service
 Wants=power-profiles-daemon.service
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 ExecStart=/usr/local/bin/auto --daemon
+# A hung poll loop while the daemon owns the fans is the one failure that must
+# never go unnoticed: systemd restarts it and ExecStopPost below hands every
+# pwm channel back to the board's own control.
+WatchdogSec=120
+ExecStopPost=-/usr/bin/env python3 /usr/local/lib/fancontrol.py failsafe
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

@@ -51,7 +51,10 @@ Tested on **i7-14700KF + RTX 5060 Ti** on Ubuntu 24.04 (one case fan):
 | Desktop notifications | ✅ | ❌ | ✅ | ❌ |
 | GNOME Power sync | ✅ | ❌ | ✅ | ❌ |
 | RAPL power limits | ✅ | ✅ | ❌ | ✅ |
-| GPU power limits | ✅ | ❌ | ❌ | ❌ |
+| GPU power limits (watts) | ✅ | ❌ | ❌ | ❌ |
+| Fan curve editor + presets | ✅ | ❌ | ❌ | ❌ |
+| Every component temp (RAM/NVMe/VRM) | ✅ | ❌ | ❌ | ❌ |
+| Thermal interlock on quiet modes | ✅ | ❌ | ❌ | ❌ |
 | Per-use-case profiles | ✅ | ❌ | ❌ | ❌ |
 | Fully reversible | ✅ | ✅ | ✅ | ✅ |
 
@@ -68,6 +71,9 @@ Tested on **i7-14700KF + RTX 5060 Ti** on Ubuntu 24.04 (one case fan):
 | Apple Silicon / Fedora Asahi | ✅ Tested | Tested on Fedora Asahi Remix 44, MacBook Pro 14-inch M2 Pro (2023) |
 | Intel Arc GPU | 🔜 Planned | No upstream power limit interface yet |
 | Laptop / battery | ✅ Partial | Battery telemetry and AC/battery profile switching supported |
+| Motherboard fans (nct67xx, it87, ...) | ✅ Full | Any writable `pwmN_enable` under `/sys/class/hwmon` |
+| Laptop EC fans (thinkpad_acpi, asus-wmi) | 🔜 Planned | Needs a per-vendor backend |
+| GPU fans | ❌ Out of scope | NVIDIA needs coolbits/X; amdgpu has a firmware zero-RPM floor |
 
 ---
 
@@ -95,6 +101,13 @@ restore          # ♻️ Default — Back to BIOS defaults anytime
 auto setup       # ⚙️ Guided setup for Smart Auto Modes
 auto web         # 🌐 Open realtime web controls
 auto doctor      # 🩺 Check if sensors and drivers work
+
+auto sensors     # 🌡️ Every component temperature (CPU, GPU, RAM, NVMe, VRM...)
+auto fans        # 🌀 Fan channels and curve engine state
+auto fans on     # 🌀 Let Boost drive the fans (off hands them back to the BIOS)
+auto fans calibrate            # 🧪 Measure each fan's real minimum speed and RPM range
+auto fans preset <fan> silent  # 🤫 1-click curve: silent | balanced | aggressive
+auto gpu-limit 320             # 🎮 GPU power limit in watts (auto = back to automatic)
 ```
 *All commands auto-elevate via `sudo` — no need to prefix them.*
 
@@ -120,10 +133,54 @@ auto doctor      # 🩺 Check if sensors and drivers work
 ┌──────────────────────────────────────────────────┐
 │  boost-daemon.py  — monitors and adapts          │
 │  • Polls CPU temp + load every 5s                │
+│  • Reads every hwmon sensor once per tick        │
+│  • Runs the fan curve engine + safety floor      │
 │  • Detects games, creator workloads, meetings    │
 │  • Sends desktop notifications with actions      │
 │  • Records stats CSV for history chart           │
 └──────────────────────────────────────────────────┘
+```
+
+---
+
+## 🌀 Smart Fan Control
+
+Fan curves in Boost are **requests, not orders**. You pick a preset (or drag the curve
+points in the dashboard) and the engine decides how to get there safely:
+
+| What people hit with other tools | What Boost does |
+|---|---|
+| Config breaks after a reboot because `hwmon3` became `hwmon5` | Fans are keyed by chip name — `nct6798:pwm1` — never by hwmon index |
+| A quiet curve chosen at the wrong moment cooks the machine | A safety floor derived from CPU/GPU/NVMe/VRM temperature overrides the curve, and the dashboard says which sensor did it |
+| Fans stuck at whatever the daemon last wrote after it crashed | `WatchdogSec` + `ExecStopPost` hand every channel back to the BIOS on stop, crash or upgrade |
+| Two fan tools fighting over the same pwm | Read-back mismatch detection backs Boost off and `auto doctor` refuses to start the engine next to fancontrol/CoolerControl/thinkfan |
+| Fan calibration aborts on fans that never stop | Calibration records them as "never stops" and keeps going |
+| 1 °C wobble making the fan hunt up and down | Separate up/down hysteresis, a per-tick step limit and a response delay |
+
+```bash
+auto fans calibrate                     # measure the fans (once)
+auto fans preset nct6798:pwm1 silent    # or drag the curve in the dashboard
+auto fans on                            # hand control to Boost
+auto fans off                           # ...and back to the motherboard, any time
+```
+
+**Eco Mode is interlocked.** Asking for Eco while the CPU is at 84 °C or pinned at
+95% load does not apply a quiet curve — the request is queued and switches on by
+itself once the machine cools down (`silent --force` overrides).
+
+---
+
+## 🌡️ Component Temperatures
+
+Boost reads every sensor the kernel exposes, not just the CPU package: per-core, GPU
+edge/junction/memory, NVMe drives, SATA drives (`drivetemp`), DDR5 DIMMs (`spd5118`),
+VRM, chipset, motherboard, Wi-Fi and battery — each with its own warning threshold
+(NVMe 65 °C, RAM 60 °C, VRM 90 °C). `auto doctor` tells you which kernel module is
+missing when a component has no sensor.
+
+```bash
+auto sensors            # grouped list with warn/critical marks
+auto sensors missing    # what to modprobe for the components with no sensor
 ```
 
 ---
@@ -199,7 +256,9 @@ auto mode quiet      # Enable strict thermal constraints
 | CPU driver | `intel_pstate`, `amd_pstate`, or generic cpufreq `policy*` controls |
 | GPU | NVIDIA with `nvidia-smi` *(optional)* |
 | Power profile backend | `power-profiles-daemon` + `powerprofilesctl`, or TuneD on Fedora/Asahi *(optional)* |
-| Fan control | `nct6798` or compatible SuperIO *(optional)* |
+| Fan control | any hwmon chip exposing writable `pwmN`/`pwmN_enable` (nct67xx, it87, ...) *(optional)* |
+| RAM temperatures | DDR5 SPD hub + `spd5118` module *(optional, loaded by the installer)* |
+| SATA temperatures | `drivetemp` module *(optional, loaded by the installer)* |
 | Privileges | sudo |
 
 Check your compatibility in one line:
@@ -219,7 +278,8 @@ ls /sys/class/powercap/intel-rapl/                        # expects RAPL availab
 ## 🛡️ Safety & Architecture
 
 - **RAPL Bounds Checking:** Every power limit modification reads the `constraint_*_max_power_uw` from your CPU and clamps values *before* writing.
-- **Hardware Fan Authority:** Eco Mode shifts the Smart Fan IV PWM curve, but the motherboard retains ultimate thermal authority. If the CPU reaches 75°C+, fans blast to 100% regardless.
+- **Fan Safety Floor:** curves are clamped every tick by a floor derived from live CPU/GPU/NVMe/VRM temperature — a Silent curve physically cannot hold the fans down on a hot machine — and the engine hands every channel back to the motherboard on stop, crash or watchdog timeout.
+- **GPU Limit Clamping:** watt values are clamped to the range the driver reports, and raising the limit is refused while the GPU is at 85°C or hotter.
 - **Boot Persistence:** Profile changes are ephemeral by default. A `systemd` service (`power-save-originals.service`) captures your BIOS state at boot — `restore` always works, reboot always resets to factory defaults.
 - **Thread-safe daemon:** The Python web server and background daemon are fully thread-safe with proper lock guards on all shared state.
 

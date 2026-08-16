@@ -272,5 +272,98 @@ class TestGetStatus(TestServerBase):
         self.assertEqual(status, 404)
 
 
+class TestInterlockPayload(unittest.TestCase):
+    """Eco/Silent interlock: blocked while hot or busy, with a plain reason."""
+
+    def test_uses_the_daemon_snapshot_when_present(self):
+        data = boost_web.interlock_payload(
+            {"interlock": {"silentBlocked": True, "reason": "the CPU is 84 C (limit 78 C)"}},
+            {}, 40, 5,
+        )
+        self.assertTrue(data["silentBlocked"])
+        self.assertIn("84 C", data["hint"])
+        self.assertIn("switch over by itself", data["hint"])
+
+    def test_falls_back_to_temperature_rule_without_a_snapshot(self):
+        data = boost_web.interlock_payload(None, {"BOOST_TEMP_LIMIT": "78"}, 84, 10)
+        self.assertTrue(data["silentBlocked"])
+        self.assertIn("84", data["reason"])
+
+    def test_falls_back_to_load_rule_without_a_snapshot(self):
+        data = boost_web.interlock_payload(None, {"LOAD_HIGH": "75"}, 50, 90)
+        self.assertTrue(data["silentBlocked"])
+        self.assertIn("90%", data["reason"])
+
+    def test_idle_cool_machine_is_not_blocked(self):
+        data = boost_web.interlock_payload(None, {}, 45, 5)
+        self.assertFalse(data["silentBlocked"])
+        self.assertEqual(data["hint"], "")
+
+
+class TestGpuLimitValidation(unittest.TestCase):
+    def setUp(self):
+        self.orig_range = boost_web._gpu_limit_range
+        boost_web._gpu_limit_range = lambda: (100, 320)
+
+    def tearDown(self):
+        boost_web._gpu_limit_range = self.orig_range
+
+    def test_accepts_a_watt_value_inside_the_driver_range(self):
+        sanitized, error = boost_web.validate_config_updates({"GPU_PL_BOOST_W": "250"})
+        self.assertIsNone(error)
+        self.assertEqual(sanitized["GPU_PL_BOOST_W"], "250")
+
+    def test_rejects_a_value_the_driver_would_refuse(self):
+        _, error = boost_web.validate_config_updates({"GPU_PL_BOOST_W": "900"})
+        self.assertIn("driver", error)
+
+    def test_empty_means_automatic(self):
+        sanitized, error = boost_web.validate_config_updates({"GPU_PL_SILENT_W": ""})
+        self.assertIsNone(error)
+        self.assertEqual(sanitized["GPU_PL_SILENT_W"], "")
+
+    def test_rejects_non_numbers(self):
+        _, error = boost_web.validate_config_updates({"GPU_PL_BOOST_W": "lots"})
+        self.assertIn("whole number", error)
+
+    def test_unknown_gpu_profile_is_rejected(self):
+        result = boost_web.fan_or_gpu_action("gpu-limit", json.dumps({"profile": "turbo", "watts": "200"}))
+        self.assertFalse(result["ok"])
+
+
+class TestFanActions(unittest.TestCase):
+    def test_unknown_preset_is_rejected(self):
+        result = boost_web.run_action("fan-preset", json.dumps({"fan": "x:pwm1", "preset": "loud"}))
+        self.assertFalse(result["ok"])
+
+    def test_fan_enable_needs_on_or_off(self):
+        result = boost_web.run_action("fan-enable", "maybe")
+        self.assertFalse(result["ok"])
+
+    def test_fan_test_rejects_non_numeric_speed(self):
+        result = boost_web.run_action("fan-test", json.dumps({"fan": "x:pwm1", "pwm": "fast"}))
+        self.assertFalse(result["ok"])
+
+    def test_fan_config_rejects_invalid_json(self):
+        result = boost_web.run_action("fan-config", "{not json")
+        self.assertFalse(result["ok"])
+
+
+class TestNewEndpoints(TestServerBase):
+    def test_sensors_endpoint(self):
+        status, body = self._get("/api/sensors")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertTrue(data["ok"])
+        self.assertIsInstance(data["groups"], list)
+
+    def test_fans_endpoint(self):
+        status, body = self._get("/api/fans")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertTrue(data["ok"])
+        self.assertIn("available", data)
+
+
 if __name__ == "__main__":
     unittest.main()

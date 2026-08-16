@@ -94,6 +94,65 @@ test_boost_game_priority_noop_when_no_game() (
     exit 0
 )
 
+# ── silent_interlock_reason: blocks Silent while hot or busy ────────────
+
+test_silent_interlock_blocks_when_hot() (
+    set -u
+    source "$ROOT_DIR/lib/power-common.sh"
+    conf="$(mktemp)"
+    trap 'rm -f "$conf"' EXIT
+    printf 'BOOST_TEMP_LIMIT=78\nLOAD_HIGH=75\n' > "$conf"
+    AUTO_CONF_FILE="$conf"
+    get_cpu_temp_c() { echo 84; }
+    get_cpu_load_percent() { echo 5; }
+    reason="$(silent_interlock_reason)" || { echo "FAIL: hot CPU should block Silent" >&2; exit 1; }
+    [[ "$reason" == *"84"* ]] || { echo "FAIL: reason should mention the temperature (got: $reason)" >&2; exit 1; }
+    exit 0
+)
+
+test_silent_interlock_blocks_when_busy() (
+    set -u
+    source "$ROOT_DIR/lib/power-common.sh"
+    conf="$(mktemp)"
+    trap 'rm -f "$conf"' EXIT
+    printf 'BOOST_TEMP_LIMIT=78\nLOAD_HIGH=75\n' > "$conf"
+    AUTO_CONF_FILE="$conf"
+    get_cpu_temp_c() { echo 50; }
+    get_cpu_load_percent() { echo 92; }
+    reason="$(silent_interlock_reason)" || { echo "FAIL: busy CPU should block Silent" >&2; exit 1; }
+    [[ "$reason" == *"92%"* ]] || { echo "FAIL: reason should mention the load (got: $reason)" >&2; exit 1; }
+    exit 0
+)
+
+test_silent_interlock_allows_when_cool_and_idle() (
+    set -u
+    source "$ROOT_DIR/lib/power-common.sh"
+    conf="$(mktemp)"
+    trap 'rm -f "$conf"' EXIT
+    printf 'BOOST_TEMP_LIMIT=78\nLOAD_HIGH=75\n' > "$conf"
+    AUTO_CONF_FILE="$conf"
+    get_cpu_temp_c() { echo 45; }
+    get_cpu_load_percent() { echo 4; }
+    if silent_interlock_reason >/dev/null; then
+        echo "FAIL: a cool, idle machine must not block Silent" >&2
+        exit 1
+    fi
+    exit 0
+)
+
+# ── gpu_pl_for_mode: only an explicit positive value counts ─────────────
+
+test_gpu_pl_for_mode_reads_config() (
+    set -u
+    source "$ROOT_DIR/lib/power-common.sh"
+    GPU_PL_BOOST_W=320
+    GPU_PL_SILENT_W=
+    [[ "$(gpu_pl_for_mode boost)" == "320" ]] || { echo "FAIL: boost watt limit" >&2; exit 1; }
+    [[ -z "$(gpu_pl_for_mode silent)" ]] || { echo "FAIL: empty means automatic" >&2; exit 1; }
+    [[ -z "$(gpu_pl_for_mode restore)" ]] || { echo "FAIL: restore has no explicit limit" >&2; exit 1; }
+    exit 0
+)
+
 run_test() {
     local name="$1"
     if "$name"; then
@@ -109,6 +168,10 @@ run_test test_load_mode_preset_matches_json
 run_test test_load_mode_preset_unknown_mode_fails
 run_test test_load_mode_preset_missing_file_fails
 run_test test_boost_game_priority_noop_when_no_game
+run_test test_silent_interlock_blocks_when_hot
+run_test test_silent_interlock_blocks_when_busy
+run_test test_silent_interlock_allows_when_cool_and_idle
+run_test test_gpu_pl_for_mode_reads_config
 
 if [[ $TOTAL_FAILURES -eq 0 ]]; then
     echo "power-common unit tests ok"

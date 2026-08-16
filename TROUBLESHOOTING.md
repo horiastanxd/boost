@@ -199,6 +199,86 @@ sudo -v
 
 4. If using a VM or container, temperature sensors are typically not available.
 
+### RAM / NVMe / SATA / VRM temperatures missing
+
+**Symptom:** The "Component Temperatures" section has no RAM, SSD or VRM card.
+
+1. Ask Boost what is missing and how to fix it:
+   ```bash
+   auto sensors missing
+   auto doctor
+   ```
+2. Load the drivers by hand (the installer does this too):
+   ```bash
+   sudo modprobe spd5118     # DDR5 DIMM temperatures
+   sudo modprobe drivetemp   # SATA drive temperatures
+   sudo sensors-detect --auto && sudo modprobe nct6775   # board / VRM / fans
+   ```
+3. `spd5118` needs DDR5 with an SPD hub reachable on the SMBus — DDR4 systems
+   have no such sensor at all. NVMe drives report through the `nvme` driver with
+   no extra module.
+4. Confirm what the kernel actually exposes:
+   ```bash
+   auto sensors
+   ```
+
+### Fans not responding to Boost
+
+**Symptom:** Fan speeds never change after enabling fan control.
+
+1. Check what Boost can see and whether the engine is on:
+   ```bash
+   auto fans status
+   auto doctor
+   ```
+2. **No controllable fans** — the board exposes no writable `pwmN_enable`. Several
+   Dell and server boards are read-only by design; Boost reports this instead of
+   retrying. Motherboard chips usually need `sudo sensors-detect --auto` first.
+3. **Another fan daemon is running** — Boost refuses to start its engine next to
+   `fancontrol`, `coolercontrold` or `thinkfan` because two writers on one pwm
+   produce exactly the oscillation people report:
+   ```bash
+   sudo systemctl disable --now fancontrol.service
+   ```
+4. **The card says "conflict"** — something else wrote the pwm after Boost did, so
+   that channel was backed off for two minutes. Same fix as above.
+5. **The fans are faster than your curve asks** — that is the safety floor. The
+   panel prints which sensor caused it (CPU, GPU, NVMe or VRM). It clears itself
+   when the temperature drops.
+6. Give the fans back to the motherboard at any time:
+   ```bash
+   auto fans off        # or: sudo python3 /usr/local/lib/fancontrol.py failsafe
+   ```
+
+### Eco Mode does not apply immediately
+
+**Symptom:** Choosing Eco/Silent prints "Silent is queued" and nothing changes.
+
+This is the thermal interlock: a quiet profile while the CPU is above
+`BOOST_TEMP_LIMIT` or pinned at `LOAD_HIGH` would trade fan noise for throttling.
+The request is stored in `/var/lib/power-profile/silent-pending` and the daemon
+applies it by itself once the machine cools down (you get a notification).
+
+```bash
+silent --force      # apply right now anyway
+auto status         # shows the current decision
+```
+
+Note the interlock needs `boost-auto.service` running to release the queued
+request; with the daemon stopped, use `silent --force`.
+
+### GPU power limit rejected
+
+**Symptom:** `auto gpu-limit 400` reports a different value, or refuses.
+
+- Values are clamped to the range the driver reports — check it with
+  `auto gpu-limit` (no arguments), `nvidia-smi -q -d POWER`, or
+  `cat /sys/class/drm/card*/device/hwmon/hwmon*/power1_cap_max`.
+- Raising the limit is refused while the GPU is at 85 °C or hotter. Lowering it
+  always works.
+- NVIDIA needs persistence mode (Boost enables it) and a driver that allows
+  `--power-limit`; some laptop/OEM vBIOS versions do not.
+
 ### GPU stats not showing
 
 **Symptom:** GPU shows 0°C / 0W in status or dashboard.

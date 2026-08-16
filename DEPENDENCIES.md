@@ -62,7 +62,10 @@ No additional pip packages are required for the web dashboard.
 
 | Dependency | Purpose | Package Name (Ubuntu/Debian) |
 |-----------|---------|------------------------------|
-| `lm-sensors` | Additional sensor data | `lm-sensors` |
+| `lm-sensors` | Additional sensor data + `sensors-detect` for superio fan chips | `lm-sensors` |
+| `spd5118` kernel module | DDR5 DIMM temperatures | in-kernel (5.19+); loaded by `install.sh` |
+| `drivetemp` kernel module | SATA drive temperatures | in-kernel; loaded by `install.sh` |
+| `nct6775` / `it87` kernel module | Motherboard fan control + VRM/board temps | in-kernel; `sudo sensors-detect --auto` |
 | `xdg-utils` | Opening URLs from CLI | `xdg-utils` |
 | `loginctl` (systemd) | User session detection | `systemd` (included) |
 | `journalctl` (systemd) | Viewing daemon logs | `systemd` (included) |
@@ -94,6 +97,11 @@ No additional pip packages are required for the web dashboard.
 | `/usr/local/lib/power-common.sh` | Shared shell library | `install.sh` |
 | `/usr/local/lib/boost-web.py` | Web server | `install.sh` |
 | `/usr/local/lib/boost-daemon.py` | Auto daemon | `install.sh` |
+| `/usr/local/lib/sensors.py` | Unified hwmon sensor layer | `install.sh` |
+| `/usr/local/lib/fancontrol.py` | Fan curve engine + CLI | `install.sh` |
+| `/etc/boost-fans.json` | Fan curves (per fan, per profile) | `auto fans init` / dashboard |
+| `/etc/modules-load.d/boost.conf` | Loads `spd5118` + `drivetemp` at boot | `install.sh` |
+| `/usr/lib/systemd/system-sleep/boost` | Re-applies power limits after resume | `install.sh` |
 | `/etc/boost-auto.conf` | Configuration | `install.sh` |
 | `/var/lib/power-profile/` | State directory | Runtime |
 | `/etc/systemd/system/boost-auto.service` | Systemd service | `install.sh` |

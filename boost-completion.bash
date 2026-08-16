@@ -5,7 +5,7 @@ _boost_completions() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="--status --version --help -h"
+    opts="--status --version --force --help -h"
 
     if [[ ${cur} == -* ]] ; then
         mapfile -t COMPREPLY < <(compgen -W "${opts}" -- "${cur}")
@@ -32,7 +32,7 @@ _auto_completions() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     
     # Subcommands
-    opts="web open dashboard close-web setup doctor modes on off mode quiet-hours summer-nights snooze today-off resume stats report logs config help -h --help"
+    opts="web open dashboard close-web setup doctor modes on off mode quiet-hours summer-nights snooze today-off resume stats report logs config fans sensors gpu-limit help -h --help"
 
     # If completed first word
     if [ "$COMP_CWORD" -eq 1 ]; then
@@ -60,6 +60,23 @@ _auto_completions() {
         quiet-hours)
             local q_opts="off"
             mapfile -t COMPREPLY < <(compgen -W "${q_opts}" -- "${cur}")
+            return 0
+            ;;
+        fans)
+            local fan_opts="status on off init calibrate preset test failsafe"
+            mapfile -t COMPREPLY < <(compgen -W "${fan_opts}" -- "${cur}")
+            return 0
+            ;;
+        sensors)
+            mapfile -t COMPREPLY < <(compgen -W "list json missing" -- "${cur}")
+            return 0
+            ;;
+        gpu-limit)
+            mapfile -t COMPREPLY < <(compgen -W "auto" -- "${cur}")
+            return 0
+            ;;
+        preset)
+            mapfile -t COMPREPLY < <(compgen -W "silent balanced aggressive" -- "${cur}")
             return 0
             ;;
         *)

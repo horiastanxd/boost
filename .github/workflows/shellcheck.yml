@@ -20,3 +20,5 @@ jobs:
         run: tests/auto-mode-presets.sh
       - name: Dashboard status tests
         run: python3 tests/boost-web-status.py
+      - name: power-common unit tests
+        run: tests/power-common-unit.sh

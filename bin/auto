@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # auto - friendly power profile daemon
 # Monitors heat + load and suggests profile changes without stealing focus.
-# Version: 1.6.0
+# Version: 1.9.0
 
 set -u
 
@@ -508,11 +508,56 @@ EOF
     check_item "$report_ok" "Latest web report" "Run 'auto report' to generate it."
     check_item "$conflict_ok" "No conflicting power tool" "$conflict_hint"
 
+    # ── Component sensors ────────────────────────────────────────────
+    local missing_sensors=""
+    if [[ -r "$SENSORS_PY" ]] && command -v python3 >/dev/null 2>&1; then
+        missing_sensors=$(python3 "$SENSORS_PY" missing 2>/dev/null || true)
+        if [[ -z "$missing_sensors" ]]; then
+            check_item yes "Component temperature sensors"
+        else
+            check_item no "Component temperature sensors" "$(echo "$missing_sensors" | head -1)"
+            echo "$missing_sensors" | tail -n +2 | sed 's/^/     /'
+        fi
+    else
+        check_item no "Component temperature sensors" "lib/sensors.py is not installed; run install.sh again."
+    fi
+
+    # ── Fan control ──────────────────────────────────────────────────
+    local fan_count=0 fan_conflict="" fan_engine="off"
+    if [[ -r "$FANCONTROL_PY" ]] && command -v python3 >/dev/null 2>&1; then
+        fan_count=$(python3 "$FANCONTROL_PY" discover 2>/dev/null | grep -c '"id"' || true)
+        for svc in fancontrol.service coolercontrold.service thinkfan.service; do
+            systemctl is-active --quiet "$svc" 2>/dev/null && fan_conflict="$svc" && break
+        done
+        [[ -f /etc/boost-fans.json ]] && grep -q '"enabled": true' /etc/boost-fans.json 2>/dev/null && fan_engine="on"
+    fi
+    if (( fan_count > 0 )); then
+        check_item yes "Controllable fans (${fan_count} pwm channels, engine ${fan_engine})"
+    else
+        check_item no "Controllable fans" "No writable pwmN_enable found. Some boards (Dell, many servers) expose fans read-only."
+    fi
+    if [[ -n "$fan_conflict" ]]; then
+        check_item no "No conflicting fan daemon" "${fan_conflict} also controls these fans. Boost refuses to start its engine until it is stopped: sudo systemctl disable --now ${fan_conflict}"
+    else
+        check_item yes "No conflicting fan daemon"
+    fi
+
+    # ── GPU power limit ──────────────────────────────────────────────
+    local gpu_range
+    gpu_range=$(get_gpu_pl_range_w 2>/dev/null || true)
+    if [[ -n "$gpu_range" ]]; then
+        check_item yes "GPU power limit range ($(echo "$gpu_range" | tr ' ' '-') W)"
+    else
+        check_item na "GPU power limit range" "This GPU exposes no adjustable power limit."
+    fi
+
     cat <<'EOF'
 
 Helpful commands:
   auto setup     choose behavior with a guided menu
   auto stats     see current stats
+  auto sensors   list every component temperature
+  auto fans      show fan channels and the curve engine state
   auto report    open the web report
 EOF
 }

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# /usr/lib/systemd/system-sleep/boost
+# Re-applies the hardware limits after resume.
+#
+# Suspend resets RAPL PL1/PL2 and (on NVIDIA) the GPU power limit back to
+# firmware defaults, so a machine that went to sleep in Eco Mode woke up with
+# stock power limits while the dashboard still claimed Eco. Fan channels are
+# re-asserted by the daemon's own tick (it verifies pwmN_enable every pass).
+
+set -u
+
+[[ "${1:-}" == "post" ]] || exit 0
+
+# shellcheck source=/usr/local/lib/power-common.sh disable=SC1091
+source /usr/local/lib/power-common.sh 2>/dev/null || exit 0
+
+if [[ -f "$AUTO_CONF_FILE" ]]; then
+    read_safe_config "$AUTO_CONF_FILE"
+fi
+
+case "$(get_power_profile)" in
+    performance|throughput-performance|latency-performance|accelerator-performance) mode=boost ;;
+    power-saver|powersave|balanced-battery) mode=silent ;;
+    *) mode=powersave ;;
+esac
+
+apply_hardware_limits "$mode" >/dev/null 2>&1 || true
+logger -t power-profile "resume: re-applied ${mode} hardware limits"

@@ -635,8 +635,31 @@ def fan_payload(live: dict[str, Any] | None) -> dict[str, Any]:
             _FAN_CACHE["value"], _FAN_CACHE["time"] = cached, time.time()
     payload = dict(cached)
     status = (live or {}).get("fans") if isinstance((live or {}).get("fans"), dict) else None
-    payload["status"] = status or {"enabled": payload["enabled"], "fans": [], "guard": {}}
+    if status is None:
+        # No daemon snapshot (service stopped, or fan control never enabled):
+        # read the pwm/RPM values straight from sysfs so the cards still show
+        # what the fans are actually doing under BIOS control.
+        status = {"enabled": payload["enabled"], "guard": {}, "fans": _direct_fan_readings()}
+    payload["status"] = status
     return payload
+
+
+def _direct_fan_readings() -> list[dict[str, Any]]:
+    readings = []
+    try:
+        for channel in fancontrol.discover_channels():
+            rpm = channel.read_rpm()
+            readings.append({
+                "id": channel.id,
+                "pwm": fancontrol.raw_to_pct(channel.read_pwm()),
+                "rpm": rpm,
+                "mode": "bios",
+                "controlled": False,
+                "note": "",
+            })
+    except Exception:  # noqa: BLE001
+        return []
+    return readings
 
 
 def _invalidate_fan_cache() -> None:
@@ -1166,6 +1189,145 @@ def status_payload() -> dict[str, Any]:
     }
 
 
+FAN_ACTIONS = {"fan-enable", "fan-config", "fan-preset", "fan-test", "fan-calibrate"}
+
+
+def fan_or_gpu_action(action: str, value: str | None) -> dict[str, Any]:
+    """Fan engine and GPU power limit actions.
+
+    Everything that touches a fan goes through lib/fancontrol.py so the
+    validation rules (monotonic curve, mandatory 80%-by-85C tail, driver
+    clamping) are the same whether the request came from the dashboard, the
+    CLI, or a hand-edited /etc/boost-fans.json.
+    """
+    global _CONFIG_CACHE_MTIME
+
+    if action == "gpu-limit":
+        try:
+            payload = json.loads(value or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {"ok": False, "message": "Invalid JSON for gpu-limit."}
+        profile = str(payload.get("profile", "boost"))
+        if profile not in {"boost", "powersave", "silent"}:
+            return {"ok": False, "message": "GPU limit profile must be boost, powersave or silent."}
+        watts = str(payload.get("watts", "")).strip()
+        key = f"GPU_PL_{profile.upper()}_W"
+        updates, error = validate_config_updates({key: watts})
+        if error:
+            return {"ok": False, "message": error}
+        if not write_config(updates):
+            return {"ok": False, "message": "Failed to write config."}
+        with _CONFIG_LOCK:
+            _CONFIG_CACHE_MTIME = -1
+        if updates[key]:
+            applied = run(["/usr/local/bin/auto", "gpu-limit", updates[key], profile], timeout=15)
+            note = (applied.stdout or applied.stderr).strip().splitlines()
+            return {"ok": True, "message": note[-1] if note else f"GPU limit for {profile}: {updates[key]} W."}
+        return {"ok": True, "message": f"GPU limit for {profile} is back to automatic."}
+
+    if fancontrol is None:
+        return {"ok": False, "message": "Fan control is not installed on this system."}
+
+    if action == "fan-enable":
+        if value not in {"on", "off"}:
+            return {"ok": False, "message": "Fan control must be turned on or off."}
+        result = run(["/usr/local/bin/auto", "fans", "on" if value == "on" else "off"], timeout=20)
+        _invalidate_fan_cache()
+        message = (result.stdout or result.stderr).strip().splitlines()
+        return {
+            "ok": result.returncode == 0,
+            "message": message[-1] if message else "Fan control updated.",
+        }
+
+    if action == "fan-config":
+        try:
+            payload = json.loads(value or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {"ok": False, "message": "Invalid JSON for the fan curve."}
+        if not isinstance(payload, dict):
+            return {"ok": False, "message": "Fan config must be a JSON object."}
+        config = fancontrol.load_config()
+        config.pop("error", None)
+        fan_id = payload.get("fan")
+        if fan_id:
+            fan = config.get("fans", {}).get(str(fan_id))
+            if fan is None:
+                return {"ok": False, "message": f"Unknown fan: {fan_id}"}
+            for field in ("min_pwm", "stop_allowed", "hyst_up", "hyst_down",
+                          "response_delay_s", "step_limit", "enabled", "name"):
+                if field in payload:
+                    fan[field] = payload[field]
+            if isinstance(payload.get("source"), dict):
+                fan["source"] = payload["source"]
+            for key, points in (payload.get("profiles") or {}).items():
+                if key not in fancontrol.PROFILE_KEYS:
+                    return {"ok": False, "message": f"Unknown fan profile: {key}"}
+                fan["profiles"][key] = points
+                fan.setdefault("preset", {})[key] = "custom"
+        elif isinstance(payload.get("fans"), dict):
+            config["fans"] = payload["fans"]
+        else:
+            return {"ok": False, "message": "Nothing to save."}
+        ok, error = fancontrol.save_config(config)
+        _invalidate_fan_cache()
+        return {"ok": ok, "message": "Fan curve saved." if ok else str(error)}
+
+    if action == "fan-preset":
+        try:
+            payload = json.loads(value or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {"ok": False, "message": "Invalid JSON for the fan preset."}
+        fan_id = str(payload.get("fan", ""))
+        preset = str(payload.get("preset", ""))
+        profile = payload.get("profile")
+        if preset not in fancontrol.PRESET_SHAPES:
+            return {"ok": False, "message": "Unknown fan preset."}
+        args = ["/usr/local/bin/auto", "fans", "preset", fan_id, preset]
+        if profile in fancontrol.PROFILE_KEYS:
+            args.append(str(profile))
+        result = run(args, timeout=20)
+        _invalidate_fan_cache()
+        message = (result.stdout or result.stderr).strip().splitlines()
+        return {
+            "ok": result.returncode == 0,
+            "message": message[-1] if message else "Preset applied.",
+        }
+
+    if action == "fan-test":
+        try:
+            payload = json.loads(value or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {"ok": False, "message": "Invalid JSON for the fan test."}
+        fan_id = str(payload.get("fan", ""))
+        pwm = str(payload.get("pwm", "50"))
+        seconds = str(payload.get("seconds", "10"))
+        if not re.fullmatch(r"[0-9]{1,3}", pwm) or not re.fullmatch(r"[0-9]{1,3}", seconds):
+            return {"ok": False, "message": "Test speed and duration must be whole numbers."}
+        result = run(["/usr/local/bin/auto", "fans", "test", fan_id, pwm, seconds], timeout=15)
+        message = (result.stdout or result.stderr).strip().splitlines()
+        return {
+            "ok": result.returncode == 0,
+            "message": message[-1] if message else f"Testing {fan_id} at {pwm}%.",
+        }
+
+    if action == "fan-calibrate":
+        # Minutes of spinning fans: fire and forget, the dashboard polls the
+        # calibration file for the result.
+        try:
+            subprocess.Popen(
+                ["/usr/local/bin/auto", "fans", "calibrate"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            return {"ok": False, "message": f"Could not start calibration: {exc}"}
+        return {
+            "ok": True,
+            "message": "Calibration started. Fans will spin up and down for a minute or two.",
+        }
+
+    return {"ok": False, "message": "Unknown action."}
+
+
 def run_action(action: str, value: str | None = None) -> dict[str, Any]:
     global _CONFIG_CACHE_MTIME
     global _SNOOZE_WEB_CACHE
@@ -1228,6 +1390,11 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
         return {"ok": False, "message": "Unknown action."}
 
     if result.returncode == 0:
+        if action == "silent" and "queued" in result.stdout:
+            # The thermal interlock held the request back; show its own words
+            # instead of a misleading "Silent applied successfully".
+            queued = [line for line in result.stdout.splitlines() if "queued" in line or "Not applying" in line]
+            return {"ok": True, "queued": True, "message": " ".join(queued[:2]).replace("[SILENT] ", "")}
         if action in ("boost", "powersave", "silent", "restore"):
             with _SYS_STATE_LOCK:
                 _SYS_STATE_CACHE.clear()
@@ -1516,6 +1683,71 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
 .skeleton{background:linear-gradient(90deg,rgba(255,255,255,0.03) 0%,rgba(255,255,255,0.06) 50%,rgba(255,255,255,0.03) 100%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:6px}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 
+/* Simple / Advanced mode switch */
+.view-switch{display:inline-flex;background:rgba(5,9,18,0.6);border:1px solid var(--panel-border);border-radius:999px;padding:4px;gap:4px}
+.view-switch button{border:0;background:transparent;color:var(--text-muted);padding:6px 16px;border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;transition:all .2s ease}
+.view-switch button.on{background:rgba(14,165,233,0.16);color:var(--text-main);box-shadow:0 0 12px var(--accent-glow)}
+body[data-view="simple"] .advanced-only{display:none !important}
+
+/* Component temperature cards */
+.temp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px}
+.temp-card{background:var(--bg-surface);border:1px solid var(--panel-border);border-radius:14px;padding:14px 16px;position:relative;overflow:hidden}
+.temp-card .tc-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.temp-card .tc-name{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);font-weight:700}
+.temp-card .tc-val{font-family:var(--font-title);font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
+.temp-card .tc-val small{font-size:13px;color:var(--text-muted);font-weight:500}
+.temp-card .tc-sub{font-size:11px;color:var(--text-muted);margin-top:2px}
+.temp-card .tc-spark{width:100%;height:34px;display:block;margin-top:6px}
+.temp-card.warn{border-color:rgba(245,158,11,0.45)}
+.temp-card.critical{border-color:rgba(239,68,68,0.55);box-shadow:0 0 24px rgba(239,68,68,0.15)}
+.temp-card details{margin-top:8px}
+.temp-card summary{font-size:11px;color:var(--text-muted);cursor:pointer;list-style:none}
+.temp-card summary::-webkit-details-marker{display:none}
+.temp-card .tc-list{margin-top:6px;display:flex;flex-direction:column;gap:3px;max-height:170px;overflow:auto}
+.temp-card .tc-row{display:flex;justify-content:space-between;font-size:11px;color:var(--text-secondary);gap:10px}
+.temp-card .tc-row span:last-child{font-variant-numeric:tabular-nums;color:var(--text-main)}
+
+/* Badges & banners */
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:3px 8px;border-radius:999px;border:1px solid transparent}
+.badge.hold{background:rgba(245,158,11,0.14);color:#fbbf24;border-color:rgba(245,158,11,0.35)}
+.badge.ok{background:rgba(16,185,129,0.14);color:#34d399;border-color:rgba(16,185,129,0.3)}
+.badge.info{background:rgba(14,165,233,0.14);color:#38bdf8;border-color:rgba(14,165,233,0.3)}
+.badge.alert{background:rgba(239,68,68,0.15);color:#f87171;border-color:rgba(239,68,68,0.35)}
+.banner{display:flex;gap:10px;align-items:flex-start;border-radius:12px;padding:12px 16px;font-size:13px;margin-bottom:16px;line-height:1.5}
+.banner.warn{background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.28);color:#fcd34d}
+.banner.info{background:rgba(14,165,233,0.07);border:1px solid rgba(14,165,233,0.25);color:var(--text-secondary)}
+/* the display rules above would otherwise beat the UA's [hidden] */
+[hidden]{display:none !important}
+.btn.blocked{opacity:.72;border-color:rgba(245,158,11,0.5) !important}
+
+/* Fan cards & curve editor */
+.fan-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.fan-card{background:rgba(5,9,18,0.4);border:1px solid var(--panel-border);border-radius:14px;padding:16px}
+.fan-card.off{opacity:.6}
+.fan-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.fan-name{font-weight:650;font-size:14px}
+.fan-metrics{display:flex;gap:16px;margin:8px 0;font-size:12px;color:var(--text-muted)}
+.fan-metrics strong{color:var(--text-main);font-size:15px;font-variant-numeric:tabular-nums}
+.fan-bar{height:6px;border-radius:3px;background:rgba(255,255,255,0.06);overflow:hidden;margin:6px 0 10px}
+.fan-bar i{display:block;height:100%;background:linear-gradient(90deg,#0ea5e9,#8b5cf6);transition:width .5s ease}
+.preset-row{display:flex;gap:6px;flex-wrap:wrap}
+.preset-row .btn{padding:6px 12px;font-size:12px}
+.curve-editor{margin-top:12px;border-top:1px solid rgba(255,255,255,0.05);padding-top:12px}
+.curve-svg{width:100%;height:190px;display:block;background:rgba(5,9,18,0.5);border-radius:10px;touch-action:none;cursor:crosshair}
+.curve-svg circle.pt{cursor:grab}
+.curve-svg circle.pt:active{cursor:grabbing}
+.curve-tabs{display:flex;gap:6px;margin-bottom:8px}
+.curve-tabs button{font-size:11px;padding:4px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);background:transparent;color:var(--text-muted);cursor:pointer}
+.curve-tabs button.on{background:rgba(14,165,233,0.14);color:var(--text-main);border-color:rgba(14,165,233,0.4)}
+.curve-fields{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+.curve-fields label{display:flex;flex-direction:column;gap:3px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);font-weight:600}
+.curve-fields input{width:74px;background:rgba(5,9,18,0.8);color:var(--text-main);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:6px 8px;text-align:center;font-variant-numeric:tabular-nums}
+
+/* Sliders */
+.slider-row{display:flex;align-items:center;gap:12px;margin-top:8px}
+input[type=range]{flex:1;accent-color:var(--accent);height:4px}
+.slider-value{min-width:74px;text-align:right;font-variant-numeric:tabular-nums;font-weight:650}
+
 /* Scrollbar */
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -1532,10 +1764,16 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
     <h1>Boost Control Panel</h1>
     <div class="tagline">Linux power profile manager • Intel / AMD + NVIDIA</div>
   </div>
-  <div class="status-badge">
-    <div>
-      <div style="display:flex;align-items:center;gap:8px"><span id="serviceDot" class="status-indicator active"></span><span class="status-text" id="serviceText">Initializing...</span></div>
-      <div class="status-sub" id="updatedText">Connecting to telemetry...</div>
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <div class="view-switch" role="group" aria-label="Dashboard detail level">
+      <button id="viewSimple" class="on" type="button">Simple</button>
+      <button id="viewAdvanced" type="button">Advanced</button>
+    </div>
+    <div class="status-badge">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px"><span id="serviceDot" class="status-indicator active"></span><span class="status-text" id="serviceText">Initializing...</span></div>
+        <div class="status-sub" id="updatedText">Connecting to telemetry...</div>
+      </div>
     </div>
   </div>
 </div>
@@ -1590,10 +1828,18 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
   </div>
 </section>
 
+<section class="card" style="margin-bottom:24px;animation-delay:0.22s">
+  <div class="section-title">🌡️ Component Temperatures <span style="font-size:12px;color:var(--text-muted);font-weight:400;font-family:var(--font-body)">(every sensor the kernel exposes)</span></div>
+  <div class="temp-grid" id="tempGrid"><div class="skeleton" style="height:96px"></div></div>
+  <p style="font-size:11px;color:var(--text-muted);margin-top:10px" id="tempHint"></p>
+</section>
+
 <div class="split">
   <div style="display:flex;flex-direction:column;gap:24px">
     <section class="card" style="animation-delay:0.25s">
       <div class="section-title">⚡ Power Profiles & Auto Modes</div>
+
+      <div class="banner warn" id="interlockBanner" hidden><span>🛡️</span><span id="interlockText"></span></div>
 
       <div class="control-group">
         <div class="control-label">Manual Profile Override</div>
@@ -1696,7 +1942,48 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
   </aside>
 </div>
 
-<section class="card" style="margin-top:24px;animation-delay:0.45s">
+<section class="card" style="margin-top:24px;animation-delay:0.42s" id="fanSection">
+  <div class="section-title">🌀 Fan Control
+    <span class="badge info" id="fanEngineBadge" style="margin-left:6px">off</span>
+  </div>
+  <div class="banner info" id="fanIntro">
+    Pick a preset per fan and Boost takes it from there. Curves are requests, not orders:
+    if the CPU, GPU or an NVMe drive gets hot, the fans speed up on their own and this
+    panel says why.
+  </div>
+  <div class="banner warn" id="fanGuardBanner" hidden><span>🛡️</span><span id="fanGuardText"></span></div>
+  <div class="banner warn" id="fanConflictBanner" hidden><span>⚠️</span><span id="fanConflictText"></span></div>
+  <div class="actions" style="margin-bottom:16px">
+    <button class="btn good-save" id="fanEnableBtn" data-action="fan-enable" data-value="on">▶ Let Boost control the fans</button>
+    <button class="btn" id="fanDisableBtn" data-action="fan-enable" data-value="off">⏹ Hand fans back to BIOS</button>
+    <button class="btn advanced-only" data-action="fan-calibrate" title="Measures the real minimum speed and RPM range of every fan">🧪 Calibrate fans</button>
+  </div>
+  <div class="fan-grid" id="fanGrid"></div>
+</section>
+
+<section class="card advanced-only" style="margin-top:24px;animation-delay:0.44s" id="gpuLimitSection" hidden>
+  <div class="section-title">🎮 GPU Power Limit</div>
+  <div style="color:var(--text-muted);font-size:12px;margin-bottom:10px">
+    Watts, clamped to the range the driver itself reports (<span id="gpuRangeText">—</span>).
+    Set one per profile; empty means Boost scales it for you. Raising the limit is refused while the GPU is at 85 °C or hotter.
+  </div>
+  <div class="curve-tabs" id="gpuProfileTabs">
+    <button data-gpu-profile="boost" class="on">Performance</button>
+    <button data-gpu-profile="powersave">Balanced</button>
+    <button data-gpu-profile="silent">Eco</button>
+  </div>
+  <div class="slider-row">
+    <input type="range" id="gpuLimitSlider" min="0" max="100" value="0">
+    <span class="slider-value" id="gpuLimitValue">auto</span>
+  </div>
+  <div class="actions" style="margin-top:12px">
+    <button class="btn active-preset" id="gpuLimitSave">💾 Apply limit</button>
+    <button class="btn" id="gpuLimitAuto">↺ Back to automatic</button>
+    <span style="font-size:11px;color:var(--text-muted);align-self:center">Now: <strong id="gpuLimitNow">—</strong></span>
+  </div>
+</section>
+
+<section class="card advanced-only" style="margin-top:24px;animation-delay:0.45s">
   <div class="section-title">🧠 Auto Switch Decision Engine</div>
   <p class="reason" id="decisionReason">—</p>
   <div class="stats-details" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));border-top:none;padding-top:0">
@@ -1709,7 +1996,7 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
   </div>
 </section>
 
-<section style="margin-top:32px">
+<section class="advanced-only" style="margin-top:32px">
   <h2 style="font-family:var(--font-title);font-size:22px;font-weight:700;margin-bottom:12px">Preset Threshold Reference</h2>
   <div class="table-wrap"><table>
     <thead><tr><th>Mode</th><th>Warm</th><th>Critical</th><th>Boost Below</th><th>Busy Trigger</th><th>Idle Trigger</th><th>Cooldown</th></tr></thead>
@@ -1717,7 +2004,7 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
   </table></div>
 </section>
 
-<section style="margin-top:32px">
+<section class="advanced-only" style="margin-top:32px">
   <h2 style="font-family:var(--font-title);font-size:22px;font-weight:700;margin-bottom:12px">Sensor History Log</h2>
   <div style="margin-bottom:10px;padding:8px 12px;background:rgba(13,24,45,0.4);border:1px solid rgba(255,255,255,0.05);border-radius:8px" id="profileSwitchLog"></div>
   <div class="table-wrap"><table>
@@ -1726,7 +2013,7 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
   </table></div>
 </section>
 
-<section style="margin-top:32px">
+<section class="advanced-only" style="margin-top:32px">
   <h2 style="font-family:var(--font-title);font-size:22px;font-weight:700;margin-bottom:12px">⚙️ Configuration</h2>
   <div class="card" style="padding:20px">
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px" id="configGrid">
@@ -1857,7 +2144,7 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
 </section>
 
 <footer class="footer">
-  Boost Power Manager v1.6.0 — Keyboard: <kbd>1</kbd> Boost <kbd>2</kbd> Powersave <kbd>3</kbd> Silent <kbd>4</kbd> Restore <kbd>R</kbd> Refresh
+  Boost Power Manager v1.9.0 — Keyboard: <kbd>1</kbd> Boost <kbd>2</kbd> Powersave <kbd>3</kbd> Silent <kbd>4</kbd> Restore <kbd>R</kbd> Refresh
 </footer>
 </main>
 
@@ -1987,7 +2274,414 @@ function drawChart(history) {
   `;
 }
 
+// ── Simple / Advanced view ────────────────────────────────────────────
+function applyView(view) {
+  document.body.dataset.view = view;
+  $('viewSimple').classList.toggle('on', view === 'simple');
+  $('viewAdvanced').classList.toggle('on', view === 'advanced');
+  try { localStorage.setItem('boostView', view); } catch (e) { /* private mode */ }
+}
+$('viewSimple').addEventListener('click', () => applyView('simple'));
+$('viewAdvanced').addEventListener('click', () => applyView('advanced'));
+try { applyView(localStorage.getItem('boostView') === 'advanced' ? 'advanced' : 'simple'); }
+catch (e) { applyView('simple'); }
+
+// ── Component temperatures ────────────────────────────────────────────
+const SPARK_COLUMN = {cpu: 'cpu_temp', gpu: 'gpu_temp', nvme: 'nvme_temp', ram: 'ram_temp', vrm: 'vrm_temp', board: 'board_temp'};
+const STATE_COLOR = {ok: '#10b981', warn: '#f59e0b', critical: '#ef4444'};
+
+function sparkline(history, column, color) {
+  if (!history || history.length < 2) return '';
+  const values = history.map(r => parseFloat(r[column])).filter(v => !isNaN(v) && v > 0);
+  if (values.length < 2) return '';
+  const min = Math.min(...values), max = Math.max(...values);
+  const span = (max - min) || 1;
+  const pts = values.map((v, i) => `${(i / (values.length - 1)) * 100},${28 - ((v - min) / span) * 24}`);
+  return `<svg class="tc-spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
+            <polyline points="${pts.join(' ')}" fill="none" stroke="${color}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+          </svg>`;
+}
+
+function renderSensors(data) {
+  const grid = $('tempGrid');
+  const groups = data.sensors || [];
+  if (!groups.length) {
+    grid.innerHTML = '<div style="color:var(--text-muted);font-size:13px">No hwmon sensors found. Run <code>auto doctor</code> for the missing kernel modules.</div>';
+    return;
+  }
+  grid.innerHTML = groups.map(g => {
+    const color = STATE_COLOR[g.state] || STATE_COLOR.ok;
+    const column = SPARK_COLUMN[g.category];
+    const spark = column ? sparkline(data.history, column, color) : '';
+    const rows = g.sensors.map(s =>
+      `<div class="tc-row"><span>${esc(s.label)}</span><span style="color:${STATE_COLOR[s.state] || ''}">${esc(s.temp)}°C</span></div>`).join('');
+    const detail = g.sensors.length > 1
+      ? `<details${g.bulk ? '' : ''}><summary>${g.sensors.length} sensors ▾</summary><div class="tc-list">${rows}</div></details>` : '';
+    return `<div class="temp-card ${g.state === 'ok' ? '' : esc(g.state)}">
+      <div class="tc-head"><span class="tc-name">${esc(g.label)}</span>
+        <span class="tc-val" style="color:${color}">${esc(g.max)}<small>°C</small></span></div>
+      <div class="tc-sub">warn ${esc(g.warn)}°C · critical ${esc(g.crit)}°C</div>
+      ${spark}${detail}
+    </div>`;
+  }).join('');
+  const hottest = groups.reduce((a, b) => (b.state === 'critical' ? b : a), null);
+  $('tempHint').textContent = hottest
+    ? `${hottest.label} is at ${hottest.max}°C, past its ${hottest.crit}°C critical mark.`
+    : '';
+}
+
+// ── Silent/Eco interlock ──────────────────────────────────────────────
+function renderInterlock(data) {
+  const lock = data.interlock || {};
+  const banner = $('interlockBanner');
+  const btn = $('btn-silent');
+  if (lock.silentBlocked || lock.pending) {
+    banner.hidden = false;
+    $('interlockText').textContent = lock.hint || '';
+    if (btn) {
+      btn.classList.add('blocked');
+      btn.title = lock.hint || '';
+    }
+  } else {
+    banner.hidden = true;
+    if (btn) { btn.classList.remove('blocked'); btn.title = 'Strict thermal and noise constraints, best for night time'; }
+  }
+}
+
+// ── Fan control ───────────────────────────────────────────────────────
+const _fanEditor = {};      // fanId -> {profile, points, dirty}
+let _fanCardsKey = '';
+const fanSlug = id => 'f_' + id.replace(/[^a-zA-Z0-9]/g, '_');
+const PROFILE_LABEL = {boost: 'Performance', balanced: 'Balanced', silent: 'Eco'};
+const MODE_BADGE = {
+  curve: ['ok', 'curve'], guard: ['hold', 'cooling'], test: ['info', 'test'],
+  backoff: ['alert', 'conflict'], paused: ['info', 'paused'], bios: ['info', 'bios'],
+};
+
+function guardMin(temp, thresholds) {
+  const hot = Number(thresholds.tempHot || 78), crit = Number(thresholds.tempCritical || 85);
+  if (temp >= crit) return 100;
+  if (temp >= hot) return 85;
+  if (temp >= hot - 6) return 65;
+  return 0;
+}
+
+function renderFans(data) {
+  const fans = data.fans || {};
+  const section = $('fanSection');
+  if (!fans.available) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  const status = fans.status || {};
+  const badge = $('fanEngineBadge');
+  badge.textContent = fans.enabled ? 'controlling fans' : 'off (BIOS controls fans)';
+  badge.className = 'badge ' + (fans.enabled ? 'ok' : 'info');
+  $('fanEnableBtn').classList.toggle('active-preset', !!fans.enabled);
+  $('fanDisableBtn').classList.toggle('active-preset', !fans.enabled);
+
+  const guard = status.guard || {};
+  $('fanGuardBanner').hidden = !(guard.active && guard.reason);
+  $('fanGuardText').textContent = guard.reason
+    ? `Fans raised to at least ${guard.floor}% because ${guard.reason}. They go back to your curve on their own.`
+    : '';
+  const conflict = status.conflict || fans.configError;
+  $('fanConflictBanner').hidden = !conflict;
+  $('fanConflictText').textContent = conflict || '';
+
+  const ids = Object.keys(fans.config || {});
+  const key = ids.join('|');
+  if (key !== _fanCardsKey) {
+    _fanCardsKey = key;
+    $('fanGrid').innerHTML = ids.map(id => fanCardHtml(id, fans)).join('');
+    ids.forEach(id => wireFanCard(id, data));
+  }
+
+  const live = {};
+  (status.fans || []).forEach(f => { live[f.id] = f; });
+  ids.forEach(id => {
+    const slug = fanSlug(id), f = live[id] || {};
+    const set = (suffix, text) => { const el = $(`${suffix}${slug}`); if (el) el.textContent = text; };
+    set('fanpwm', f.pwm ?? '—');
+    set('fanrpm', f.rpm === null || f.rpm === undefined ? '—' : f.rpm);
+    set('fansrc', f.sourceTemp ?? '—');
+    const bar = $(`fanbar${slug}`);
+    if (bar) bar.style.width = `${Math.max(0, Math.min(100, f.pwm || 0))}%`;
+    const modeBadge = $(`fanmode${slug}`);
+    if (modeBadge) {
+      const [cls, label] = MODE_BADGE[f.mode] || MODE_BADGE.bios;
+      modeBadge.className = `badge ${cls}`;
+      modeBadge.textContent = f.readOnly ? 'read-only' : label;
+    }
+    const note = $(`fannote${slug}`);
+    if (note) note.textContent = f.note || '';
+    drawCurve(id, data);
+  });
+}
+
+function fanCardHtml(id, fans) {
+  const slug = fanSlug(id);
+  const cfg = fans.config[id] || {};
+  const cal = (fans.calibration || {})[id] || {};
+  const presets = (fans.presets || []).map(p =>
+    `<button class="btn" data-fan-preset="${esc(id)}" data-preset="${esc(p)}">${esc(p[0].toUpperCase() + p.slice(1))}</button>`).join('');
+  const tabs = (fans.profileKeys || ['boost', 'balanced', 'silent']).map((k, i) =>
+    `<button data-fan-tab="${esc(id)}" data-profile="${esc(k)}" class="${i === 1 ? 'on' : ''}">${esc(PROFILE_LABEL[k] || k)}</button>`).join('');
+  return `<div class="fan-card" id="fan${slug}">
+    <div class="fan-head"><span class="fan-name">${esc(cfg.name || id)}</span><span class="badge info" id="fanmode${slug}">bios</span></div>
+    <div style="font-size:11px;color:var(--text-muted)">${esc(id)}${cal.max_rpm ? ` · measured max ${esc(cal.max_rpm)} RPM` : ''}</div>
+    <div class="fan-metrics">
+      <div>Speed <strong id="fanpwm${slug}">—</strong>%</div>
+      <div>RPM <strong id="fanrpm${slug}">—</strong></div>
+      <div>Source <strong id="fansrc${slug}">—</strong>°C</div>
+    </div>
+    <div class="fan-bar"><i id="fanbar${slug}" style="width:0%"></i></div>
+    <div class="preset-row">${presets}
+      <button class="btn" data-fan-test="${esc(id)}" title="Runs this fan for 10 s at the speed your curve asks for at 75 °C">Test 10s</button>
+    </div>
+    <div style="font-size:11px;color:var(--color-warn);margin-top:8px" id="fannote${slug}"></div>
+    <div class="curve-editor advanced-only">
+      <div class="curve-tabs">${tabs}</div>
+      <svg class="curve-svg" id="curve${slug}" viewBox="0 0 320 190" data-fan="${esc(id)}"></svg>
+      <div class="curve-fields">
+        <label>Min %<input type="number" min="0" max="100" id="fanmin${slug}" value="${esc(cfg.min_pwm ?? 20)}"></label>
+        <label>Hyst up<input type="number" min="0" max="20" id="fanhu${slug}" value="${esc(cfg.hyst_up ?? 2)}"></label>
+        <label>Hyst down<input type="number" min="0" max="20" id="fanhd${slug}" value="${esc(cfg.hyst_down ?? 4)}"></label>
+        <label>Delay s<input type="number" min="0" max="120" id="fandl${slug}" value="${esc(cfg.response_delay_s ?? 6)}"></label>
+        <label>Step %<input type="number" min="1" max="100" id="fanst${slug}" value="${esc(cfg.step_limit ?? 12)}"></label>
+      </div>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn active-preset" data-fan-save="${esc(id)}">💾 Save curve</button>
+        <button class="btn" data-fan-reset="${esc(id)}">↺ Reload</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function wireFanCard(id, data) {
+  const fans = data.fans || {};
+  const cfg = (fans.config || {})[id] || {};
+  _fanEditor[id] = {
+    profile: 'balanced',
+    points: JSON.parse(JSON.stringify((cfg.profiles || {}).balanced || [])),
+    minPwm: cfg.min_pwm ?? 20,
+  };
+  const svg = $(`curve${fanSlug(id)}`);
+  if (svg) attachCurveDrag(svg, id);
+}
+
+function curveGeometry() {
+  return {x0: 34, y0: 14, w: 272, h: 148, tMin: 20, tMax: 100};
+}
+
+function curveXY(temp, pwm) {
+  const g = curveGeometry();
+  return [
+    g.x0 + ((temp - g.tMin) / (g.tMax - g.tMin)) * g.w,
+    g.y0 + g.h - (pwm / 100) * g.h,
+  ];
+}
+
+function curveInverse(px, py) {
+  const g = curveGeometry();
+  return [
+    Math.round(g.tMin + ((px - g.x0) / g.w) * (g.tMax - g.tMin)),
+    Math.round(((g.y0 + g.h - py) / g.h) * 100),
+  ];
+}
+
+function drawCurve(id, data) {
+  const svg = $(`curve${fanSlug(id)}`);
+  const ed = _fanEditor[id];
+  if (!svg || !ed) return;
+  if (svg.dataset.dragging === '1') return;   // never redraw under the user's finger
+  const g = curveGeometry();
+  const thresholds = (data.auto && data.auto.thresholds) || {};
+  const live = ((data.fans.status || {}).fans || []).find(f => f.id === id) || {};
+
+  let grid = '';
+  for (let p = 0; p <= 100; p += 25) {
+    const y = g.y0 + g.h - (p / 100) * g.h;
+    grid += `<line x1="${g.x0}" y1="${y}" x2="${g.x0 + g.w}" y2="${y}" stroke="rgba(255,255,255,0.05)"/>
+             <text x="${g.x0 - 6}" y="${y + 3}" fill="#475569" font-size="8" text-anchor="end">${p}</text>`;
+  }
+  for (let t = 20; t <= 100; t += 20) {
+    const x = g.x0 + ((t - 20) / 80) * g.w;
+    grid += `<line x1="${x}" y1="${g.y0}" x2="${x}" y2="${g.y0 + g.h}" stroke="rgba(255,255,255,0.04)"/>
+             <text x="${x}" y="${g.y0 + g.h + 12}" fill="#475569" font-size="8" text-anchor="middle">${t}°</text>`;
+  }
+
+  // Shaded "the engine will override you here" envelope.
+  let envelope = '';
+  const steps = [];
+  for (let t = 20; t <= 100; t += 2) steps.push([t, Math.max(guardMin(t, thresholds), ed.minPwm)]);
+  const envPts = steps.map(([t, p]) => curveXY(t, p).join(',')).join(' ');
+  envelope = `<polyline points="${envPts}" fill="none" stroke="#ef4444" stroke-width="1" stroke-dasharray="4,3" opacity="0.55"/>
+              <polygon points="${curveXY(20, 0).join(',')} ${envPts} ${curveXY(100, 0).join(',')}" fill="rgba(239,68,68,0.07)"/>`;
+
+  const pts = ed.points.map(([t, p]) => curveXY(t, p));
+  const line = `<polyline points="${pts.map(p => p.join(',')).join(' ')}" fill="none" stroke="#0ea5e9" stroke-width="2"/>`;
+  const dots = ed.points.map(([t, p], i) => {
+    const [x, y] = curveXY(t, p);
+    return `<circle class="pt" data-i="${i}" cx="${x}" cy="${y}" r="6" fill="#0ea5e9" stroke="#050912" stroke-width="2"><title>${t}°C → ${p}%</title></circle>`;
+  }).join('');
+
+  let marker = '';
+  if (live.sourceTemp) {
+    const [mx] = curveXY(Math.max(20, Math.min(100, live.sourceTemp)), 0);
+    marker = `<line x1="${mx}" y1="${g.y0}" x2="${mx}" y2="${g.y0 + g.h}" stroke="#f59e0b" stroke-width="1.5" opacity="0.8"/>
+              <text x="${mx + 3}" y="${g.y0 + 9}" fill="#f59e0b" font-size="8">now ${live.sourceTemp}°</text>`;
+  }
+  svg.innerHTML = `${grid}${envelope}${line}${dots}${marker}
+    <text x="${g.x0}" y="${g.y0 + g.h + 24}" fill="#64748b" font-size="8">Red line = the minimum this fan will run at anyway</text>`;
+}
+
+function attachCurveDrag(svg, id) {
+  let active = null;
+  const point = evt => {
+    const rect = svg.getBoundingClientRect();
+    const vb = svg.viewBox.baseVal;
+    return [
+      ((evt.clientX - rect.left) / rect.width) * vb.width,
+      ((evt.clientY - rect.top) / rect.height) * vb.height,
+    ];
+  };
+  svg.addEventListener('pointerdown', evt => {
+    const target = evt.target.closest('circle.pt');
+    if (!target) return;
+    active = Number(target.dataset.i);
+    svg.dataset.dragging = '1';
+    svg.setPointerCapture(evt.pointerId);
+  });
+  svg.addEventListener('pointermove', evt => {
+    if (active === null) return;
+    const ed = _fanEditor[id];
+    const [px, py] = point(evt);
+    let [temp, pwm] = curveInverse(px, py);
+    const prev = ed.points[active - 1], next = ed.points[active + 1];
+    temp = Math.max(20, Math.min(100, temp));
+    if (prev) temp = Math.max(temp, prev[0] + 1);
+    if (next) temp = Math.min(temp, next[0] - 1);
+    pwm = Math.max(0, Math.min(100, pwm));
+    if (prev) pwm = Math.max(pwm, prev[1]);
+    if (next) pwm = Math.min(pwm, next[1]);
+    ed.points[active] = [temp, pwm];
+    svg.dataset.dragging = '0';
+    drawCurve(id, _lastData || {auto: {}, fans: {status: {}}});
+    svg.dataset.dragging = '1';
+  });
+  const release = evt => {
+    if (active === null) return;
+    active = null;
+    svg.dataset.dragging = '0';
+    if (evt.pointerId !== undefined && svg.hasPointerCapture?.(evt.pointerId)) svg.releasePointerCapture(evt.pointerId);
+  };
+  svg.addEventListener('pointerup', release);
+  svg.addEventListener('pointercancel', release);
+  svg.addEventListener('pointerleave', release);
+}
+
+document.addEventListener('click', evt => {
+  const tab = evt.target.closest('[data-fan-tab]');
+  if (tab) {
+    const id = tab.dataset.fanTab, profile = tab.dataset.profile;
+    const cfg = ((_lastData?.fans || {}).config || {})[id] || {};
+    _fanEditor[id] = {
+      profile,
+      points: JSON.parse(JSON.stringify((cfg.profiles || {})[profile] || [])),
+      minPwm: cfg.min_pwm ?? 20,
+    };
+    tab.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+    tab.classList.add('on');
+    drawCurve(id, _lastData);
+    return;
+  }
+  const preset = evt.target.closest('[data-fan-preset]');
+  if (preset) {
+    sendAction('fan-preset', JSON.stringify({fan: preset.dataset.fanPreset, preset: preset.dataset.preset}));
+    _fanCardsKey = '';   // force a rebuild so the editor picks up the new curve
+    return;
+  }
+  const test = evt.target.closest('[data-fan-test]');
+  if (test) {
+    const id = test.dataset.fanTest;
+    const ed = _fanEditor[id];
+    const pwm = ed ? curveValueAt(ed.points, 75) : 60;
+    sendAction('fan-test', JSON.stringify({fan: id, pwm, seconds: 10}));
+    return;
+  }
+  const save = evt.target.closest('[data-fan-save]');
+  if (save) {
+    const id = save.dataset.fanSave, slug = fanSlug(id), ed = _fanEditor[id];
+    if (!ed) return;
+    sendAction('fan-config', JSON.stringify({
+      fan: id,
+      profiles: {[ed.profile]: ed.points},
+      min_pwm: Number($(`fanmin${slug}`).value),
+      hyst_up: Number($(`fanhu${slug}`).value),
+      hyst_down: Number($(`fanhd${slug}`).value),
+      response_delay_s: Number($(`fandl${slug}`).value),
+      step_limit: Number($(`fanst${slug}`).value),
+    }));
+    _fanCardsKey = '';
+    return;
+  }
+  const reset = evt.target.closest('[data-fan-reset]');
+  if (reset) { _fanCardsKey = ''; refresh(); }
+});
+
+function curveValueAt(points, temp) {
+  if (!points || !points.length) return 60;
+  if (temp <= points[0][0]) return points[0][1];
+  if (temp >= points[points.length - 1][0]) return points[points.length - 1][1];
+  for (let i = 0; i < points.length - 1; i++) {
+    const [t0, p0] = points[i], [t1, p1] = points[i + 1];
+    if (temp >= t0 && temp <= t1) return Math.round(p0 + (p1 - p0) * (temp - t0) / (t1 - t0));
+  }
+  return points[points.length - 1][1];
+}
+
+// ── GPU power limit ───────────────────────────────────────────────────
+let _gpuProfile = 'boost';
+
+function renderGpuLimit(data) {
+  const gl = data.gpuLimit || {};
+  const section = $('gpuLimitSection');
+  section.hidden = !gl.supported;
+  if (!gl.supported) return;
+  $('gpuRangeText').textContent = `${gl.minW}–${gl.maxW} W`;
+  const slider = $('gpuLimitSlider');
+  slider.min = gl.minW;
+  slider.max = gl.maxW;
+  const requested = (gl.requested || {})[_gpuProfile] || 0;
+  if (document.activeElement !== slider) slider.value = requested || gl.maxW;
+  $('gpuLimitValue').textContent = requested ? `${requested} W` : `auto (${slider.value} W)`;
+  $('gpuLimitNow').textContent = `${data.gpu.limit} W applied · ${data.gpu.power} W draw · ${data.gpu.temp} °C`;
+}
+
+$('gpuLimitSlider')?.addEventListener('input', () => {
+  $('gpuLimitValue').textContent = `${$('gpuLimitSlider').value} W`;
+});
+$('gpuProfileTabs')?.addEventListener('click', evt => {
+  const btn = evt.target.closest('[data-gpu-profile]');
+  if (!btn) return;
+  _gpuProfile = btn.dataset.gpuProfile;
+  $('gpuProfileTabs').querySelectorAll('button').forEach(b => b.classList.remove('on'));
+  btn.classList.add('on');
+  if (_lastData) renderGpuLimit(_lastData);
+});
+$('gpuLimitSave')?.addEventListener('click', () => {
+  sendAction('gpu-limit', JSON.stringify({profile: _gpuProfile, watts: $('gpuLimitSlider').value}));
+});
+$('gpuLimitAuto')?.addEventListener('click', () => {
+  sendAction('gpu-limit', JSON.stringify({profile: _gpuProfile, watts: ''}));
+});
+
+let _lastData = null;
+
 function render(data) {
+  _lastData = data;
   // Connection status
   $('connBar').classList.remove('show');
   _failCount = 0;
@@ -2136,6 +2830,12 @@ function render(data) {
     $('summer-nights-off').classList.add('active-preset');
   }
 
+  // Component temps, fan engine, GPU limit, interlock
+  renderSensors(data);
+  renderInterlock(data);
+  renderFans(data);
+  renderGpuLimit(data);
+
   // Modes table
   const mChanged = !_prevData || _prevData.auto.mode !== data.auto.mode || JSON.stringify(_prevData.auto.modes) !== JSON.stringify(data.auto.modes);
   if (mChanged) {
@@ -2275,11 +2975,41 @@ document.addEventListener('keydown', e => {
   else if (key === 'r') refresh();
 });
 
-// Start polling
+// ── Live updates ──────────────────────────────────────────────────────
+// The server pushes a payload whenever the daemon's snapshot changes, so an
+// idle machine costs no periodic wake-ups in either the browser or the
+// server. Polling stays as the fallback for browsers without EventSource
+// and for a stream that drops.
+let _stream = null;
+let _pollTimer = null;
+
+function startPolling() {
+  if (_pollTimer) return;
+  _pollTimer = setInterval(() => { if (!document.hidden) refresh(); }, 3000);
+}
+
+function stopPolling() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+}
+
+function startStream() {
+  if (!window.EventSource) { startPolling(); return; }
+  _stream = new EventSource('/api/stream');
+  _stream.onopen = () => { stopPolling(); };
+  _stream.onmessage = event => {
+    try { render(JSON.parse(event.data)); } catch (e) { /* keep the stream alive */ }
+  };
+  _stream.onerror = () => {
+    _stream.close();
+    _stream = null;
+    startPolling();
+    setTimeout(() => { if (!_stream) startStream(); }, 15000);
+  };
+}
+
 refresh();
-setInterval(() => {
-  if (!document.hidden) refresh();
-}, 2000);
+startStream();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 </script>
 </body>
 </html>"""
@@ -2315,6 +3045,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(status_payload())
             elif parsed.path == "/api/config":
                 self.send_json(config_payload())
+            elif parsed.path == "/api/sensors":
+                live = read_live_snapshot()
+                self.send_json({"ok": True, "groups": sensor_groups(live)})
+            elif parsed.path == "/api/fans":
+                self.send_json({"ok": True, **fan_payload(read_live_snapshot())})
+            elif parsed.path == "/api/stream":
+                self.stream_status()
             elif parsed.path == "/report":
                 if LATEST_REPORT.exists():
                     self.send_bytes(LATEST_REPORT.read_bytes(), "text/html; charset=utf-8")
@@ -2329,6 +3066,43 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "message": html.escape(str(exc))}, 500)
             except OSError:
                 pass
+
+    def stream_status(self) -> None:
+        """Server-Sent Events: push a status payload when the state changes.
+
+        The dashboard used to re-poll /api/status every 2s from every open
+        tab, which kept both the browser and this server awake around the
+        clock. Here the daemon's live.json mtime is the trigger, so an idle
+        machine costs one cheap stat() per second and nothing else. Clients
+        that cannot use EventSource keep polling.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        last_mtime = -1.0
+        last_push = 0.0
+        try:
+            while True:
+                try:
+                    mtime = LIVE_FILE.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                now = time.time()
+                # Push on a snapshot change, and at least every 10s so a
+                # stopped daemon still refreshes the clock and service state.
+                if mtime != last_mtime or now - last_push >= 10:
+                    last_mtime, last_push = mtime, now
+                    body = json.dumps(status_payload())
+                    self.wfile.write(f"data: {body}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                time.sleep(1)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # browser navigated away
+        finally:
+            # No Content-Length was sent, so this connection cannot be reused.
+            self.close_connection = True
 
     def _csrf_ok(self) -> bool:
         host, port = self.server.server_address
