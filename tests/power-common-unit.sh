@@ -84,6 +84,7 @@ test_load_mode_preset_missing_file_fails() (
 test_boost_game_priority_noop_when_no_game() (
     set -u
     source "$ROOT_DIR/lib/power-common.sh"
+    # shellcheck disable=SC2034  # read by boost_game_priority() in the sourced file
     GAME_PROCESS_NAMES=(definitely-not-a-real-process-xyz)
     out="$(boost_game_priority)"
     if [[ -n "$out" ]]; then
