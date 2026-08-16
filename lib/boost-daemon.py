@@ -693,6 +693,14 @@ class BoostDaemon:
         self.note_switch("silent-pending-applied", f"Applied the queued Silent profile: CPU is now {temp} C at {load}% load.")
         self.send_notification("Silent mode applied", f"The machine cooled to {temp} C, so the queued Silent profile is now active.")
 
+    @staticmethod
+    def _pending_since(raw):
+        """Epoch a queued Silent request was made, or 0."""
+        try:
+            return int(str(raw).split()[0])
+        except (ValueError, IndexError):
+            return 0
+
     def _clear_pending_silent(self):
         self._pending_silent_notified = False
         try:
@@ -901,6 +909,7 @@ class BoostDaemon:
                     "silentBlocked": blocked,
                     "reason": block_reason,
                     "pending": bool(pending_raw),
+                    "pendingSince": self._pending_since(pending_raw),
                     "thresholds": {
                         "tempHot": self.temp_hot,
                         "tempCritical": self.temp_critical,

@@ -1103,13 +1103,19 @@ def interlock_payload(
         else:
             data = {"silentBlocked": False, "reason": ""}
         data["pending"] = SILENT_PENDING_FILE.exists()
+    waited = ""
+    since = int(data.get("pendingSince") or 0)
+    if since:
+        seconds = max(0, int(time.time()) - since)
+        waited = f" (waiting {seconds // 60}m {seconds % 60}s so far)"
     if data.get("silentBlocked"):
+        queued = f"Eco Mode is already queued{waited}. " if data.get("pending") else ""
         data["hint"] = (
-            f"Eco Mode is held back because {data.get('reason', 'the machine is busy')}. "
+            f"{queued}Eco Mode is held back because {data.get('reason', 'the machine is busy')}. "
             "Pick it anyway and Boost will switch over by itself once things cool down."
         )
     elif data.get("pending"):
-        data["hint"] = "Eco Mode is queued and will apply as soon as the machine cools down."
+        data["hint"] = f"Eco Mode is queued{waited} and will apply as soon as the machine cools down."
     else:
         data["hint"] = ""
     return data
@@ -2331,10 +2337,29 @@ function renderSensors(data) {
 }
 
 // ── Silent/Eco interlock ──────────────────────────────────────────────
+let _wasPending = false;
+let _wasGuarded = false;
+
+// Anything the machine decides on its own gets announced once, so an
+// automatic override is never something the user discovers by accident.
+function announceOverrides(data) {
+  const lock = data.interlock || {};
+  const guard = ((data.fans || {}).status || {}).guard || {};
+  if (_wasPending && !lock.pending && !lock.silentBlocked) {
+    showToast('Eco Mode was queued and has now been applied — the machine cooled down.');
+  }
+  if (!_wasGuarded && guard.active && guard.reason) {
+    showToast(`Fans raised automatically: ${guard.reason}`);
+  }
+  _wasPending = !!lock.pending;
+  _wasGuarded = !!guard.active;
+}
+
 function renderInterlock(data) {
   const lock = data.interlock || {};
   const banner = $('interlockBanner');
   const btn = $('btn-silent');
+  announceOverrides(data);
   if (lock.silentBlocked || lock.pending) {
     banner.hidden = false;
     $('interlockText').textContent = lock.hint || '';
@@ -2441,7 +2466,8 @@ function fanCardHtml(id, fans) {
       <button class="btn" data-fan-test="${esc(id)}" title="Runs this fan for 10 s at the speed your curve asks for at 75 °C">Test 10s</button>
     </div>
     <div style="font-size:11px;color:var(--color-warn);margin-top:8px" id="fannote${slug}"></div>
-    <div class="curve-editor advanced-only">
+    <details class="curve-editor advanced-only">
+      <summary>✏️ Edit the curve</summary>
       <div class="curve-tabs">${tabs}</div>
       <svg class="curve-svg" id="curve${slug}" viewBox="0 0 320 190" data-fan="${esc(id)}"></svg>
       <div class="curve-fields">
@@ -2455,7 +2481,7 @@ function fanCardHtml(id, fans) {
         <button class="btn active-preset" data-fan-save="${esc(id)}">💾 Save curve</button>
         <button class="btn" data-fan-reset="${esc(id)}">↺ Reload</button>
       </div>
-    </div>
+    </details>
   </div>`;
 }
 
@@ -2522,9 +2548,16 @@ function drawCurve(id, data) {
 
   const pts = ed.points.map(([t, p]) => curveXY(t, p));
   const line = `<polyline points="${pts.map(p => p.join(',')).join(' ')}" fill="none" stroke="#0ea5e9" stroke-width="2"/>`;
+  // Points below the safety envelope are drawn as blocked: the engine will
+  // override them at that temperature no matter what the curve says.
   const dots = ed.points.map(([t, p], i) => {
     const [x, y] = curveXY(t, p);
-    return `<circle class="pt" data-i="${i}" cx="${x}" cy="${y}" r="6" fill="#0ea5e9" stroke="#050912" stroke-width="2"><title>${t}°C → ${p}%</title></circle>`;
+    const required = Math.max(guardMin(t, thresholds), ed.minPwm);
+    const blocked = p < required;
+    const title = blocked
+      ? `${t}°C → ${p}% is ignored: this fan runs at ${required}% or more at ${t}°C`
+      : `${t}°C → ${p}%`;
+    return `<circle class="pt" data-i="${i}" cx="${x}" cy="${y}" r="6" fill="${blocked ? '#ef4444' : '#0ea5e9'}" stroke="#050912" stroke-width="2"><title>${title}</title></circle>`;
   }).join('');
 
   let marker = '';

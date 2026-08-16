@@ -443,35 +443,38 @@ def guard_floor(sensor_values: dict, thresholds: dict) -> tuple[int, str]:
         if value > floor:
             floor, reason = value, text
 
+    # Each reason says when it clears, so the UI can promise "this ends by
+    # itself at N C" instead of leaving the user wondering.
+    ease = temp_hot - 6
     cpu = sensors.hottest("cpu", sensor_values)
     cores = sensors.hottest("cpu_core", sensor_values)
     if cores is not None:
         cpu = max(cpu, cores) if cpu is not None else cores
     if cpu is not None:
         if cpu >= temp_critical:
-            bump(100, f"CPU {cpu}C is at the critical limit ({temp_critical}C)")
+            bump(100, f"CPU {cpu}C is at the critical limit ({temp_critical}C); eases off below {ease}C")
         elif cpu >= temp_hot:
-            bump(85, f"CPU {cpu}C is above the warm threshold ({temp_hot}C)")
-        elif cpu >= temp_hot - 6:
-            bump(65, f"CPU {cpu}C is approaching the warm threshold ({temp_hot}C)")
+            bump(85, f"CPU {cpu}C is above the warm threshold ({temp_hot}C); eases off below {ease}C")
+        elif cpu >= ease:
+            bump(65, f"CPU {cpu}C is approaching the warm threshold ({temp_hot}C); eases off below {ease}C")
 
     gpu = sensors.hottest("gpu", sensor_values)
     if gpu is not None:
         if gpu >= 85:
-            bump(100, f"GPU {gpu}C is very hot")
+            bump(100, f"GPU {gpu}C is very hot; eases off below 80C")
         elif gpu >= 80:
-            bump(80, f"GPU {gpu}C is hot")
+            bump(80, f"GPU {gpu}C is hot; eases off below 80C")
 
     nvme = sensors.hottest("nvme", sensor_values)
     if nvme is not None:
         if nvme >= 70:
-            bump(80, f"NVMe {nvme}C is throttling hot")
+            bump(80, f"NVMe {nvme}C is throttling hot; eases off below 65C")
         elif nvme >= 65:
-            bump(60, f"NVMe {nvme}C is above its warning limit")
+            bump(60, f"NVMe {nvme}C is above its warning limit; eases off below 65C")
 
     vrm = sensors.hottest("vrm", sensor_values)
     if vrm is not None and vrm >= 90:
-        bump(90, f"VRM {vrm}C is above its warning limit")
+        bump(90, f"VRM {vrm}C is above its warning limit; eases off below 90C")
 
     return floor, reason
 
