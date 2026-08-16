@@ -7,6 +7,7 @@ Features: O(1) thermal/load polling, Game Mode detection.
 import os
 import sys
 import time
+import json
 import subprocess
 import shlex
 import syslog
@@ -18,6 +19,44 @@ CONF_FILE = "/etc/boost-auto.conf"
 STATS_FILE = os.path.join(STATE_DIR, "stats.csv")
 SNOOZE_FILE = os.path.join(STATE_DIR, "auto-snooze-until")
 SKIP_TODAY_FILE = os.path.join(STATE_DIR, "auto-skip-date")
+LIVE_FILE = os.path.join(STATE_DIR, "live.json")
+GPU_HEAVY_UTIL_PCT = 80
+GPU_HEAVY_DURATION_S = 30
+
+# Canonical mode presets, shared with lib/boost-web.py and bin/auto so the
+# three implementations can never drift apart (see CHANGELOG v1.2.0).
+PRESETS_FILE_CANDIDATES = [
+    "/usr/local/share/boost/presets.json",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "presets.json"),
+]
+
+_presets_cache: dict = {}
+_presets_cache_mtime: float = -1
+_presets_cache_path: str | None = None
+
+def load_presets() -> dict:
+    global _presets_cache, _presets_cache_mtime, _presets_cache_path
+    path = _presets_cache_path if _presets_cache_path and os.path.isfile(_presets_cache_path) else None
+    if path is None:
+        path = next((candidate for candidate in PRESETS_FILE_CANDIDATES if os.path.isfile(candidate)), None)
+    if path is None:
+        _presets_cache, _presets_cache_mtime, _presets_cache_path = {}, -1, None
+        return {}
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return _presets_cache
+    if mtime == _presets_cache_mtime and path == _presets_cache_path:
+        return _presets_cache
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return _presets_cache
+    if not isinstance(data, dict):
+        return _presets_cache
+    _presets_cache, _presets_cache_mtime, _presets_cache_path = data, mtime, path
+    return data
 
 # Known process names for automatic Game Mode
 GAME_PROCESSES = ['wine-preloader', 'wine64-preloader', 'proton', 'steam', 'cs2', 'dota2', 'hl2_linux']
@@ -81,6 +120,8 @@ class BoostDaemon:
         
         self.high_since = 0
         self.idle_since = 0
+        self.gpu_high_since = 0
+        self._gpu_stats_cache = (0, ["0", "0", "0", "0"])
         self.last_prompt = 0
         self.last_auto = 0
         self.last_stats = 0
@@ -343,30 +384,16 @@ class BoostDaemon:
         except Exception: pass
 
     def apply_preset(self):
-        if self.mode == "dynamic":
-            self.temp_hot, self.boost_temp_limit = 78, 78
-            self.load_high, self.load_high_duration = 75, 120
-            self.load_idle, self.load_idle_duration = 8, 600
-            self.prompt_cooldown = 900
-        elif self.mode == "gaming":
-            # Baseline for gaming, allows higher temps, quicker boosting
-            self.temp_hot, self.boost_temp_limit = 80, 80
-            self.load_high, self.load_high_duration = 50, 30
-            self.load_idle, self.load_idle_duration = 10, 600
-            self.prompt_cooldown = 900
-        elif self.mode == "creator":
-            # For AI training / rendering: high sustained load required before boosting,
-            # high temp limits, very long idle required before cooling down.
-            self.temp_hot, self.boost_temp_limit = 82, 82
-            self.load_high, self.load_high_duration = 85, 30
-            self.load_idle, self.load_idle_duration = 15, 1200
-            self.prompt_cooldown = 300
-        elif self.mode == "quiet":
-            # Strict limits for meetings/library
-            self.temp_hot, self.boost_temp_limit = 70, 70
-            self.load_high, self.load_high_duration = 90, 600
-            self.load_idle, self.load_idle_duration = 5, 120
-            self.prompt_cooldown = 3600
+        preset = load_presets().get(self.mode)
+        if not isinstance(preset, dict):
+            return
+        self.temp_hot = preset.get("tempHot", self.temp_hot)
+        self.boost_temp_limit = preset.get("boostTempLimit", self.boost_temp_limit)
+        self.load_high = preset.get("loadHigh", self.load_high)
+        self.load_high_duration = preset.get("loadHighDuration", self.load_high_duration)
+        self.load_idle = preset.get("loadIdle", self.load_idle)
+        self.load_idle_duration = preset.get("loadIdleDuration", self.load_idle_duration)
+        self.prompt_cooldown = preset.get("promptCooldown", self.prompt_cooldown)
 
     def read_turbo_state(self):
         if os.path.exists('/sys/devices/system/cpu/intel_pstate/no_turbo'):
@@ -457,14 +484,29 @@ class BoostDaemon:
         except: return default
 
     def get_gpu_stats(self):
+        """Return [temp, power_draw_w, power_limit_w, util_pct] as strings.
+
+        Cached for poll_interval so the per-tick heavy-workload check (see
+        GPU_HEAVY_UTIL_PCT) and the stats-interval CSV write share one
+        nvidia-smi/sysfs read instead of spawning it twice.
+        """
+        now = time.time()
+        cache_age, cached = self._gpu_stats_cache
+        if now - cache_age < max(self.poll_interval, 1):
+            return cached
+        stats = self._read_gpu_stats()
+        self._gpu_stats_cache = (now, stats)
+        return stats
+
+    def _read_gpu_stats(self):
         # NVIDIA first
         try:
             out = subprocess.check_output(
-                ['nvidia-smi', '--query-gpu=temperature.gpu,power.draw,power.limit',
+                ['nvidia-smi', '--query-gpu=temperature.gpu,power.draw,power.limit,utilization.gpu',
                  '--format=csv,noheader,nounits'], text=True).strip()
             if out:
                 parts = [x.strip() for x in out.split('\n')[0].split(',')]
-                if len(parts) == 3:
+                if len(parts) == 4:
                     return parts
         except Exception:
             pass
@@ -474,10 +516,12 @@ class BoostDaemon:
                 temp = int(self.read_text(self.amd_gpu_hwmon + "temp1_input", "0") or "0") // 1000
                 power_uw = int(self.read_text(self.amd_gpu_hwmon + "power1_average", "0") or "0")
                 cap_uw = int(self.read_text(self.amd_gpu_hwmon + "power1_cap", "0") or "0")
-                return [str(temp), f"{power_uw / 1_000_000:.2f}", f"{cap_uw / 1_000_000:.2f}"]
+                busy_path = os.path.join(self.amd_gpu_hwmon.split("/hwmon/")[0], "gpu_busy_percent")
+                util = self.read_text(busy_path, "0") or "0"
+                return [str(temp), f"{power_uw / 1_000_000:.2f}", f"{cap_uw / 1_000_000:.2f}", util]
             except Exception:
                 pass
-        return ["0", "0", "0"]
+        return ["0", "0", "0", "0"]
 
     def is_creator_running(self):
         return bool(self.read_process_set().intersection(CREATOR_PROCESSES))
@@ -525,16 +569,23 @@ class BoostDaemon:
         except Exception as e:
             self.log(f"Failed to set charge limit: {e}")
 
-    def record_stats(self, load, temp, profile):
+    def read_rapl_limits(self):
+        """Return (pl1_watts_str, pl2_watts_str); ("0", "0") when RAPL is unavailable (AMD CPUs)."""
+        rapl_base = '/sys/class/powercap/intel-rapl/intel-rapl:0'
+        if not os.path.isdir(rapl_base):
+            return '0', '0'
+        pl1 = str(int(self.read_text(f'{rapl_base}/constraint_0_power_limit_uw', '0')) // 1000000)
+        pl2 = str(int(self.read_text(f'{rapl_base}/constraint_1_power_limit_uw', '0')) // 1000000)
+        return pl1, pl2
+
+    def record_stats(self, load, temp, profile, gpu_stats=None):
         try:
             if not getattr(self, '_state_dir_created', False):
                 os.makedirs(STATE_DIR, exist_ok=True)
                 self._state_dir_created = True
-            
-            gpu_temp, gpu_power, gpu_limit = self.get_gpu_stats()
-            rapl_base = '/sys/class/powercap/intel-rapl/intel-rapl:0'
-            pl1 = str(int(self.read_text(f'{rapl_base}/constraint_0_power_limit_uw', '0')) // 1000000) if os.path.isdir(rapl_base) else '0'
-            pl2 = str(int(self.read_text(f'{rapl_base}/constraint_1_power_limit_uw', '0')) // 1000000) if os.path.isdir(rapl_base) else '0'
+
+            gpu_temp, gpu_power, gpu_limit, _gpu_util = gpu_stats if gpu_stats is not None else self.get_gpu_stats()
+            pl1, pl2 = self.read_rapl_limits()
             gov = self.read_text('/sys/devices/system/cpu/cpufreq/policy0/scaling_governor', '') or self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor', 'unknown')
             epp = self.read_text('/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference', '') or self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference', 'unsupported')
             turbo = self.read_turbo_state()
@@ -563,6 +614,35 @@ class BoostDaemon:
                     os.rename(f"{STATS_FILE}.tmp", STATS_FILE)
         except Exception as e:
             self.log(f"Error recording stats: {e}")
+
+    def write_live_snapshot(self, temp, load, profile, gpu_stats, pl1, pl2, ac_online, battery_pct):
+        """Write the single-poll-authority state snapshot other processes read.
+
+        boost-web.py and boost-tray.py read this file (when fresh) instead of
+        independently re-polling sysfs/hwmon/nvidia-smi, so temperature reads
+        (including the coretemp outlier correction) and GPU/RAPL subprocess
+        spawns happen once per tick, not once per poller.
+        """
+        try:
+            if not getattr(self, '_state_dir_created', False):
+                os.makedirs(STATE_DIR, exist_ok=True)
+                self._state_dir_created = True
+            gpu_temp, gpu_power, gpu_limit, gpu_util = gpu_stats
+            snapshot = {
+                "time": int(time.time()),
+                "cpu": {"temp": temp, "load": load},
+                "gpu": {"temp": gpu_temp, "power": gpu_power, "limit": gpu_limit, "util": gpu_util},
+                "profile": profile,
+                "mode": self.mode,
+                "limits": {"pl1": pl1, "pl2": pl2},
+                "battery": {"acOnline": ac_online, "pct": battery_pct},
+            }
+            tmp = f"{LIVE_FILE}.tmp"
+            with open(tmp, 'w') as f:
+                json.dump(snapshot, f)
+            os.rename(tmp, LIVE_FILE)
+        except Exception as e:
+            self.log(f"Error writing live snapshot: {e}")
 
     def run_command(self, cmd):
         try:
@@ -753,13 +833,31 @@ class BoostDaemon:
         is_creator = self.is_creator_running()
         is_meeting = self.is_meeting_running()
 
+        # GPU-bound heavy workload: catches unlisted GPU apps (Stable
+        # Diffusion/ComfyUI, Lutris/Heroic games, niche engines) that
+        # is_creator_running()'s static process allowlist misses.
+        gpu_stats = self.get_gpu_stats()
+        try:
+            gpu_util = int(float(gpu_stats[3]))
+        except (ValueError, IndexError):
+            gpu_util = 0
+        if gpu_util >= GPU_HEAVY_UTIL_PCT:
+            if self.gpu_high_since == 0:
+                self.gpu_high_since = now
+        else:
+            self.gpu_high_since = 0
+        is_gpu_heavy = self.gpu_high_since != 0 and now - self.gpu_high_since >= GPU_HEAVY_DURATION_S
+
         if now - self.last_stats >= self.stats_interval:
-            self.record_stats(load, temp, profile)
+            self.record_stats(load, temp, profile, gpu_stats=gpu_stats)
             self.last_stats = now
 
         # ── Battery & AC monitoring ──────────────────────────────
         ac_online = self.read_ac_online()
         battery_pct = self.read_battery_pct()
+
+        pl1, pl2 = self.read_rapl_limits()
+        self.write_live_snapshot(temp, load, profile, gpu_stats, pl1, pl2, ac_online, battery_pct)
 
         # AC plug/unplug event: switch profiles
         if ac_online is not None and ac_online != self._last_ac_online:
@@ -907,8 +1005,11 @@ class BoostDaemon:
                 self.last_auto = now
                 return
 
-        # Creator Workload Detection — suggest Performance for heavy rendering/compilation
-        if is_creator and not is_game and profile != "performance" and temp < self.boost_temp_limit:
+        # Creator Workload Detection — suggest Performance for heavy rendering/compilation.
+        # Triggers on the known-process allowlist OR sustained GPU utilization, so
+        # unlisted GPU-bound apps (Stable Diffusion/ComfyUI, Lutris/Heroic games,
+        # niche engines) are caught too.
+        if (is_creator or is_gpu_heavy) and not is_game and profile != "performance" and temp < self.boost_temp_limit:
             if now - self.last_prompt > self.prompt_cooldown:
                 self.send_notification(
                     "Heavy workload detected",

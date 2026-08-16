@@ -1,0 +1,38 @@
+{
+  "dynamic": {
+    "tempHot": 78,
+    "boostTempLimit": 78,
+    "loadHigh": 75,
+    "loadHighDuration": 120,
+    "loadIdle": 8,
+    "loadIdleDuration": 600,
+    "promptCooldown": 900
+  },
+  "gaming": {
+    "tempHot": 80,
+    "boostTempLimit": 80,
+    "loadHigh": 50,
+    "loadHighDuration": 30,
+    "loadIdle": 10,
+    "loadIdleDuration": 600,
+    "promptCooldown": 900
+  },
+  "creator": {
+    "tempHot": 82,
+    "boostTempLimit": 82,
+    "loadHigh": 85,
+    "loadHighDuration": 30,
+    "loadIdle": 15,
+    "loadIdleDuration": 1200,
+    "promptCooldown": 300
+  },
+  "quiet": {
+    "tempHot": 70,
+    "boostTempLimit": 70,
+    "loadHigh": 90,
+    "loadHighDuration": 600,
+    "loadIdle": 5,
+    "loadIdleDuration": 120,
+    "promptCooldown": 3600
+  }
+}

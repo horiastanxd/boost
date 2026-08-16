@@ -34,7 +34,7 @@ from boost_daemon import BoostDaemon  # noqa: E402
 def _make_daemon(**overrides):
     """Return a BoostDaemon with filesystem probing stubbed out."""
     with patch("syslog.openlog"), patch("syslog.syslog"), patch.object(
-        BoostDaemon, "find_cpu_temp_path", return_value=None
+        BoostDaemon, "find_cpu_temp_path", return_value=(None, None)
     ):
         d = BoostDaemon()
     for k, v in overrides.items():

@@ -5,6 +5,8 @@
 
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 CONF_FILE="/etc/boost-auto.conf"
 STATE_DIR="/var/lib/power-profile"
 
@@ -14,6 +16,10 @@ WEB_URL="http://127.0.0.1:8765"
 SNOOZE_FILE="$STATE_DIR/auto-snooze-until"
 SKIP_TODAY_FILE="$STATE_DIR/auto-skip-date"
 REPORT_BIN="/usr/local/bin/power-report"
+
+# Canonical mode presets shared with lib/boost-daemon.py and lib/boost-web.py.
+PRESETS_FILE="/usr/local/share/boost/presets.json"
+[[ -f "$PRESETS_FILE" ]] || PRESETS_FILE="$SCRIPT_DIR/../presets.json"
 
 
 # Friendly defaults. Use `auto mode dynamic|creator|quiet|off`.
@@ -49,6 +55,10 @@ reset_threshold_defaults() {
 if [[ -f /usr/local/lib/power-common.sh ]]; then
     # shellcheck source=/usr/local/lib/power-common.sh disable=SC1091
     source /usr/local/lib/power-common.sh
+elif [[ -f "$SCRIPT_DIR/../lib/power-common.sh" ]]; then
+    # Not installed yet (repo checkout / test run) - fall back to the local copy.
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/../lib/power-common.sh"
 fi
 
 if [[ "${BOOST_AUTO_NO_CONFIG:-0}" != "1" && -f "$CONF_FILE" ]]; then
@@ -67,41 +77,12 @@ CUSTOM_PROMPT_COOLDOWN="${PROMPT_COOLDOWN}"
 apply_mode_preset() {
     reset_threshold_defaults
     case "${AUTO_MODE:-dynamic}" in
-        dynamic)
-            TEMP_HOT=78
-            BOOST_TEMP_LIMIT=78
-            LOAD_HIGH=75
-            LOAD_HIGH_DURATION=120
-            LOAD_IDLE=8
-            LOAD_IDLE_DURATION=600
-            PROMPT_COOLDOWN=900
-            ;;
-        gaming)
-            TEMP_HOT=80
-            BOOST_TEMP_LIMIT=80
-            LOAD_HIGH=50
-            LOAD_HIGH_DURATION=30
-            LOAD_IDLE=10
-            LOAD_IDLE_DURATION=600
-            PROMPT_COOLDOWN=900
-            ;;
-        creator)
-            TEMP_HOT=82
-            BOOST_TEMP_LIMIT=82
-            LOAD_HIGH=85
-            LOAD_HIGH_DURATION=30
-            LOAD_IDLE=15
-            LOAD_IDLE_DURATION=1200
-            PROMPT_COOLDOWN=300
-            ;;
-        quiet)
-            TEMP_HOT=70
-            BOOST_TEMP_LIMIT=70
-            LOAD_HIGH=90
-            LOAD_HIGH_DURATION=600
-            LOAD_IDLE=5
-            LOAD_IDLE_DURATION=120
-            PROMPT_COOLDOWN=3600
+        dynamic|gaming|creator|quiet)
+            # Preset numbers live only in presets.json now (see CHANGELOG
+            # v1.2.0 for the multi-file drift bug this replaces). If the
+            # file or python3 is unavailable, the dynamic-equivalent
+            # defaults from reset_threshold_defaults above are kept.
+            load_mode_preset "${AUTO_MODE:-dynamic}" "$PRESETS_FILE" || true
             ;;
         off) ;;
         custom)

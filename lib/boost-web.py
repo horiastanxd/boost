@@ -128,6 +128,14 @@ def config_payload() -> dict[str, Any]:
             "BATTERY_LOW_PCT": config.get("BATTERY_LOW_PCT", "20"),
             "BATTERY_CRITICAL_PCT": config.get("BATTERY_CRITICAL_PCT", "10"),
             "BATTERY_LOW_NOTIFY": config.get("BATTERY_LOW_NOTIFY", "yes"),
+            "BOOST_EPP": config.get("BOOST_EPP", "balance_performance"),
+            "BOOST_PL1_PCT": config.get("BOOST_PL1_PCT", "100"),
+            "BOOST_PL2_PCT": config.get("BOOST_PL2_PCT", "80"),
+            "SCREEN_LOCK_POWERSAVE": config.get("SCREEN_LOCK_POWERSAVE", "yes"),
+            "BATTERY_CHARGE_LIMIT": config.get("BATTERY_CHARGE_LIMIT", "0"),
+            "SLOW_CHARGE_THRESHOLD_W": config.get("SLOW_CHARGE_THRESHOLD_W", "2"),
+            "SLOW_CHARGE_BATTERY_PCT": config.get("SLOW_CHARGE_BATTERY_PCT", "25"),
+            "SLOW_CHARGE_RECOVERY_PCT": config.get("SLOW_CHARGE_RECOVERY_PCT", "35"),
         },
     }
 
@@ -152,6 +160,14 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
     "BATTERY_LOW_PCT": {"type": "int", "min": 1, "max": 100},
     "BATTERY_CRITICAL_PCT": {"type": "int", "min": 1, "max": 100},
     "BATTERY_LOW_NOTIFY": {"type": "choice", "values": {"yes", "no"}},
+    "BOOST_EPP": {"type": "choice", "values": {"performance", "balance_performance"}},
+    "BOOST_PL1_PCT": {"type": "int", "min": 40, "max": 100},
+    "BOOST_PL2_PCT": {"type": "int", "min": 40, "max": 100},
+    "SCREEN_LOCK_POWERSAVE": {"type": "choice", "values": {"yes", "no"}},
+    "BATTERY_CHARGE_LIMIT": {"type": "int", "min": 0, "max": 100},
+    "SLOW_CHARGE_THRESHOLD_W": {"type": "float", "min": 0, "max": 200},
+    "SLOW_CHARGE_BATTERY_PCT": {"type": "int", "min": 1, "max": 100},
+    "SLOW_CHARGE_RECOVERY_PCT": {"type": "int", "min": 1, "max": 100},
 }
 
 
@@ -180,6 +196,14 @@ def validate_config_updates(updates: dict[str, Any]) -> tuple[dict[str, str], st
                 allowed = ", ".join(sorted(spec["values"]))
                 return {}, f"{key} must be one of: {allowed}."
             sanitized[key] = value
+        elif spec["type"] == "float":
+            try:
+                number = float(value)
+            except ValueError:
+                return {}, f"{key} must be a number."
+            if number < spec["min"] or number > spec["max"]:
+                return {}, f"{key} must be between {spec['min']} and {spec['max']}."
+            sanitized[key] = str(number)
 
     low = int(sanitized.get("BATTERY_LOW_PCT", str(number_config(current_config, "BATTERY_LOW_PCT", 20))))
     critical = int(sanitized.get("BATTERY_CRITICAL_PCT", str(number_config(current_config, "BATTERY_CRITICAL_PCT", 10))))
@@ -193,6 +217,11 @@ def validate_config_updates(updates: dict[str, Any]) -> tuple[dict[str, str], st
         return {}, "TEMP_HOT cannot be higher than TEMP_CRITICAL."
     if boost_limit > temp_critical:
         return {}, "BOOST_TEMP_LIMIT cannot be higher than TEMP_CRITICAL."
+
+    slow_charge_pct = int(sanitized.get("SLOW_CHARGE_BATTERY_PCT", str(number_config(current_config, "SLOW_CHARGE_BATTERY_PCT", 25))))
+    slow_recovery_pct = int(sanitized.get("SLOW_CHARGE_RECOVERY_PCT", str(number_config(current_config, "SLOW_CHARGE_RECOVERY_PCT", 35))))
+    if slow_recovery_pct <= slow_charge_pct:
+        return {}, "SLOW_CHARGE_RECOVERY_PCT must be higher than SLOW_CHARGE_BATTERY_PCT."
 
     return sanitized, None
 
@@ -209,6 +238,42 @@ DEFAULT_THRESHOLDS = {
     "promptCooldown": 900,
 }
 
+# Canonical mode presets, shared with lib/boost-daemon.py and bin/auto so the
+# three implementations can never drift apart (see CHANGELOG v1.2.0).
+PRESETS_FILE_CANDIDATES = [
+    Path("/usr/local/share/boost/presets.json"),
+    Path(__file__).resolve().parent.parent / "presets.json",
+]
+
+_PRESETS_CACHE: dict[str, Any] = {}
+_PRESETS_CACHE_MTIME: float = -1
+_PRESETS_CACHE_PATH: Path | None = None
+_PRESETS_LOCK = threading.Lock()
+
+def load_presets() -> dict[str, Any]:
+    global _PRESETS_CACHE, _PRESETS_CACHE_MTIME, _PRESETS_CACHE_PATH
+    with _PRESETS_LOCK:
+        path = _PRESETS_CACHE_PATH if _PRESETS_CACHE_PATH and _PRESETS_CACHE_PATH.is_file() else None
+        if path is None:
+            path = next((candidate for candidate in PRESETS_FILE_CANDIDATES if candidate.is_file()), None)
+        if path is None:
+            _PRESETS_CACHE, _PRESETS_CACHE_MTIME, _PRESETS_CACHE_PATH = {}, -1, None
+            return {}
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return _PRESETS_CACHE
+        if mtime == _PRESETS_CACHE_MTIME and _PRESETS_CACHE_PATH == path:
+            return _PRESETS_CACHE
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return _PRESETS_CACHE
+        if not isinstance(data, dict):
+            return _PRESETS_CACHE
+        _PRESETS_CACHE, _PRESETS_CACHE_MTIME, _PRESETS_CACHE_PATH = data, mtime, path
+        return data
+
 
 def number_config(config: dict[str, str], key: str, default: int) -> int:
     try:
@@ -219,54 +284,9 @@ def number_config(config: dict[str, str], key: str, default: int) -> int:
 
 def mode_thresholds(mode: str, config: dict[str, str] | None = None) -> dict[str, int | str]:
     thresholds: dict[str, int | str] = dict(DEFAULT_THRESHOLDS)
-    if mode == "dynamic":
-        thresholds.update(
-            {
-                "tempHot": 78,
-                "boostTempLimit": 78,
-                "loadHigh": 75,
-                "loadHighDuration": 120,
-                "loadIdle": 8,
-                "loadIdleDuration": 600,
-                "promptCooldown": 900,
-            }
-        )
-    elif mode == "gaming":
-        thresholds.update(
-            {
-                "tempHot": 80,
-                "boostTempLimit": 80,
-                "loadHigh": 50,
-                "loadHighDuration": 30,
-                "loadIdle": 10,
-                "loadIdleDuration": 600,
-                "promptCooldown": 900,
-            }
-        )
-    elif mode == "creator":
-        thresholds.update(
-            {
-                "tempHot": 82,
-                "boostTempLimit": 82,
-                "loadHigh": 85,
-                "loadHighDuration": 30,
-                "loadIdle": 15,
-                "loadIdleDuration": 1200,
-                "promptCooldown": 300,
-            }
-        )
-    elif mode == "quiet":
-        thresholds.update(
-            {
-                "tempHot": 70,
-                "boostTempLimit": 70,
-                "loadHigh": 90,
-                "loadHighDuration": 600,
-                "loadIdle": 5,
-                "loadIdleDuration": 120,
-                "promptCooldown": 3600,
-            }
-        )
+    presets = load_presets()
+    if mode in presets and isinstance(presets[mode], dict):
+        thresholds.update(presets[mode])
     elif mode == "custom" and config:
         thresholds.update(
             {
@@ -1540,6 +1560,44 @@ tr.active-preset td{background:rgba(14,165,233,0.06)}
           <option value="no">No</option>
         </select>
       </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Boost EPP</div>
+        <select id="cfg_BOOST_EPP" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+          <option value="balance_performance">Balanced (cooler)</option>
+          <option value="performance">Performance (max)</option>
+        </select>
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Boost PL1 %</div>
+        <input id="cfg_BOOST_PL1_PCT" type="number" min="40" max="100" value="100" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Boost PL2 %</div>
+        <input id="cfg_BOOST_PL2_PCT" type="number" min="40" max="100" value="80" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Powersave on Screen Lock</div>
+        <select id="cfg_SCREEN_LOCK_POWERSAVE" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Battery Charge Limit % (0=off)</div>
+        <input id="cfg_BATTERY_CHARGE_LIMIT" type="number" min="0" max="100" value="0" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Slow Charge Threshold (W)</div>
+        <input id="cfg_SLOW_CHARGE_THRESHOLD_W" type="number" min="0" max="200" step="0.1" value="2" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Slow Charge Trigger Battery %</div>
+        <input id="cfg_SLOW_CHARGE_BATTERY_PCT" type="number" min="1" max="100" value="25" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Slow Charge Recovery Battery %</div>
+        <input id="cfg_SLOW_CHARGE_RECOVERY_PCT" type="number" min="1" max="100" value="35" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
     <div class="actions" style="margin-top:20px">
       <button class="btn active-preset" id="saveConfigBtn" style="width:100%">💾 Save Configuration</button>
       <span style="font-size:11px;color:var(--text-muted);margin-top:8px;display:block">Changes take effect immediately. The daemon re-reads config on the next poll cycle.</span>
@@ -1924,7 +1982,7 @@ async function loadConfig() {
 
 $('saveConfigBtn')?.addEventListener('click', async () => {
   const updates = {};
-  const fields = ['TEMP_CRITICAL','TEMP_HOT','BOOST_TEMP_LIMIT','LOAD_HIGH','LOAD_HIGH_DURATION','LOAD_IDLE','LOAD_IDLE_DURATION','PROMPT_COOLDOWN','POLL_INTERVAL','STATS_INTERVAL','ALLOW_CRITICAL_AUTO','AC_PROFILE','BATTERY_PROFILE','BATTERY_LOW_PCT','BATTERY_CRITICAL_PCT','BATTERY_LOW_NOTIFY'];
+  const fields = ['TEMP_CRITICAL','TEMP_HOT','BOOST_TEMP_LIMIT','LOAD_HIGH','LOAD_HIGH_DURATION','LOAD_IDLE','LOAD_IDLE_DURATION','PROMPT_COOLDOWN','POLL_INTERVAL','STATS_INTERVAL','ALLOW_CRITICAL_AUTO','AC_PROFILE','BATTERY_PROFILE','BATTERY_LOW_PCT','BATTERY_CRITICAL_PCT','BATTERY_LOW_NOTIFY','BOOST_EPP','BOOST_PL1_PCT','BOOST_PL2_PCT','SCREEN_LOCK_POWERSAVE','BATTERY_CHARGE_LIMIT','SLOW_CHARGE_THRESHOLD_W','SLOW_CHARGE_BATTERY_PCT','SLOW_CHARGE_RECOVERY_PCT'];
   for (const key of fields) {
     const el = document.getElementById('cfg_' + key);
     if (el) updates[key] = el.value;

@@ -79,6 +79,43 @@ read_safe_config() {
     done < "$config_file"
 }
 
+# ── Canonical mode presets (shared with lib/boost-daemon.py, lib/boost-web.py) ─
+
+# Loads TEMP_HOT/BOOST_TEMP_LIMIT/LOAD_HIGH/LOAD_HIGH_DURATION/LOAD_IDLE/
+# LOAD_IDLE_DURATION/PROMPT_COOLDOWN for one named mode out of the shared
+# presets.json, so preset numbers only ever live in one place (see
+# CHANGELOG v1.2.0 for the drift bug this replaces).
+# Usage: load_mode_preset <mode> <presets_json_path>
+load_mode_preset() {
+    local mode="$1" presets_file="$2" json_out key val
+    [[ -f "$presets_file" ]] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+    json_out="$(python3 - "$mode" "$presets_file" <<'PYEOF'
+import json, sys
+mode, path = sys.argv[1], sys.argv[2]
+try:
+    with open(path, encoding="utf-8") as f:
+        preset = json.load(f)[mode]
+except Exception:
+    sys.exit(1)
+mapping = {
+    "tempHot": "TEMP_HOT", "boostTempLimit": "BOOST_TEMP_LIMIT",
+    "loadHigh": "LOAD_HIGH", "loadHighDuration": "LOAD_HIGH_DURATION",
+    "loadIdle": "LOAD_IDLE", "loadIdleDuration": "LOAD_IDLE_DURATION",
+    "promptCooldown": "PROMPT_COOLDOWN",
+}
+for json_key, bash_key in mapping.items():
+    if json_key in preset:
+        print(f"{bash_key}={preset[json_key]}")
+PYEOF
+)" || return 1
+    while IFS='=' read -r key val; do
+        [[ "$key" =~ ^[A-Z_]+$ ]] || continue
+        printf -v "$key" '%s' "$val"
+    done <<< "$json_out"
+    return 0
+}
+
 # ── Battery helpers ──────────────────────────────────────────────────
 
 # Discover the battery power supply directory (cached after first call)
