@@ -173,7 +173,11 @@ class BoostDaemon:
         self._profile_cycle_count = 0
         self._snooze_cache = (0, 0, False)
         self._gpu_pl_range = None
-        self._watchdog_usec = 0
+        # Take the notify socket out of the environment: the daemon keeps its
+        # own copy, and every helper we spawn (loginctl, nvidia-smi, the profile
+        # scripts) would otherwise inherit it and have its messages rejected and
+        # logged by systemd as "reception only permitted for main PID".
+        self._notify_socket = os.environ.pop("NOTIFY_SOCKET", "")
 
     def log(self, msg, level=syslog.LOG_INFO):
         syslog.syslog(level, msg)
@@ -1095,7 +1099,7 @@ class BoostDaemon:
         that must not go unnoticed: systemd restarts the unit, and the unit's
         ExecStopPost hands the fans back to the board.
         """
-        address = os.environ.get("NOTIFY_SOCKET")
+        address = self._notify_socket
         if not address:
             return
         if address.startswith("@"):
