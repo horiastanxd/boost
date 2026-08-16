@@ -39,7 +39,11 @@ rm -f /usr/local/lib/boost-web.py
 rm -f /usr/local/lib/boost-daemon.py
 rm -f /usr/local/lib/sensors.py
 rm -f /usr/local/lib/fancontrol.py
+rm -f /usr/local/lib/boost_paths.py
+rm -f /usr/local/lib/platform_backend.py
+rm -f /usr/local/lib/platform_windows.py
 rm -rf /usr/local/lib/webui
+rm -rf /usr/local/lib/__pycache__
 rm -f /usr/lib/systemd/system-sleep/boost
 rm -f /etc/modules-load.d/boost.conf
 rm -rf /usr/local/share/boost

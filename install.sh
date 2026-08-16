@@ -53,6 +53,10 @@ install -m 644 "$REPO_DIR/lib/boost-web.py" /usr/local/lib/boost-web.py
 install -m 755 "$REPO_DIR/lib/boost-daemon.py" /usr/local/lib/boost-daemon.py
 install -m 755 "$REPO_DIR/lib/sensors.py" /usr/local/lib/sensors.py
 install -m 755 "$REPO_DIR/lib/fancontrol.py" /usr/local/lib/fancontrol.py
+# Platform layer: boost-web.py imports these at startup.
+install -m 644 "$REPO_DIR/lib/boost_paths.py" /usr/local/lib/boost_paths.py
+install -m 644 "$REPO_DIR/lib/platform_backend.py" /usr/local/lib/platform_backend.py
+install -m 644 "$REPO_DIR/lib/platform_windows.py" /usr/local/lib/platform_windows.py
 install -m 755 "$REPO_DIR/lib/boost-tray.py" /usr/local/bin/boost-tray
 
 echo "[install] Copying dashboard assets to /usr/local/lib/webui..."

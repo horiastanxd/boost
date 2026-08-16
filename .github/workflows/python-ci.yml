@@ -24,11 +24,16 @@ jobs:
         run: |
           ruff check lib/boost-web.py lib/boost-daemon.py \
             lib/sensors.py lib/fancontrol.py \
+            lib/boost_paths.py lib/platform_backend.py lib/platform_windows.py \
+            bin/boost.py \
             tests/test_daemon.py tests/test_web_api.py tests/test_fancontrol.py \
+            tests/test_platform.py \
             --select E,F,W --ignore E501,E701,E722,W293,W291,F401,E402
 
       - name: Python compile check
-        run: python -m py_compile lib/boost-web.py lib/boost-daemon.py lib/sensors.py lib/fancontrol.py
+        run: |
+          python -m py_compile lib/boost-web.py lib/boost-daemon.py lib/sensors.py lib/fancontrol.py \
+            lib/boost_paths.py lib/platform_backend.py lib/platform_windows.py bin/boost.py
 
       - name: Run tests
-        run: python -m pytest tests/test_daemon.py tests/test_web_api.py tests/test_fancontrol.py -v
+        run: python -m pytest tests/test_daemon.py tests/test_web_api.py tests/test_fancontrol.py tests/test_platform.py -v

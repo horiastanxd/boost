@@ -23,6 +23,9 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import boost_paths
+import platform_backend
+
 try:
     import sensors as sensor_layer
     import fancontrol
@@ -33,13 +36,23 @@ except ImportError:  # pragma: no cover - partial install
 
 HOST = "127.0.0.1"
 PORT = 8765
-CONF_FILE = Path("/etc/boost-auto.conf")
-STATS_FILE = Path("/var/lib/power-profile/stats.csv")
-LATEST_REPORT = Path("/var/lib/power-profile/reports/latest.html")
-SNOOZE_FILE = Path("/var/lib/power-profile/auto-snooze-until")
-SKIP_TODAY_FILE = Path("/var/lib/power-profile/auto-skip-date")
-LIVE_FILE = Path("/var/lib/power-profile/live.json")
+
+# Paths come from boost_paths so the same server runs on Windows, where there
+# is no /etc and no /var. On Linux these resolve to exactly the values they
+# have always had.
+CONF_FILE = boost_paths.CONF_FILE
+STATS_FILE = boost_paths.STATS_FILE
+LATEST_REPORT = boost_paths.LATEST_REPORT
+SNOOZE_FILE = boost_paths.SNOOZE_FILE
+SKIP_TODAY_FILE = boost_paths.SKIP_TODAY_FILE
+LIVE_FILE = boost_paths.LIVE_FILE
 LIVE_FRESH_SECONDS = 10
+
+# The backend knows what this platform can actually do. On Linux it reads
+# sysfs natively, so the hand-tuned readers further down stay in charge; on
+# any other platform they hand over to the backend instead.
+BACKEND = platform_backend.get_backend()
+NATIVE_SYSFS = BACKEND.reads_sysfs
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -608,6 +621,8 @@ def sensor_groups(live: dict[str, Any] | None) -> list[dict[str, Any]]:
     """
     if live and isinstance(live.get("sensors"), list):
         return live["sensors"]
+    if not NATIVE_SYSFS:
+        return BACKEND.get_sensors()
     if sensor_layer is None:
         return []
     now = time.time()
@@ -716,6 +731,8 @@ _GPU_RANGE_CACHE: tuple[float, tuple[int, int]] = (0.0, (0, 0))
 
 def _gpu_limit_range() -> tuple[int, int]:
     global _GPU_RANGE_CACHE
+    if not NATIVE_SYSFS:
+        return BACKEND.gpu_power_limit_range()
     now = time.time()
     if _GPU_RANGE_CACHE[0] and now - _GPU_RANGE_CACHE[0] < 300:
         return _GPU_RANGE_CACHE[1]
@@ -746,6 +763,8 @@ def _gpu_limit_range() -> tuple[int, int]:
 # Hardware telemetry: profile, CPU, GPU, RAPL
 # ──────────────────────────────────────────────────────────────────────────
 def power_profile() -> str:
+    if not NATIVE_SYSFS:
+        return BACKEND.power_profile()
     ppd = cached_run("powerprofile_ppd", ["powerprofilesctl", "get"], 5)
     if ppd:
         return ppd
@@ -791,6 +810,8 @@ def _coretemp_corrected(hwmon_dir: Path, package_raw: int) -> int:
 
 def cpu_temp_c() -> int:
     global _CACHED_TEMP_FILE, _CACHED_CORETEMP_DIR
+    if not NATIVE_SYSFS:
+        return BACKEND.get_cpu_temp()
     if _CACHED_TEMP_FILE:
         raw = int(read_text(_CACHED_TEMP_FILE, "0") or "0")
         if raw > 0:
@@ -850,6 +871,8 @@ _LAST_CPU_IDLE = 0
 
 def cpu_load_percent() -> int:
     global _LAST_CPU_TOTAL, _LAST_CPU_IDLE
+    if not NATIVE_SYSFS:
+        return BACKEND.get_cpu_load()
     total, idle = cpu_totals()
     
     with _CPU_LOCK:
@@ -1113,7 +1136,7 @@ def battery_drain_rate(rows: list[dict[str, str]]) -> float | None:
 # ──────────────────────────────────────────────────────────────────────────
 # Aggregated payloads served by /api/status
 # ──────────────────────────────────────────────────────────────────────────
-SILENT_PENDING_FILE = Path("/var/lib/power-profile/silent-pending")
+SILENT_PENDING_FILE = boost_paths.SILENT_PENDING_FILE
 
 
 def interlock_payload(
@@ -1232,6 +1255,8 @@ def status_payload() -> dict[str, Any]:
 # ──────────────────────────────────────────────────────────────────────────
 # Actions triggered from the dashboard (POST /api/action)
 # ──────────────────────────────────────────────────────────────────────────
+PROFILE_ACTIONS = ("boost", "powersave", "silent", "restore")
+AUTO_ACTIONS = {"auto-mode", "snooze", "today-off", "resume", "quiet-hours", "summer-nights"}
 FAN_ACTIONS = {"fan-enable", "fan-config", "fan-preset", "fan-test", "fan-calibrate"}
 
 
@@ -1263,9 +1288,7 @@ def fan_or_gpu_action(action: str, value: str | None) -> dict[str, Any]:
         with _CONFIG_LOCK:
             _CONFIG_CACHE_MTIME = -1
         if updates[key]:
-            applied = run(["/usr/local/bin/auto", "gpu-limit", updates[key], profile], timeout=15)
-            note = (applied.stdout or applied.stderr).strip().splitlines()
-            return {"ok": True, "message": note[-1] if note else f"GPU limit for {profile}: {updates[key]} W."}
+            return BACKEND.set_gpu_power_limit(int(updates[key]), profile)
         return {"ok": True, "message": f"GPU limit for {profile} is back to automatic."}
 
     if fancontrol is None:
@@ -1376,15 +1399,20 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
     global _SNOOZE_WEB_CACHE
     allowed_modes = {"dynamic", "gaming", "creator", "quiet", "off"}
     allowed_durations = {"30m", "1h", "2h", "4h"}
-    if action == "boost":
-        result = run(["/usr/local/bin/boost"], timeout=30)
-    elif action == "powersave":
-        result = run(["/usr/local/bin/powersave"], timeout=30)
-    elif action == "silent":
-        result = run(["/usr/local/bin/silent", "--auto"], timeout=30)
-    elif action == "restore":
-        result = run(["/usr/local/bin/restore"], timeout=30)
-    elif action == "auto-mode" and value in allowed_modes:
+    if action in PROFILE_ACTIONS:
+        outcome = BACKEND.apply_profile(action)
+        if outcome.get("ok"):
+            with _SYS_STATE_LOCK:
+                _SYS_STATE_CACHE.clear()
+            with _CACHE_LOCK:
+                _CACHE.pop("powerprofile_ppd", None)
+                _CACHE.pop("powerprofile_tuned", None)
+        return outcome
+    if action in AUTO_ACTIONS and not BACKEND.supports_auto_daemon:
+        return BACKEND.unsupported("The auto daemon")
+    if action == "report" and not BACKEND.supports_auto_daemon:
+        return BACKEND.unsupported("HTML reports")
+    if action == "auto-mode" and value in allowed_modes:
         result = run(["/usr/local/bin/auto", "mode", value], timeout=10)
     elif action == "snooze" and value in allowed_durations:
         result = run(["/usr/local/bin/auto", "snooze", value], timeout=10)
@@ -1411,6 +1439,8 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
     elif action == "summer-nights" and value in {"on", "off"}:
         result = run(["/usr/local/bin/auto", "summer-nights", value], timeout=10)
     elif action in FAN_ACTIONS or action == "gpu-limit":
+        if action in FAN_ACTIONS and not BACKEND.supports_fan_control:
+            return BACKEND.unsupported("Fan control")
         return fan_or_gpu_action(action, value)
     elif action == "report":
         result = run(["/usr/local/bin/power-report"], timeout=10)
@@ -1433,17 +1463,6 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
         return {"ok": False, "message": "Unknown action."}
 
     if result.returncode == 0:
-        if action == "silent" and "queued" in result.stdout:
-            # The thermal interlock held the request back; show its own words
-            # instead of a misleading "Silent applied successfully".
-            queued = [line for line in result.stdout.splitlines() if "queued" in line or "Not applying" in line]
-            return {"ok": True, "queued": True, "message": " ".join(queued[:2]).replace("[SILENT] ", "")}
-        if action in ("boost", "powersave", "silent", "restore"):
-            with _SYS_STATE_LOCK:
-                _SYS_STATE_CACHE.clear()
-            with _CACHE_LOCK:
-                _CACHE.pop("powerprofile_ppd", None)
-                _CACHE.pop("powerprofile_tuned", None)
         return {"ok": True, "message": f"{action.capitalize()} applied successfully."}
 
     # On error, just return the last line of stderr or stdout so it fits in a toast

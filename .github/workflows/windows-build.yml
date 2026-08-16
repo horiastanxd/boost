@@ -1,0 +1,52 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The platform layer is testable off-platform by design, so the Windows
+      # backend is also exercised here on a real Windows runner.
+      - name: Run the platform tests
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check --quiet pytest
+          python -m pytest tests/test_platform.py -v
+
+      - name: Build boost.exe
+        shell: pwsh
+        run: pwsh packaging/windows/build.ps1
+
+      - name: Smoke test the executable
+        shell: pwsh
+        run: |
+          & dist/boost-windows/boost.exe --version
+          & dist/boost-windows/boost.exe status
+          if ($LASTEXITCODE -ne 0) { throw "boost.exe status failed" }
+
+      - name: Upload the portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: boost-windows
+          path: dist/boost-windows.zip
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/boost-windows.zip
