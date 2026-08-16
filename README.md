@@ -77,6 +77,50 @@ Tested on **i7-14700KF + RTX 5060 Ti** on Ubuntu 24.04 (one case fan):
 
 ---
 
+## 🪟 Windows (beta)
+
+Boost is a Linux tool. The Windows build is a deliberate partial port: it does
+what Windows exposes through supported interfaces, and refuses the rest instead
+of pretending.
+
+| Feature | Windows | How |
+|---------|---------|-----|
+| Performance / Balanced / Eco profiles | ✅ | `powercfg` power schemes, with a power-mode overlay fallback for Windows 11 |
+| Turbo (processor boost mode) | ✅ | `powercfg` `PERFBOOSTMODE` |
+| Restore | ✅ | Puts back the plan that was active before Boost first ran |
+| NVIDIA GPU power limit | ✅ | `nvidia-smi -pl`, clamped to the driver's own range |
+| Web dashboard | ✅ | The same dashboard, at `http://127.0.0.1:8765` |
+| CPU load, GPU watts / temp | ✅ | `GetSystemTimes` (or psutil) and `nvidia-smi` |
+| CPU temperature | ⚠️ Best effort | ACPI thermal zone; most desktop boards hide it, and Boost shows `n/a` rather than guessing |
+| Fan control | ❌ | Needs a signed kernel driver to reach the embedded controller |
+| RAPL power limits, EPP | ❌ | Linux kernel interfaces with no safe userspace equivalent |
+| Auto daemon, game detection | ❌ | Linux-only for now |
+| Tray applet | ❌ | GTK3 / Ayatana are Linux desktop components |
+
+**Get it:** download `boost-windows.zip` from the
+[latest release](https://github.com/horiastanxd/boost/releases), unzip it
+anywhere, and run from an elevated prompt:
+
+```powershell
+.\boost.exe status      # what this machine reports
+.\boost.exe boost       # maximum performance
+.\boost.exe powersave   # balanced
+.\boost.exe silent      # power saver, turbo off
+.\boost.exe restore     # back to the plan you had before
+.\boost.exe web         # dashboard on 127.0.0.1:8765
+```
+
+Changing the power plan and the GPU limit need administrator rights; without
+them Boost says so instead of silently doing nothing. Config and state live in
+`%ProgramData%\Boost`. There is nothing to install and nothing to uninstall
+beyond deleting the folder.
+
+**Build it yourself:** `pwsh packaging/windows/build.ps1` (needs Python 3.11+;
+it installs PyInstaller itself). CI builds and smoke-tests the same script on
+every push.
+
+---
+
 ## 🚀 Quick Start
 
 **One line install:**
@@ -289,7 +333,7 @@ ls /sys/class/powercap/intel-rapl/                        # expects RAPL availab
 bin/        commands installed to /usr/local/bin
 lib/        runtime libraries → /usr/local/lib   (lib/webui/ = dashboard HTML/CSS/JS)
 config/     shipped defaults  → /etc/boost-auto.conf, presets.json
-packaging/  linux/ (systemd, desktop entries, completion) and windows/ (build scripts)
+packaging/  linux/ (systemd, desktop entries, completion) and windows/ (PyInstaller build)
 docs/       ARCHITECTURE.md · DEPENDENCIES.md · TROUBLESHOOTING.md
 tests/      pytest + bash suites
 ```

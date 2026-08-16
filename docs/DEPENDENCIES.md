@@ -30,6 +30,18 @@
 | `nvidia-smi` (NVIDIA driver) | NVIDIA GPU power limit + monitoring | Required for NVIDIA GPU support |
 | `amdgpu` kernel driver | AMD GPU power limit + monitoring | Built into mainline kernel; no extra package needed |
 
+### Windows (beta build)
+
+Boost on Windows still ships zero required third-party packages.
+
+| Dependency | Required | Purpose |
+|-----------|----------|---------|
+| Windows 10 1809+ / Windows 11 | yes | `powercfg` power-mode overlays |
+| `powercfg` | yes | Power schemes and processor boost mode (ships with Windows) |
+| `powershell` | optional | ACPI thermal zone temperature via CIM; without it, CPU temp reads `n/a` |
+| `nvidia-smi` | optional | GPU telemetry and power limit; ships with the NVIDIA driver |
+| `psutil` | optional | Slightly nicer CPU load; `kernel32!GetSystemTimes` is used when absent |
+
 ### Notifications
 
 | Dependency | Purpose | Package Name (Ubuntu/Debian) | Package Name (Fedora/RHEL) | Package Name (Arch) |

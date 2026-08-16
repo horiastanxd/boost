@@ -2,6 +2,22 @@
 
 All notable changes to Boost are documented here.
 
+## [1.10.0] - 2026-08-16
+
+### Added
+- **Windows build (beta)** — a deliberate partial port rather than a rewrite. Profiles (Performance/Balanced/Eco/Restore) are applied with `powercfg`, turbo through `PERFBOOSTMODE`, and the NVIDIA power limit through `nvidia-smi`, clamped to the driver's own range. The same web dashboard runs at `http://127.0.0.1:8765`. Scheme *aliases* (`SCHEME_MIN`/`SCHEME_BALANCED`/`SCHEME_MAX`) are used instead of hardcoded GUIDs because OEM images ship their own, with a fallback to Windows 11 power-mode overlays when a scheme is absent. Fan control, RAPL, EPP, the auto daemon and the tray are explicitly **not** ported and say so instead of failing obscurely — fan control on Windows needs a signed kernel driver, and a userspace tool that half-owns the fans is worse than one that leaves them to the firmware.
+- **Platform layer** (`lib/platform_backend.py`, `lib/platform_windows.py`) — one interface for everything that differs per platform: `apply_profile`, `get_cpu_temp`, `get_cpu_load`, `get_gpu_stats`, `set_gpu_power_limit`, `get_sensors`, `gpu_power_limit_range`, `power_profile`, plus capability flags. The Linux implementation only decides which installed command to run, so `bin/boost`, `bin/powersave`, `bin/silent --auto`, `bin/restore` and `bin/auto` remain the single source of truth for what a profile means.
+- **`lib/boost_paths.py`** — config and state paths in one place. Linux resolves to exactly the historical `/etc/boost-auto.conf` and `/var/lib/power-profile/`; Windows uses `%ProgramData%\Boost`. `tests/test_platform.py` asserts the Linux values, because they are a compatibility contract.
+- **`bin/boost.py`** — cross-platform entry point (`boost | powersave | silent | restore | status | web`). On Linux it is optional; on Windows PyInstaller freezes it into `boost.exe`.
+- **`packaging/windows/build.ps1`** and **`.github/workflows/windows-build.yml`** — a portable zip built and smoke-tested on `windows-latest` on every push, attached to releases on a `v*` tag.
+- 32 new tests covering the platform layer, including the Windows backend (exercised off-platform by faking the process runner).
+
+### Changed
+- **Repository reorganised** — the root now holds only README/LICENSE/CHANGELOG/CONTRIBUTING/SECURITY plus the two installers. Documentation moved to `docs/`, shipped defaults to `config/`, and systemd units, `.desktop` entries, the completion script and the graphical installer to `packaging/linux/`. **Installed paths are unchanged** (`/usr/local/bin`, `/usr/local/lib`, `/etc/boost-auto.conf`, `/usr/local/share/boost`), so upgrades are transparent — but a clone older than this release must `git pull` before `sudo ./install.sh`.
+- **The dashboard page left the Python source.** 1,800 lines of HTML/CSS/JS that used to be one string in `lib/boost-web.py` now live in `lib/webui/{index.html,app.css,app.js}`. The server reads them once at import and inlines them, so the browser still gets a single request with zero external assets and the rendered page is byte-identical. A missing `webui/` directory fails loudly at startup instead of serving a broken page.
+- **Dashboard restyled to the Legacies design system** — `#101317` ground, translucent cards with white 10% borders, indigo `#6366F1` as the primary accent and green `#67F264` only as a secondary highlight and OK status, Geist for text and IBM Plex Mono for numbers, 20px radii, diffuse black shadows and a 4px spacing scale. Every brand value is a CSS custom property; `app.js` reads the same tokens through `getComputedStyle` so the SVG charts follow them too. The animated mesh gradient behind the page and the tricolour gradient headline are gone. No webfont is fetched — the server has no guaranteed internet access, so the stacks fall back to `system-ui`.
+- Buttons are now a filled indigo primary or a transparent ghost; profile buttons are flat category fills instead of gradients with coloured glows. Cards lift 4px on hover. The header is sticky and blurs on scroll. A `prefers-reduced-motion` opt-out was added.
+
 ## [1.9.0] - 2026-08-16
 
 ### Added

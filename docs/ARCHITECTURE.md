@@ -75,6 +75,61 @@ Anything moved here must stay in sync with `install.sh`, `uninstall.sh`, the
 systemd units, and the test suites — those are the only places that hardcode
 repository-relative paths.
 
+## Platform Layer
+
+Boost talks to sysfs, RAPL and systemd directly. None of that exists on
+Windows, so everything that must be done differently per platform goes through
+one small interface in `lib/platform_backend.py`:
+
+```
+                    ┌──────────────────────────────┐
+   bin/boost.py ───►│      PlatformBackend         │
+   boost-web.py ───►│  apply_profile               │
+                    │  get_cpu_temp / get_cpu_load │
+                    │  get_gpu_stats / get_sensors │
+                    │  set_gpu_power_limit         │
+                    │  gpu_power_limit_range       │
+                    │  power_profile               │
+                    └───────┬──────────────┬───────┘
+                            │              │
+              ┌─────────────▼───┐   ┌──────▼─────────────────┐
+              │  LinuxBackend   │   │   WindowsBackend       │
+              │  bin/* CLI      │   │   powercfg             │
+              │  sensors.py     │   │   nvidia-smi           │
+              │  /proc, sysfs   │   │   GetSystemTimes / WMI │
+              └─────────────────┘   └────────────────────────┘
+```
+
+`get_backend()` picks the implementation for the running platform, once.
+
+**The Linux path is unchanged.** `LinuxBackend` only decides *which* installed
+command to run — `bin/boost`, `bin/powersave`, `bin/silent --auto`,
+`bin/restore` and `bin/auto` remain the single source of truth for what a
+profile means. And because `reads_sysfs` is true on Linux, `boost-web.py` keeps
+using its own hand-tuned sysfs readers; the backend's telemetry methods are
+what `bin/boost.py` and non-Linux platforms use.
+
+**Capability flags** (`supports_fan_control`, `supports_auto_daemon`,
+`supports_rapl`, `supports_epp`, `supports_tray`) let callers refuse an action
+with a clear message rather than failing obscurely. The dashboard checks them
+before dispatching fan and auto-daemon actions.
+
+`lib/boost_paths.py` is the matching change for the filesystem: every module
+imports its config and state paths from there. On Linux they resolve to exactly
+the historical values (`/etc/boost-auto.conf`, `/var/lib/power-profile/`) —
+`tests/test_platform.py` asserts this, because those paths are a compatibility
+contract. On Windows both live under `%ProgramData%\Boost`.
+
+### Windows scope
+
+Windows v1 is monitor + profiles + dashboard. It ships **no** fan control (that
+needs a signed kernel driver to reach the embedded controller), no RAPL, no
+EPP, no auto daemon and no tray. `WindowsBackend` drives `powercfg` through
+*aliases* (`SCHEME_MIN` / `SCHEME_BALANCED` / `SCHEME_MAX`), never hardcoded
+GUIDs, because OEM images ship their own scheme GUIDs — and falls back to
+Windows 11 power-mode overlays when a scheme is absent. See
+`packaging/windows/` for the PyInstaller build.
+
 ## Component Details
 
 ### 1. CLI Profile Commands (`bin/boost`, `bin/powersave`, `bin/silent`, `bin/restore`)
