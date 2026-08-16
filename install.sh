@@ -23,7 +23,7 @@ migrate_config() {
     local key value backup
     backup="/etc/boost-auto.conf.backup-$(date +%Y%m%d-%H%M%S)"
     cp "$CONF_FILE" "$backup"
-    install -m 644 "$REPO_DIR/boost-auto.conf" "$CONF_FILE"
+    install -m 644 "$REPO_DIR/config/boost-auto.conf" "$CONF_FILE"
     for key in \
         AUTO_MODE QUIET_HOURS_START QUIET_HOURS_END ALLOW_CRITICAL_AUTO \
         SUMMER_SILENT_NIGHTS AMBIENT_TEMP_C AMBIENT_TEMP_FILE \
@@ -55,14 +55,21 @@ install -m 755 "$REPO_DIR/lib/sensors.py" /usr/local/lib/sensors.py
 install -m 755 "$REPO_DIR/lib/fancontrol.py" /usr/local/lib/fancontrol.py
 install -m 755 "$REPO_DIR/lib/boost-tray.py" /usr/local/bin/boost-tray
 
+echo "[install] Copying dashboard assets to /usr/local/lib/webui..."
+mkdir -p /usr/local/lib/webui
+for asset in index.html app.css app.js; do
+    install -m 644 "$REPO_DIR/lib/webui/$asset" /usr/local/lib/webui/"$asset"
+    echo "  -> /usr/local/lib/webui/$asset"
+done
+
 echo "[install] Installing canonical mode presets..."
 mkdir -p /usr/local/share/boost
-install -m 644 "$REPO_DIR/presets.json" /usr/local/share/boost/presets.json
+install -m 644 "$REPO_DIR/config/presets.json" /usr/local/share/boost/presets.json
 echo "  -> /usr/local/share/boost/presets.json"
 
 echo "[install] Copying shell autocompletions..."
 mkdir -p /usr/share/bash-completion/completions
-install -m 644 "$REPO_DIR/boost-completion.bash" /usr/share/bash-completion/completions/auto
+install -m 644 "$REPO_DIR/packaging/linux/boost-completion.bash" /usr/share/bash-completion/completions/auto
 for cmd in boost powersave silent restore summer; do
     ln -sf auto /usr/share/bash-completion/completions/"$cmd"
 done
@@ -70,8 +77,8 @@ done
 echo "[install] Installing desktop app launcher & tray autostart..."
 mkdir -p /usr/local/share/applications
 mkdir -p /etc/xdg/autostart
-install -m 644 "$REPO_DIR/boost-dashboard.desktop" /usr/local/share/applications/boost-dashboard.desktop
-install -m 644 "$REPO_DIR/boost-tray.desktop" /etc/xdg/autostart/boost-tray.desktop
+install -m 644 "$REPO_DIR/packaging/linux/desktop/boost-dashboard.desktop" /usr/local/share/applications/boost-dashboard.desktop
+install -m 644 "$REPO_DIR/packaging/linux/desktop/boost-tray.desktop" /etc/xdg/autostart/boost-tray.desktop
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/local/share/applications >/dev/null 2>&1 || true
 fi
@@ -94,17 +101,17 @@ for module in spd5118 drivetemp; do
 done
 
 echo "[install] Installing systemd services..."
-install -m 644 "$REPO_DIR/systemd/power-save-originals.service" \
+install -m 644 "$REPO_DIR/packaging/linux/systemd/power-save-originals.service" \
     /etc/systemd/system/power-save-originals.service
-install -m 644 "$REPO_DIR/systemd/boost-auto.service" \
+install -m 644 "$REPO_DIR/packaging/linux/systemd/boost-auto.service" \
     /etc/systemd/system/boost-auto.service
-install -m 644 "$REPO_DIR/systemd/boost-web.service" \
+install -m 644 "$REPO_DIR/packaging/linux/systemd/boost-web.service" \
     /etc/systemd/system/boost-web.service
-install -m 644 "$REPO_DIR/systemd/boost-ac-init.service" \
+install -m 644 "$REPO_DIR/packaging/linux/systemd/boost-ac-init.service" \
     /etc/systemd/system/boost-ac-init.service
 echo "[install] Installing suspend/resume hook..."
 mkdir -p /usr/lib/systemd/system-sleep
-install -m 755 "$REPO_DIR/systemd/boost-sleep-hook" /usr/lib/systemd/system-sleep/boost
+install -m 755 "$REPO_DIR/packaging/linux/systemd/boost-sleep-hook" /usr/lib/systemd/system-sleep/boost
 systemctl daemon-reload
 systemctl enable power-save-originals.service
 systemctl enable boost-ac-init.service
@@ -112,7 +119,7 @@ systemctl enable --now boost-web.service
 echo "  -> Web dashboard enabled and started: http://127.0.0.1:8765"
 
 echo "[install] Installing udev rules..."
-install -m 644 "$REPO_DIR/systemd/99-boost-power.rules" \
+install -m 644 "$REPO_DIR/packaging/linux/systemd/99-boost-power.rules" \
     /etc/udev/rules.d/99-boost-power.rules
 if command -v udevadm >/dev/null 2>&1; then
     udevadm control --reload-rules
@@ -121,7 +128,7 @@ fi
 
 echo "[install] Installing default config..."
 if [[ ! -f "$CONF_FILE" ]]; then
-    install -m 644 "$REPO_DIR/boost-auto.conf" "$CONF_FILE"
+    install -m 644 "$REPO_DIR/config/boost-auto.conf" "$CONF_FILE"
     echo "  -> /etc/boost-auto.conf (edit to tune thresholds)"
 else
     migrate_config

@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Boost Power Manager — premium Linux power profile control dashboard">
+<title>Boost Control Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+<style>
+{{APP_CSS}}
+</style>
+</head>
+<body>
+<div class="conn-bar" id="connBar">⚠ Connection lost — reconnecting...</div>
+<div id="toast-container"></div>
+<main>
+<div class="header">
+  <div class="header-left">
+    <h1>Boost Control Panel</h1>
+    <div class="tagline">Linux power profile manager • Intel / AMD + NVIDIA</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <div class="view-switch" role="group" aria-label="Dashboard detail level">
+      <button id="viewSimple" class="on" type="button">Simple</button>
+      <button id="viewAdvanced" type="button">Advanced</button>
+    </div>
+    <div class="status-badge">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px"><span id="serviceDot" class="status-indicator active"></span><span class="status-text" id="serviceText">Initializing...</span></div>
+        <div class="status-sub" id="updatedText">Connecting to telemetry...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<section class="gauges-grid" aria-label="Live system metrics">
+  <div class="card gauge-card" id="cpuLoadCard">
+    <div class="gauge-wrapper">
+      <svg class="gauge-svg" viewBox="0 0 130 130">
+        <circle class="gauge-bg" cx="65" cy="65" r="54" />
+        <circle id="cpuLoadCircle" class="gauge-fill" cx="65" cy="65" r="54" style="stroke:#0ea5e9;filter:drop-shadow(0 0 8px rgba(14,165,233,0.4))" />
+      </svg>
+      <div class="gauge-value"><span id="cpuLoadText">—</span><small>%</small></div>
+    </div>
+    <div class="gauge-label">CPU Load</div>
+  </div>
+
+  <div class="card gauge-card" id="cpuTempCard">
+    <div class="gauge-wrapper">
+      <svg class="gauge-svg" viewBox="0 0 130 130">
+        <circle class="gauge-bg" cx="65" cy="65" r="54" />
+        <circle id="cpuTempCircle" class="gauge-fill" cx="65" cy="65" r="54" style="stroke:#f59e0b;filter:drop-shadow(0 0 8px rgba(245,158,11,0.4))" />
+      </svg>
+      <div class="gauge-value"><span id="cpuTempText">—</span><small>°C</small></div>
+    </div>
+    <div class="gauge-label">CPU Temperature</div>
+  </div>
+
+  <div class="card gauge-card" style="animation-delay:0.15s">
+    <div class="gauge-label" style="margin-bottom:12px;font-size:12px">GPU Metrics</div>
+    <div style="font-family:var(--font-title);font-size:28px;font-weight:700;line-height:1.2"><span id="gpuPowerText">—</span><small style="font-size:14px;color:var(--text-muted);font-weight:400"> W</small></div>
+    <div style="color:var(--text-muted);font-size:12px;margin-top:4px">of <span id="gpuLimitText">—</span> W limit</div>
+    <div style="margin-top:12px;font-size:13px;color:var(--text-secondary)">🌡️ GPU Temp: <strong id="gpuTempText" style="color:var(--text-main)">—</strong> °C</div>
+  </div>
+
+  <div class="card gauge-card" style="animation-delay:0.18s">
+    <div class="gauge-label" style="margin-bottom:12px;font-size:12px">Battery</div>
+    <div style="font-family:var(--font-title);font-size:28px;font-weight:700;line-height:1.2"><span id="batteryPctText">—</span><small style="font-size:14px;color:var(--text-muted);font-weight:400"> %</small></div>
+    <div style="color:var(--text-muted);font-size:12px;margin-top:4px">Status: <span id="batteryStatusText">—</span></div>
+    <div style="margin-top:8px;font-size:13px;color:var(--text-secondary)">🔌 AC: <strong id="acOnlineText" style="color:var(--text-main)">—</strong></div>
+    <div style="margin-top:4px;font-size:12px;color:var(--text-muted)" id="batteryTimeRow" hidden>⏱ <span id="batteryTimeText">—</span></div>
+  </div>
+
+  <div class="card gauge-card" style="animation-delay:0.2s">
+    <div class="gauge-label" style="margin-bottom:12px;font-size:12px">System Config</div>
+    <div class="stats-details" style="margin-top:0;border:none;padding:0;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="detail-item"><div class="detail-lbl">Profile</div><div class="detail-val" id="profile">—</div></div>
+      <div class="detail-item"><div class="detail-lbl">Auto Mode</div><div class="detail-val" id="autoMode">—</div></div>
+      <div class="detail-item"><div class="detail-lbl">Turbo</div><div class="detail-val" id="turbo">—</div></div>
+      <div class="detail-item"><div class="detail-lbl">RAPL PL1/PL2</div><div class="detail-val" id="limits">—</div></div>
+      <div class="detail-item"><div class="detail-lbl">THP</div><div class="detail-val" id="thp">—</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="card" style="margin-bottom:24px;animation-delay:0.22s">
+  <div class="section-title">🌡️ Component Temperatures <span style="font-size:12px;color:var(--text-muted);font-weight:400;font-family:var(--font-body)">(every sensor the kernel exposes)</span></div>
+  <div class="temp-grid" id="tempGrid"><div class="skeleton" style="height:96px"></div></div>
+  <p style="font-size:11px;color:var(--text-muted);margin-top:10px" id="tempHint"></p>
+</section>
+
+<div class="split">
+  <div style="display:flex;flex-direction:column;gap:24px">
+    <section class="card" style="animation-delay:0.25s">
+      <div class="section-title">⚡ Power Profiles & Auto Modes</div>
+
+      <div class="banner warn" id="interlockBanner" hidden><span>🛡️</span><span id="interlockText"></span></div>
+
+      <div class="control-group">
+        <div class="control-label">Manual Profile Override</div>
+        <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Selecting a manual profile disables Auto mode</div>
+        <div class="actions">
+          <button class="btn primary-boost" id="btn-boost" data-action="boost" aria-label="Activate Performance Profile" title="Switch to maximum power limit for demanding tasks">🚀 Performance <span class="kbd">1</span></button>
+          <button class="btn good-save" id="btn-powersave" data-action="powersave" aria-label="Activate Balanced Profile" title="Switch to balanced power, ideal for 95% of daily use">⚖️ Balanced <span class="kbd">2</span></button>
+          <button class="btn silent-mode" id="btn-silent" data-action="silent" aria-label="Activate Eco Mode" title="Strict thermal and noise constraints, best for night time">🍃 Eco Mode <span class="kbd">3</span></button>
+          <button class="btn restore-bios" id="btn-restore" data-action="restore" aria-label="Restore BIOS Defaults" title="Reset all changes back to BIOS defaults">♻️ Default <span class="kbd">4</span></button>
+        </div>
+      </div>
+
+      <div class="control-group" aria-labelledby="heading-auto-modes">
+        <h2 id="heading-auto-modes" class="control-label" style="font-size:14px;color:var(--text-main);margin-bottom:4px;">🤖 Smart Auto Modes</h2>
+        <div class="reason">
+          <strong style="color:var(--text-main);display:block;margin-bottom:4px;font-size:14px" id="decisionReasonCard">Loading...</strong>
+        </div>
+        <div class="actions">
+          <button class="btn" id="mode-dynamic" data-action="auto-mode" data-value="dynamic" aria-label="Enable Dynamic Mode" title="Balanced suggestions adapted to everyday workloads">🧠 Dynamic</button>
+          <button class="btn" id="mode-gaming" data-action="auto-mode" data-value="gaming" aria-label="Enable Gaming Mode" title="Optimized for gaming sessions">🎮 Gaming</button>
+          <button class="btn" id="mode-creator" data-action="auto-mode" data-value="creator" aria-label="Enable Creator Mode" title="Optimized for 3D rendering and AI training limits">🎬 Creator (Render/AI)</button>
+          <button class="btn" id="mode-quiet" data-action="auto-mode" data-value="quiet" aria-label="Enable Quiet Mode" title="Strict low noise and heat profile">🤫 Quiet</button>
+          <button class="btn" id="mode-off" data-action="auto-mode" data-value="off" style="color:var(--color-danger)" aria-label="Disable Auto Mode" title="Disable background automation daemon completely">🚫 Off</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" style="animation-delay:0.3s">
+      <div class="section-title">📊 Live Telemetry <span style="font-size:12px;color:var(--text-muted);font-weight:400;font-family:var(--font-body)">(last 30 samples)</span></div>
+      <div class="chart-container">
+        <svg id="historyChart" class="chart-svg" viewBox="0 0 1000 200" preserveAspectRatio="none">
+          <text x="50%" y="50%" text-anchor="middle" fill="#64748b" font-size="13" font-family="Inter,sans-serif">Collecting telemetry data...</text>
+        </svg>
+        <div class="chart-legend">
+          <div class="legend-item"><span class="legend-dot" style="background:#0ea5e9"></span><span>CPU Load (%)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span><span>CPU Temp (°C)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background:#ec4899"></span><span>GPU Power (W/200)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background:#22c55e"></span><span>Battery (%)</span></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <aside style="display:flex;flex-direction:column;gap:24px">
+    <section class="card" style="animation-delay:0.3s">
+      <div class="section-title">⏳ Auto Pause & Snooze</div>
+      <div class="control-group">
+        <div class="control-label">Snooze suggestions for:</div>
+        <div class="actions" style="margin-bottom:16px">
+          <button class="btn" data-action="snooze" data-value="30m">30m</button>
+          <button class="btn" data-action="snooze" data-value="1h">1h</button>
+          <button class="btn" data-action="snooze" data-value="2h">2h</button>
+          <button class="btn" data-action="snooze" data-value="4h">4h</button>
+          <button class="btn" data-action="today-off">All Today</button>
+        </div>
+        <button class="btn good-save" style="width:100%;text-align:center" data-action="resume">▶ Resume Auto</button>
+      </div>
+      <div class="stats-details" style="margin-top:16px">
+        <div class="detail-item"><div class="detail-lbl">Status</div><div class="detail-val" id="pauseState">—</div></div>
+        <div class="detail-item"><div class="detail-lbl">Reason</div><div class="detail-val" style="font-size:12px;color:var(--text-muted)" id="pauseReason">—</div></div>
+      </div>
+    </section>
+
+    <section class="card" style="animation-delay:0.35s">
+      <div class="section-title">🌙 Quiet Hours & Summer Nights</div>
+      <div class="control-group">
+        <div class="control-label">Quiet hours schedule</div>
+        <div style="color:var(--text-muted);font-size:12px;margin-bottom:10px">No prompts during quiet hours</div>
+        <div class="field-row">
+          <label>Start <input id="quietStart" value="22:00" placeholder="HH:MM"></label>
+          <label>End <input id="quietEnd" value="08:00" placeholder="HH:MM"></label>
+          <button class="btn active-preset" id="saveQuiet" style="margin-top:14px;width:100%">Save Schedule</button>
+        </div>
+      </div>
+      <div class="control-group" style="margin-top:20px">
+        <div class="control-label">Summer Nights</div>
+        <div style="color:var(--text-muted);font-size:12px;margin-bottom:10px">Auto-enable Silent overnight in Summer mode</div>
+        <div class="actions">
+          <button class="btn good-save" id="summer-nights-on" data-action="summer-nights" data-value="on">Enable</button>
+          <button class="btn" id="summer-nights-off" data-action="summer-nights" data-value="off">Disable</button>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:8px">State: <strong id="summerNights" style="color:var(--text-main)">—</strong></div>
+      </div>
+    </section>
+
+    <section class="card" style="animation-delay:0.4s">
+      <div class="section-title">📋 Reports & Averages</div>
+      <div class="stats-details" style="margin-top:0;border:none;padding:0;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="detail-item"><div class="detail-lbl">Avg CPU</div><div class="detail-val" id="avgCpu">—</div></div>
+        <div class="detail-item"><div class="detail-lbl">Max Temp</div><div class="detail-val" id="maxTemp">—</div></div>
+        <div class="detail-item"><div class="detail-lbl">Avg GPU</div><div class="detail-val" id="avgGpu">—</div></div>
+        <div class="detail-item"><div class="detail-lbl">Governor</div><div class="detail-val" id="epp">—</div></div>
+      </div>
+      <div class="actions" style="margin-top:20px;flex-direction:column;gap:8px">
+        <button class="btn" style="width:100%" data-action="report">Generate HTML Report</button>
+        <a class="btn" style="width:100%;text-align:center;display:block" href="/report" target="_blank" rel="noreferrer">Open Latest Report ↗</a>
+      </div>
+      <p style="font-size:10px;color:var(--text-muted);margin-top:8px;word-break:break-all" id="reportPath">—</p>
+    </section>
+  </aside>
+</div>
+
+<section class="card" style="margin-top:24px;animation-delay:0.42s" id="fanSection">
+  <div class="section-title">🌀 Fan Control
+    <span class="badge info" id="fanEngineBadge" style="margin-left:6px">off</span>
+  </div>
+  <div class="banner info" id="fanIntro">
+    Pick a preset per fan and Boost takes it from there. Curves are requests, not orders:
+    if the CPU, GPU or an NVMe drive gets hot, the fans speed up on their own and this
+    panel says why.
+  </div>
+  <div class="banner warn" id="fanGuardBanner" hidden><span>🛡️</span><span id="fanGuardText"></span></div>
+  <div class="banner warn" id="fanConflictBanner" hidden><span>⚠️</span><span id="fanConflictText"></span></div>
+  <div class="actions" style="margin-bottom:16px">
+    <button class="btn good-save" id="fanEnableBtn" data-action="fan-enable" data-value="on">▶ Let Boost control the fans</button>
+    <button class="btn" id="fanDisableBtn" data-action="fan-enable" data-value="off">⏹ Hand fans back to BIOS</button>
+    <button class="btn advanced-only" data-action="fan-calibrate" title="Measures the real minimum speed and RPM range of every fan">🧪 Calibrate fans</button>
+  </div>
+  <div class="fan-grid" id="fanGrid"></div>
+</section>
+
+<section class="card advanced-only" style="margin-top:24px;animation-delay:0.44s" id="gpuLimitSection" hidden>
+  <div class="section-title">🎮 GPU Power Limit</div>
+  <div style="color:var(--text-muted);font-size:12px;margin-bottom:10px">
+    Watts, clamped to the range the driver itself reports (<span id="gpuRangeText">—</span>).
+    Set one per profile; empty means Boost scales it for you. Raising the limit is refused while the GPU is at 85 °C or hotter.
+  </div>
+  <div class="curve-tabs" id="gpuProfileTabs">
+    <button data-gpu-profile="boost" class="on">Performance</button>
+    <button data-gpu-profile="powersave">Balanced</button>
+    <button data-gpu-profile="silent">Eco</button>
+  </div>
+  <div class="slider-row">
+    <input type="range" id="gpuLimitSlider" min="0" max="100" value="0">
+    <span class="slider-value" id="gpuLimitValue">auto</span>
+  </div>
+  <div class="actions" style="margin-top:12px">
+    <button class="btn active-preset" id="gpuLimitSave">💾 Apply limit</button>
+    <button class="btn" id="gpuLimitAuto">↺ Back to automatic</button>
+    <span style="font-size:11px;color:var(--text-muted);align-self:center">Now: <strong id="gpuLimitNow">—</strong></span>
+  </div>
+</section>
+
+<section class="card advanced-only" style="margin-top:24px;animation-delay:0.45s">
+  <div class="section-title">🧠 Auto Switch Decision Engine</div>
+  <p class="reason" id="decisionReason">—</p>
+  <div class="stats-details" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));border-top:none;padding-top:0">
+    <div class="detail-item"><div class="detail-lbl">Warm Threshold</div><div class="detail-val" id="tempHot">—</div></div>
+    <div class="detail-item"><div class="detail-lbl">Critical Temp</div><div class="detail-val" id="tempCritical">—</div></div>
+    <div class="detail-item"><div class="detail-lbl">Boost Below</div><div class="detail-val" id="boostLimit">—</div></div>
+    <div class="detail-item"><div class="detail-lbl">Busy Trigger</div><div class="detail-val" id="busyTrigger">—</div></div>
+    <div class="detail-item"><div class="detail-lbl">Idle Trigger</div><div class="detail-val" id="idleTrigger">—</div></div>
+    <div class="detail-item"><div class="detail-lbl">Cooldown</div><div class="detail-val" id="cooldown">—</div></div>
+  </div>
+</section>
+
+<section class="advanced-only" style="margin-top:32px">
+  <h2 style="font-family:var(--font-title);font-size:22px;font-weight:700;margin-bottom:12px">Preset Threshold Reference</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Mode</th><th>Warm</th><th>Critical</th><th>Boost Below</th><th>Busy Trigger</th><th>Idle Trigger</th><th>Cooldown</th></tr></thead>
+    <tbody id="modes"></tbody>
+  </table></div>
+</section>
+
+<section class="advanced-only" style="margin-top:32px">
+  <h2 style="font-family:var(--font-title);font-size:22px;font-weight:700;margin-bottom:12px">Sensor History Log</h2>
+  <div style="margin-bottom:10px;padding:8px 12px;background:rgba(13,24,45,0.4);border:1px solid rgba(255,255,255,0.05);border-radius:8px" id="profileSwitchLog"></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Time</th><th>Profile</th><th>CPU Load</th><th>CPU Temp</th><th>GPU</th><th>RAPL</th></tr></thead>
+    <tbody id="history"></tbody>
+  </table></div>
+</section>
+
+<section class="advanced-only" style="margin-top:32px">
+  <h2 style="font-family:var(--font-title);font-size:22px;font-weight:700;margin-bottom:12px">⚙️ Configuration</h2>
+  <div class="card" style="padding:20px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px" id="configGrid">
+      <div class="detail-item">
+        <div class="detail-lbl">Critical Temp</div>
+        <input id="cfg_TEMP_CRITICAL" type="number" min="60" max="100" value="85" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Warm Threshold</div>
+        <input id="cfg_TEMP_HOT" type="number" min="50" max="95" value="78" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Boost Below</div>
+        <input id="cfg_BOOST_TEMP_LIMIT" type="number" min="50" max="95" value="78" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Busy Load %</div>
+        <input id="cfg_LOAD_HIGH" type="number" min="10" max="100" value="75" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Busy Duration (s)</div>
+        <input id="cfg_LOAD_HIGH_DURATION" type="number" min="10" max="3600" value="120" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Idle Load %</div>
+        <input id="cfg_LOAD_IDLE" type="number" min="0" max="50" value="8" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Idle Duration (s)</div>
+        <input id="cfg_LOAD_IDLE_DURATION" type="number" min="10" max="3600" value="600" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Cooldown (s)</div>
+        <input id="cfg_PROMPT_COOLDOWN" type="number" min="10" max="7200" value="900" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Poll Interval (s)</div>
+        <input id="cfg_POLL_INTERVAL" type="number" min="1" max="60" value="5" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Stats Interval (s)</div>
+        <input id="cfg_STATS_INTERVAL" type="number" min="10" max="600" value="60" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Critical Auto Protect</div>
+        <select id="cfg_ALLOW_CRITICAL_AUTO" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      </div>
+    </div>
+      <div class="detail-item">
+        <div class="detail-lbl">AC Profile</div>
+        <select id="cfg_AC_PROFILE" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+          <option value="restore">Default</option>
+          <option value="boost">Performance</option>
+          <option value="powersave">Balanced</option>
+          <option value="silent">Power Saver</option>
+        </select>
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Battery Profile</div>
+        <select id="cfg_BATTERY_PROFILE" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+          <option value="powersave">Balanced</option>
+          <option value="silent">Power Saver</option>
+          <option value="restore">Default</option>
+          <option value="boost">Performance</option>
+        </select>
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Battery Low %</div>
+        <input id="cfg_BATTERY_LOW_PCT" type="number" min="5" max="50" value="20" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Battery Critical %</div>
+        <input id="cfg_BATTERY_CRITICAL_PCT" type="number" min="3" max="30" value="10" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Low Battery Notify</div>
+        <select id="cfg_BATTERY_LOW_NOTIFY" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Boost EPP</div>
+        <select id="cfg_BOOST_EPP" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+          <option value="balance_performance">Balanced (cooler)</option>
+          <option value="performance">Performance (max)</option>
+        </select>
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Boost PL1 %</div>
+        <input id="cfg_BOOST_PL1_PCT" type="number" min="40" max="100" value="100" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Boost PL2 %</div>
+        <input id="cfg_BOOST_PL2_PCT" type="number" min="40" max="100" value="80" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Powersave on Screen Lock</div>
+        <select id="cfg_SCREEN_LOCK_POWERSAVE" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Battery Charge Limit % (0=off)</div>
+        <input id="cfg_BATTERY_CHARGE_LIMIT" type="number" min="0" max="100" value="0" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Slow Charge Threshold (W)</div>
+        <input id="cfg_SLOW_CHARGE_THRESHOLD_W" type="number" min="0" max="200" step="0.1" value="2" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Slow Charge Trigger Battery %</div>
+        <input id="cfg_SLOW_CHARGE_BATTERY_PCT" type="number" min="1" max="100" value="25" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+      <div class="detail-item">
+        <div class="detail-lbl">Slow Charge Recovery Battery %</div>
+        <input id="cfg_SLOW_CHARGE_RECOVERY_PCT" type="number" min="1" max="100" value="35" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+      </div>
+    <div class="actions" style="margin-top:20px">
+      <button class="btn active-preset" id="saveConfigBtn" style="width:100%">💾 Save Configuration</button>
+      <span style="font-size:11px;color:var(--text-muted);margin-top:8px;display:block">Changes take effect immediately. The daemon re-reads config on the next poll cycle.</span>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  Boost Power Manager v1.9.0 — Keyboard: <kbd>1</kbd> Boost <kbd>2</kbd> Powersave <kbd>3</kbd> Silent <kbd>4</kbd> Restore <kbd>R</kbd> Refresh
+</footer>
+</main>
+
+<script>
+{{APP_JS}}
+</script>
+</body>
+</html>

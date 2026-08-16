@@ -2,8 +2,8 @@
 # GUI Installer for Boost Power Manager
 # You can double-click this script from your File Manager.
 
-# Move to the script's directory
-cd "$(dirname "$0")" || exit 1
+# Move to the repository root (this script lives in packaging/linux/)
+cd "$(dirname "$0")/../.." || exit 1
 
 # If already root (e.g., ran via sudo in terminal), just run the installer
 if [ "$EUID" -eq 0 ]; then

@@ -283,6 +283,25 @@ ls /sys/class/powercap/intel-rapl/                        # expects RAPL availab
 - **Boot Persistence:** Profile changes are ephemeral by default. A `systemd` service (`power-save-originals.service`) captures your BIOS state at boot — `restore` always works, reboot always resets to factory defaults.
 - **Thread-safe daemon:** The Python web server and background daemon are fully thread-safe with proper lock guards on all shared state.
 
+### 📂 Repository layout
+
+```
+bin/        commands installed to /usr/local/bin
+lib/        runtime libraries → /usr/local/lib   (lib/webui/ = dashboard HTML/CSS/JS)
+config/     shipped defaults  → /etc/boost-auto.conf, presets.json
+packaging/  linux/ (systemd, desktop entries, completion) and windows/ (build scripts)
+docs/       ARCHITECTURE.md · DEPENDENCIES.md · TROUBLESHOOTING.md
+tests/      pytest + bash suites
+```
+
+> Upgrading from a clone older than v1.10? `systemd/`, the `.desktop` files and
+> `boost-auto.conf` moved out of the repository root. Run `git pull` before
+> `sudo ./install.sh` — the installer reads the new paths.
+
+Deep dives: [Architecture](docs/ARCHITECTURE.md) ·
+[Dependencies](docs/DEPENDENCIES.md) ·
+[Troubleshooting](docs/TROUBLESHOOTING.md)
+
 ---
 
 ## 🗑️ Uninstall

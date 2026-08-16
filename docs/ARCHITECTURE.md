@@ -45,6 +45,36 @@ activation.
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Repository Layout
+
+Source layout is grouped by *what a file is*, not by what it does at runtime.
+The installed paths (`/usr/local/bin`, `/usr/local/lib`) are unchanged.
+
+```
+.
+├── bin/                     Executables copied to /usr/local/bin
+├── lib/                     Runtime libraries copied to /usr/local/lib
+│   └── webui/               Dashboard sources (index.html, app.css, app.js)
+├── config/                  Shipped defaults
+│   ├── boost-auto.conf      → /etc/boost-auto.conf
+│   └── presets.json         → /usr/local/share/boost/presets.json
+├── packaging/
+│   ├── linux/
+│   │   ├── systemd/         Units, udev rule, sleep hook
+│   │   ├── desktop/         .desktop launchers
+│   │   ├── boost-completion.bash
+│   │   └── install-gui.sh   Double-clickable graphical installer
+│   └── windows/             PowerShell build + Windows notes
+├── docs/                    ARCHITECTURE, DEPENDENCIES, TROUBLESHOOTING
+├── tests/                   pytest + bash test suites
+├── install.sh / uninstall.sh
+└── README.md, CHANGELOG.md, CONTRIBUTING.md, SECURITY.md, LICENSE
+```
+
+Anything moved here must stay in sync with `install.sh`, `uninstall.sh`, the
+systemd units, and the test suites — those are the only places that hardcode
+repository-relative paths.
+
 ## Component Details
 
 ### 1. CLI Profile Commands (`bin/boost`, `bin/powersave`, `bin/silent`, `bin/restore`)
@@ -113,15 +143,31 @@ processes, then suggests or automatically applies profile changes.
 ### 3. Web Dashboard (`lib/boost-web.py`)
 
 **Language:** Python 3 (stdlib only)  
-**Lines:** 1,571  
 **Purpose:** Local web UI at `http://127.0.0.1:8765` for real-time monitoring and
 profile switching.
 
 **Architecture:**
 - `ThreadingHTTPServer` — one thread per request.
 - No framework (stdlib `http.server`).
-- Serves a single HTML page with embedded CSS/JS (~30KB inline string).
 - JSON API at `/api/status` (GET) and `/api/action` (POST).
+- The page itself lives in `lib/webui/` as three ordinary files:
+
+  | File | Contents |
+  |------|----------|
+  | `webui/index.html` | Markup, with `{{APP_CSS}}` / `{{APP_JS}}` placeholders |
+  | `webui/app.css` | Design tokens and all component styles |
+  | `webui/app.js` | Polling, SSE stream, charts, dashboard interactions |
+
+  `load_index_html()` reads the three files **once at import time** and inlines
+  them into a single document. The browser still gets one request and zero
+  external assets, but the sources stay editable and lintable on their own. A
+  missing `webui/` directory aborts startup with an explicit message rather than
+  serving a broken page.
+
+The Python module is organised in banner-delimited sections — helpers, config,
+presets, ambient/quiet hours, pause state, system state cache, live snapshot,
+sensors/fans/GPU, hardware telemetry, history/battery, `/api/status` payload,
+dashboard actions, page assembly, HTTP server.
 
 **API endpoints:**
 

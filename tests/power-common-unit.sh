@@ -48,7 +48,7 @@ test_load_mode_preset_matches_json() (
     assert_eq() { [[ "$1" == "$2" ]] || fail "$3: expected '$2', got '$1'"; }
 
     source "$ROOT_DIR/lib/power-common.sh"
-    load_mode_preset gaming "$ROOT_DIR/presets.json" || fail "load_mode_preset(gaming) returned non-zero"
+    load_mode_preset gaming "$ROOT_DIR/config/presets.json" || fail "load_mode_preset(gaming) returned non-zero"
     assert_eq "${TEMP_HOT:-}" "80" "gaming TEMP_HOT"
     assert_eq "${BOOST_TEMP_LIMIT:-}" "80" "gaming BOOST_TEMP_LIMIT"
     assert_eq "${LOAD_HIGH:-}" "50" "gaming LOAD_HIGH"
@@ -62,7 +62,7 @@ test_load_mode_preset_matches_json() (
 test_load_mode_preset_unknown_mode_fails() (
     set -u
     source "$ROOT_DIR/lib/power-common.sh"
-    if load_mode_preset bogus-mode "$ROOT_DIR/presets.json" 2>/dev/null; then
+    if load_mode_preset bogus-mode "$ROOT_DIR/config/presets.json" 2>/dev/null; then
         echo "FAIL: load_mode_preset(bogus-mode) should return non-zero" >&2
         exit 1
     fi
@@ -130,6 +130,7 @@ test_silent_interlock_allows_when_cool_and_idle() (
     conf="$(mktemp)"
     trap 'rm -f "$conf"' EXIT
     printf 'BOOST_TEMP_LIMIT=78\nLOAD_HIGH=75\n' > "$conf"
+    # shellcheck disable=SC2034  # read by silent_interlock_reason from power-common.sh
     AUTO_CONF_FILE="$conf"
     get_cpu_temp_c() { echo 45; }
     get_cpu_load_percent() { echo 4; }
@@ -145,7 +146,9 @@ test_silent_interlock_allows_when_cool_and_idle() (
 test_gpu_pl_for_mode_reads_config() (
     set -u
     source "$ROOT_DIR/lib/power-common.sh"
+    # shellcheck disable=SC2034  # read by gpu_pl_for_mode from power-common.sh
     GPU_PL_BOOST_W=320
+    # shellcheck disable=SC2034  # empty on purpose: "automatic" for this mode
     GPU_PL_SILENT_W=
     [[ "$(gpu_pl_for_mode boost)" == "320" ]] || { echo "FAIL: boost watt limit" >&2; exit 1; }
     [[ -z "$(gpu_pl_for_mode silent)" ]] || { echo "FAIL: empty means automatic" >&2; exit 1; }

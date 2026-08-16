@@ -19,7 +19,7 @@ REPORT_BIN="/usr/local/bin/power-report"
 
 # Canonical mode presets shared with lib/boost-daemon.py and lib/boost-web.py.
 PRESETS_FILE="/usr/local/share/boost/presets.json"
-[[ -f "$PRESETS_FILE" ]] || PRESETS_FILE="$SCRIPT_DIR/../presets.json"
+[[ -f "$PRESETS_FILE" ]] || PRESETS_FILE="$SCRIPT_DIR/../config/presets.json"
 
 # Fan curve engine (lib/fancontrol.py), used by `auto fans ...`.
 FANCONTROL_PY="/usr/local/lib/fancontrol.py"

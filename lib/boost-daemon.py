@@ -53,7 +53,7 @@ PENDING_SILENT_MAX_AGE_S = 4 * 3600
 # three implementations can never drift apart (see CHANGELOG v1.2.0).
 PRESETS_FILE_CANDIDATES = [
     "/usr/local/share/boost/presets.json",
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "presets.json"),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "presets.json"),
 ]
 
 _presets_cache: dict = {}
