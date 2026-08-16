@@ -3,11 +3,17 @@
 Boost Power Daemon
 Unified async daemon replacing the bash loop for maximum efficiency.
 Features: O(1) thermal/load polling, Game Mode detection.
+
+The O(1) claim covers temperature/load reads only (fixed sysfs paths,
+cached after first resolution). read_process_set() used by Game/Creator/
+Meeting detection is O(n_procs) (os.listdir + open per pid under /proc),
+cached once per poll_interval rather than re-scanned every check.
 """
 import os
 import sys
 import time
 import json
+import csv
 import subprocess
 import shlex
 import syslog
@@ -20,6 +26,7 @@ STATS_FILE = os.path.join(STATE_DIR, "stats.csv")
 SNOOZE_FILE = os.path.join(STATE_DIR, "auto-snooze-until")
 SKIP_TODAY_FILE = os.path.join(STATE_DIR, "auto-skip-date")
 LIVE_FILE = os.path.join(STATE_DIR, "live.json")
+DAILY_FILE = os.path.join(STATE_DIR, "daily.csv")
 GPU_HEAVY_UTIL_PCT = 80
 GPU_HEAVY_DURATION_S = 30
 
@@ -122,6 +129,10 @@ class BoostDaemon:
         self.idle_since = 0
         self.gpu_high_since = 0
         self._gpu_stats_cache = (0, ["0", "0", "0", "0"])
+        self.last_switch_reason = ""
+        self.last_switch_reason_text = ""
+        self.last_switch_time = 0
+        self._last_rollup_date = datetime.now().strftime("%Y-%m-%d")
         self.last_prompt = 0
         self.last_auto = 0
         self.last_stats = 0
@@ -578,12 +589,77 @@ class BoostDaemon:
         pl2 = str(int(self.read_text(f'{rapl_base}/constraint_1_power_limit_uw', '0')) // 1000000)
         return pl1, pl2
 
+    def maybe_roll_up_daily_stats(self):
+        """Append yesterday's rollup to daily.csv the first time record_stats
+        runs after the local date changes.
+
+        stats.csv rotates at 250KB / ~2000 rows (~1.5 days at the default
+        60s STATS_INTERVAL), too little history for week/month thermal or
+        battery trends. This one-row-per-day file grows far slower and is
+        written independently of that hot-path rotation.
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        if today == self._last_rollup_date:
+            return
+        prior_date = self._last_rollup_date
+        self._last_rollup_date = today
+        try:
+            if not os.path.exists(STATS_FILE):
+                return
+            temps, loads, profile_counts, battery_deltas = [], [], {}, []
+            prev_battery = None
+            with open(STATS_FILE, newline='', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    if not row.get("iso", "").startswith(prior_date):
+                        continue
+                    try:
+                        temps.append(int(row["cpu_temp"]))
+                    except (KeyError, ValueError):
+                        pass
+                    try:
+                        loads.append(int(row["cpu_load"]))
+                    except (KeyError, ValueError):
+                        pass
+                    prof = row.get("profile", "")
+                    if prof:
+                        profile_counts[prof] = profile_counts.get(prof, 0) + 1
+                    bp = row.get("battery_pct", "")
+                    if bp.lstrip('-').isdigit():
+                        bp = int(bp)
+                        if prev_battery is not None:
+                            battery_deltas.append(abs(bp - prev_battery))
+                        prev_battery = bp
+            if not temps and not loads and not profile_counts:
+                return  # daemon wasn't running that day; nothing to roll up
+
+            total_rows = sum(profile_counts.values()) or 1
+            share = ";".join(
+                f"{name}:{count * 100 // total_rows}%"
+                for name, count in sorted(profile_counts.items())
+            )
+            # Rough charge-cycle proxy: total %-points of battery movement / 200
+            # (100% discharge + 100% charge == one full cycle).
+            cycles_proxy = round(sum(battery_deltas) / 200, 2) if battery_deltas else 0
+
+            is_new = not os.path.exists(DAILY_FILE)
+            with open(DAILY_FILE, 'a') as f:
+                if is_new:
+                    f.write("date,min_temp,avg_temp,max_temp,avg_load,profile_share,battery_cycles_proxy\n")
+                min_t = min(temps) if temps else 0
+                max_t = max(temps) if temps else 0
+                avg_t = round(sum(temps) / len(temps), 1) if temps else 0
+                avg_l = round(sum(loads) / len(loads), 1) if loads else 0
+                f.write(f"{prior_date},{min_t},{avg_t},{max_t},{avg_l},{share},{cycles_proxy}\n")
+        except Exception as e:
+            self.log(f"Error writing daily rollup: {e}")
+
     def record_stats(self, load, temp, profile, gpu_stats=None):
         try:
             if not getattr(self, '_state_dir_created', False):
                 os.makedirs(STATE_DIR, exist_ok=True)
                 self._state_dir_created = True
 
+            self.maybe_roll_up_daily_stats()
             gpu_temp, gpu_power, gpu_limit, _gpu_util = gpu_stats if gpu_stats is not None else self.get_gpu_stats()
             pl1, pl2 = self.read_rapl_limits()
             gov = self.read_text('/sys/devices/system/cpu/cpufreq/policy0/scaling_governor', '') or self.read_text('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor', 'unknown')
@@ -636,6 +712,11 @@ class BoostDaemon:
                 "mode": self.mode,
                 "limits": {"pl1": pl1, "pl2": pl2},
                 "battery": {"acOnline": ac_online, "pct": battery_pct},
+                "lastSwitch": {
+                    "reason": self.last_switch_reason,
+                    "text": self.last_switch_reason_text,
+                    "time": self.last_switch_time,
+                },
             }
             tmp = f"{LIVE_FILE}.tmp"
             with open(tmp, 'w') as f:
@@ -643,6 +724,18 @@ class BoostDaemon:
             os.rename(tmp, LIVE_FILE)
         except Exception as e:
             self.log(f"Error writing live snapshot: {e}")
+
+    def note_switch(self, code, text):
+        """Record why the daemon just silently changed something.
+
+        Surfaced via live.json/status_payload's auto.decision so "why did
+        my profile just change" is answerable for the AC/battery/slow-charge/
+        screen-lock/critical-heat paths, not just the thermal/load heuristic
+        decision_reason() already covers.
+        """
+        self.last_switch_reason = code
+        self.last_switch_reason_text = text
+        self.last_switch_time = int(time.time())
 
     def run_command(self, cmd):
         try:
@@ -871,11 +964,13 @@ class BoostDaemon:
             elif ac_online == 1:
                 self.log(f"AC connected. Applying profile: {self.ac_profile}")
                 self.run_command(f"/usr/local/bin/{self.ac_profile}")
+                self.note_switch("ac-connected", f"AC plugged in. Applied the {self.ac_profile} profile.")
                 self.send_notification("AC Power Connected",
                     f"Switched to {self.ac_profile} profile.")
             elif ac_online == 0:
                 self.log(f"On battery. Applying profile: {self.battery_profile}")
                 self.run_command(f"/usr/local/bin/{self.battery_profile}")
+                self.note_switch("on-battery", f"Unplugged from AC. Applied the {self.battery_profile} profile.")
                 if battery_pct is not None and battery_pct <= self.battery_critical_pct:
                     self.send_notification("Battery Critical",
                         f"Only {battery_pct}% remaining. Maximum power saving.", level="critical")
@@ -899,6 +994,7 @@ class BoostDaemon:
                 if profile != "power-saver":
                     self.log(f"Battery critical ({battery_pct}%). Auto powersave.")
                     self.run_command("/usr/local/bin/powersave")
+                    self.note_switch("battery-critical", f"Battery critical at {battery_pct}%. Forced powersave.")
                 if self.battery_low_notify == "yes":
                     self.send_notification("Battery Critical",
                         f"Only {battery_pct}% remaining. System is in maximum power saving mode.",
@@ -942,6 +1038,7 @@ class BoostDaemon:
                         avg_w = avg_uw / 1_000_000
                         self.log(f"Slow charge detected ({avg_w:.1f}W avg). Switching to powersave.")
                         self.run_command("/usr/local/bin/powersave")
+                        self.note_switch("slow-charge", f"Charger barely keeping up ({avg_w:.1f}W net). Switched to powersave.")
                         self.send_notification(
                             "Slow Charging Detected",
                             f"Charger barely keeping up ({avg_w:.1f}W net to battery). "
@@ -955,6 +1052,7 @@ class BoostDaemon:
                         restore = self.ac_profile if self.ac_profile in ("boost", "powersave", "silent") else "boost"
                         self.log(f"Slow charge resolved. Battery at {battery_pct}%. Restoring {restore}.")
                         self.run_command(f"/usr/local/bin/{restore}")
+                        self.note_switch("slow-charge-recovered", f"Charging recovered at {battery_pct}%. Restored {restore}.")
                         self.send_notification(
                             "Charging Recovered",
                             f"Battery at {battery_pct}%. Switched back to {restore.capitalize()} profile.",
@@ -973,11 +1071,13 @@ class BoostDaemon:
                 if profile != "power-saver":
                     self.log("Screen locked. Silently switching to powersave.")
                     self.run_command("/usr/local/bin/powersave")
+                    self.note_switch("screen-lock", "Screen locked. Switched to powersave.")
             elif not locked and self._screen_locked:
                 self._screen_locked = False
                 if self._pre_lock_profile == "performance":
                     self.log("Screen unlocked. Restoring performance profile.")
                     self.run_command("/usr/local/bin/boost")
+                    self.note_switch("screen-unlock", "Screen unlocked. Restored the performance profile.")
                 self._pre_lock_profile = None
 
         # ── Charge limit enforcement ─────────────────────────────
@@ -991,6 +1091,7 @@ class BoostDaemon:
             if now - self.last_auto > 3600:
                 self.log("Summer quiet hours: auto silent")
                 self.run_command("/usr/local/bin/silent --auto")
+                self.note_switch("summer-quiet-hours", "Summer quiet hours are active. Switched to Silent.")
                 self.send_notification("Summer night mode", "Quiet hours are active, so Auto applied Silent mode.")
                 self.last_auto = now
                 self.last_prompt = now
@@ -1001,6 +1102,7 @@ class BoostDaemon:
             if now - self.last_auto > 60:
                 self.log("Game detected. Switching to boost automatically.")
                 self.run_command("/usr/local/bin/boost")
+                self.note_switch("game-detected", "Game detected. Switched to maximum performance.")
                 self.send_notification("Game Mode Enabled", "Detected a game running. Switched to maximum performance.")
                 self.last_auto = now
                 return
@@ -1026,6 +1128,7 @@ class BoostDaemon:
             if ac_online == 0:
                 self.log("Meeting detected on battery. Auto-switching to powersave.")
                 self.run_command("/usr/local/bin/powersave")
+                self.note_switch("meeting-on-battery", "Video call detected on battery. Switched to powersave.")
                 self.send_notification(
                     "Video call — Eco Mode",
                     "Switched to Eco Mode to keep fans quiet and save battery during your call.",
@@ -1044,6 +1147,7 @@ class BoostDaemon:
             if now - self.last_auto > 120:
                 self.log(f"Critical heat {temp}C. Emergency powersave.")
                 self.run_command("/usr/local/bin/powersave")
+                self.note_switch("critical-heat", f"CPU hit {temp}C. Forced powersave to protect hardware.")
                 self.send_notification("Critical Heat Warning", f"CPU reached {temp}C. Switched to cooler mode to protect hardware.", level="critical")
                 self.last_auto = now
                 self.last_prompt = now

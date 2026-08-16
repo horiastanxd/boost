@@ -25,7 +25,7 @@ rm -f /etc/systemd/system/boost-ac-init.service
 systemctl daemon-reload
 
 echo "[uninstall] Removing binaries..."
-for bin in boost powersave silent summer restore power-save-originals auto power-report boost-web ac-event boost-tray; do
+for bin in boost powersave silent summer restore power-save-originals auto power-report boost-web ac-event boost-tray boost-statusbar; do
     rm -f "/usr/local/bin/${bin}"
     echo "  -> removed /usr/local/bin/${bin}"
 done
@@ -34,6 +34,7 @@ echo "[uninstall] Removing libraries..."
 rm -f /usr/local/lib/power-common.sh
 rm -f /usr/local/lib/boost-web.py
 rm -f /usr/local/lib/boost-daemon.py
+rm -rf /usr/local/share/boost
 
 echo "[uninstall] Removing shell completions..."
 rm -f /usr/share/bash-completion/completions/auto

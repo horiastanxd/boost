@@ -28,6 +28,8 @@ STATS_FILE = Path("/var/lib/power-profile/stats.csv")
 LATEST_REPORT = Path("/var/lib/power-profile/reports/latest.html")
 SNOOZE_FILE = Path("/var/lib/power-profile/auto-snooze-until")
 SKIP_TODAY_FILE = Path("/var/lib/power-profile/auto-skip-date")
+LIVE_FILE = Path("/var/lib/power-profile/live.json")
+LIVE_FRESH_SECONDS = 10
 
 
 def run(cmd: list[str], timeout: float = 4.0) -> subprocess.CompletedProcess[str]:
@@ -448,6 +450,24 @@ def decision_reason(
     return "Current profile looks reasonable for the active mode."
 
 
+RECENT_SWITCH_WINDOW_SECONDS = 120
+
+def recent_switch_reason(live: dict[str, Any] | None) -> str | None:
+    """Explain a just-happened silent auto-switch (AC/battery/slow-charge/
+    screen-lock/critical-heat) that decision_reason()'s thermal/load
+    heuristic never mentions, so "why did my profile just change" has an
+    answer for those paths too.
+    """
+    if not live:
+        return None
+    last_switch = live.get("lastSwitch") or {}
+    text = last_switch.get("text")
+    switch_time = last_switch.get("time") or 0
+    if not text or time.time() - switch_time > RECENT_SWITCH_WINDOW_SECONDS:
+        return None
+    return str(text)
+
+
 _SYS_STATE_CACHE = {}
 _SYS_STATE_LOCK = threading.Lock()
 
@@ -500,6 +520,26 @@ def cached_run(key: str, cmd: list[str], ttl: int) -> str:
 
 def active_service(name: str) -> str:
     return cached_run(f"service_{name}", ["systemctl", "is-active", name], 5) or "inactive"
+
+
+def read_live_snapshot() -> dict[str, Any] | None:
+    """Return the daemon's per-tick state snapshot when it's fresh, else None.
+
+    The daemon (already root, single poll authority) writes this file every
+    tick. Reading it here avoids a second independent sysfs/hwmon/nvidia-smi
+    poll from this process when the daemon is already doing it.
+    """
+    try:
+        mtime = LIVE_FILE.stat().st_mtime
+    except OSError:
+        return None
+    if time.time() - mtime > LIVE_FRESH_SECONDS:
+        return None
+    try:
+        data = json.loads(LIVE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def power_profile() -> str:
@@ -867,11 +907,28 @@ def battery_drain_rate(rows: list[dict[str, str]]) -> float | None:
 def status_payload() -> dict[str, Any]:
     config = read_config()
     rows = history()
-    gpu = gpu_stats()
-    profile = power_profile()
+    live = read_live_snapshot()
+    if live:
+        live_gpu = live.get("gpu", {})
+        live_limits = live.get("limits", {})
+        gpu = {
+            "temp": str(live_gpu.get("temp", "0")),
+            "power": str(live_gpu.get("power", "0")),
+            "limit": str(live_gpu.get("limit", "0")),
+            "vendor": "daemon",
+        }
+        profile = str(live.get("profile") or power_profile())
+        cpu_load = int(live.get("cpu", {}).get("load", 0) or 0)
+        cpu_temp = int(live.get("cpu", {}).get("temp", 0) or 0)
+        pl1 = int(live_limits.get("pl1", 0) or 0)
+        pl2 = int(live_limits.get("pl2", 0) or 0)
+    else:
+        gpu = gpu_stats()
+        profile = power_profile()
+        cpu_load = cpu_load_percent()
+        cpu_temp = cpu_temp_c()
+        pl1, pl2 = rapl_w(0), rapl_w(1)
     mode = config.get("AUTO_MODE", "dynamic")
-    cpu_load = cpu_load_percent()
-    cpu_temp = cpu_temp_c()
     ambient = ambient_temp(config)
     base_thresholds = mode_thresholds(mode, config)
     thresholds = apply_ambient_adjustment(base_thresholds, ambient)
@@ -891,14 +948,14 @@ def status_payload() -> dict[str, Any]:
             "modes": [mode_thresholds(item, config) for item in ("dynamic", "gaming", "creator", "quiet", "off")],
             "pause": pause,
             "ambient": ambient,
-            "decision": decision_reason(mode, profile, cpu_temp, cpu_load, thresholds, pause),
+            "decision": recent_switch_reason(live) or decision_reason(mode, profile, cpu_temp, cpu_load, thresholds, pause),
         },
         "web": {"service": active_service("boost-web.service"), "url": f"http://{HOST}:{PORT}"},
         "profile": profile,
         "friendlyProfile": {"performance": "Performance", "balanced": "Balanced", "power-saver": "Eco Mode"}.get(profile, profile),
         "cpu": {"load": cpu_load, "temp": cpu_temp},
         "gpu": gpu,
-        "limits": {"pl1": rapl_w(0), "pl2": rapl_w(1)},
+        "limits": {"pl1": pl1, "pl2": pl2},
         "system": get_sys_state(),
         "report": {"latestExists": LATEST_REPORT.exists(), "path": str(LATEST_REPORT)},
         "summary": summary(rows),

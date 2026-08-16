@@ -4,8 +4,10 @@
 Provides a GTK tray indicator for quick access to power profiles,
 auto-mode switching, snooze controls, and live CPU telemetry.
 """
+import json
 import os
 import sys
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,6 +24,8 @@ from gi.repository import Gtk, Gdk, GLib, AyatanaAppIndicator3, Notify
 VERSION = "1.7.0"
 STATE_DIR = Path("/var/lib/power-profile")
 CONF_FILE = Path("/etc/boost-auto.conf")
+LIVE_FILE = STATE_DIR / "live.json"
+LIVE_FRESH_SECONDS = 10
 
 # ── Cached browser path ──────────────────────────────────────────────
 _cached_browser_path = None
@@ -33,7 +37,7 @@ _profile_cycle_count = 0
 Notify.init("Boost")
 
 def run_cmd(cmd):
-    subprocess.Popen(cmd, shell=True, env=dict(os.environ, AUTO_HELPER_INTERNAL="1"))
+    subprocess.Popen(shlex.split(cmd), env=dict(os.environ, AUTO_HELPER_INTERNAL="1"))
 
 def notify(message, icon="power-profile-balanced-symbolic"):
     """Show a native GNOME desktop notification."""
@@ -174,6 +178,25 @@ def get_cpu_load():
         return int((delta_total - delta_idle) * 100 / delta_total)
     except Exception:
         return 0
+
+def read_live_snapshot():
+    """Return the daemon's per-tick state snapshot when it's fresh, else None.
+
+    Avoids the tray re-reading sysfs/hwmon/nvidia-smi and re-running the
+    coretemp outlier correction independently of the daemon and dashboard.
+    """
+    try:
+        mtime = LIVE_FILE.stat().st_mtime
+    except OSError:
+        return None
+    if time.time() - mtime > LIVE_FRESH_SECONDS:
+        return None
+    try:
+        with open(LIVE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 def get_profile():
     """Return the active power profile, using a 15-second cache."""
@@ -441,9 +464,15 @@ class BoostTray:
 
     def _background_loop(self):
         while True:
-            temp = get_cpu_temp()
-            load = get_cpu_load()
-            prof = get_profile()
+            live = read_live_snapshot()
+            if live:
+                temp = int(live.get("cpu", {}).get("temp", 0) or 0)
+                load = int(live.get("cpu", {}).get("load", 0) or 0)
+                prof = str(live.get("profile") or get_profile())
+            else:
+                temp = get_cpu_temp()
+                load = get_cpu_load()
+                prof = get_profile()
             amode = get_auto_mode()
             snooze_mins = get_snooze_remaining()
             today_skip = is_today_off()

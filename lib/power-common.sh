@@ -805,6 +805,29 @@ reset_process_priorities() {
     [[ $count -gt 0 ]] && echo "[PROC] $count processes -> nice 0"
 }
 
+# Known process names for automatic Game Mode. Mirrors GAME_PROCESSES in
+# lib/boost-daemon.py (used there to decide *when* to auto-boost); keep
+# both lists in sync.
+GAME_PROCESS_NAMES=(wine-preloader wine64-preloader proton steam cs2 dota2 hl2_linux)
+
+# Renice the detected foreground game process(es) to -5 and set realtime
+# I/O priority during Boost, mirroring Feral GameMode's per-PID approach
+# instead of relying only on the blanket nice-0 reset_process_priorities()
+# above does for every other profile switch.
+boost_game_priority() {
+    local name pid count=0
+    command -v ionice >/dev/null 2>&1
+    local have_ionice=$?
+    for name in "${GAME_PROCESS_NAMES[@]}"; do
+        while IFS= read -r pid; do
+            [[ -n "$pid" ]] || continue
+            renice -n -5 -p "$pid" >/dev/null 2>&1 && ((count++))
+            [[ $have_ionice -eq 0 ]] && ionice -c 1 -p "$pid" >/dev/null 2>&1
+        done < <(pgrep -x "$name" 2>/dev/null)
+    done
+    [[ $count -gt 0 ]] && echo "[PROC] $count game process(es) -> nice -5, ionice realtime"
+}
+
 draw_bar() {
     local val="$1" max="${2:-100}" color="${3:-$C_GREEN}"
     local pct=$(( val * 100 / max ))

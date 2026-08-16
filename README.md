@@ -162,6 +162,16 @@ Run `restore` to return to BIOS defaults, then `sudo ./uninstall.sh` to remove a
 **Q: The tray applet doesn't appear.**  
 Install `gir1.2-ayatanaappindicator3-0.1` (Ubuntu/Debian) or `libayatana-appindicator-gtk3` (Fedora/Arch). On GNOME, also install/enable an AppIndicator extension such as `gnome-shell-extension-appindicator`, then run `boost-tray &`.
 
+**Q: I'm on Sway/Hyprland/KDE and have no tray host for the GTK applet.**  
+Use `boost-statusbar` instead — it prints one waybar-compatible JSON line (temp/load/profile/battery) read from the daemon's live state, no AppIndicator needed. Add it as a waybar `custom/boost` module:
+```jsonc
+"custom/boost": {
+  "exec": "/usr/local/bin/boost-statusbar",
+  "return-type": "json",
+  "interval": 5
+}
+```
+
 ---
 
 ## 🤖 Smart Auto Modes

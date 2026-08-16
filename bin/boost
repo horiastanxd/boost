@@ -39,6 +39,7 @@ echo "[VM]   THP=always"
 
 restore_fan_curve
 reset_process_priorities "$ORIG_USER"
+boost_game_priority
 
 logger -t power-profile "boost applied"
 echo "[BOOST] Done."

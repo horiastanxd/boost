@@ -373,9 +373,35 @@ pause_status() {
     echo "Suggestions are available."
 }
 
+LIVE_FILE="/var/lib/power-profile/live.json"
+
+# Explains a just-happened silent auto-switch (AC/battery/slow-charge/
+# screen-lock/critical-heat) that the thermal/load heuristic below never
+# mentions. Mirrors lib/boost-web.py's recent_switch_reason().
+recent_switch_reason() {
+    [[ -f "$LIVE_FILE" ]] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    python3 - "$LIVE_FILE" <<'PYEOF' 2>/dev/null
+import json, sys, time
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        data = json.load(f)
+    last = data.get("lastSwitch") or {}
+    text = last.get("text")
+    switch_time = last.get("time") or 0
+    if text and time.time() - switch_time <= 120:
+        print(text)
+except Exception:
+    pass
+PYEOF
+}
+
 decision_reason() {
-    local temp="$1" load="$2" profile="$3"
-    if [[ "${AUTO_MODE}" == "off" ]]; then
+    local temp="$1" load="$2" profile="$3" recent
+    recent="$(recent_switch_reason)"
+    if [[ -n "$recent" ]]; then
+        echo "$recent"
+    elif [[ "${AUTO_MODE}" == "off" ]]; then
         echo "Auto mode is off; no automatic suggestions."
     elif [[ "${AUTO_MODE}" == "quiet" ]]; then
         echo "Quiet mode only protects against critical heat."
@@ -413,7 +439,11 @@ check_item() {
 
 show_doctor() {
     local service_state profile notify_actions temp_ok rapl_ok gpu_ok ppd_ok report_ok stats_ok
-    service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || echo inactive)
+    # systemctl is-active prints the state to stdout even when it exits
+    # non-zero (e.g. "inactive"); an `|| echo inactive` fallback here would
+    # duplicate that output instead of ever actually firing.
+    service_state=$(systemctl is-active "$SERVICE" 2>/dev/null)
+    [[ -z "$service_state" ]] && service_state="inactive"
     profile=$(current_power_profile)
     if command -v powerprofilesctl >/dev/null 2>&1; then
         ppd_ok=yes
@@ -445,6 +475,15 @@ show_doctor() {
     [[ -e /var/lib/power-profile/reports/latest.html ]] && report_ok=yes || report_ok=no
     [[ -s /var/lib/power-profile/stats.csv ]] && stats_ok=yes || stats_ok=no
 
+    local conflict_ok=yes conflict_hint=""
+    for conflict_svc in tlp.service auto-cpufreq.service; do
+        if systemctl is-active --quiet "$conflict_svc" 2>/dev/null; then
+            conflict_ok=no
+            conflict_hint="${conflict_svc} is also managing power settings and will fight Boost. Run: sudo systemctl disable --now ${conflict_svc}"
+            break
+        fi
+    done
+
     cat <<EOF
 Auto doctor
 
@@ -461,6 +500,7 @@ EOF
     check_item "$notify_actions" "Notification buttons" "Your notify-send may not support action buttons."
     check_item "$stats_ok" "Statistics history" "Run 'auto stats' once, or keep auto mode running for a minute."
     check_item "$report_ok" "Latest web report" "Run 'auto report' to generate it."
+    check_item "$conflict_ok" "No conflicting power tool" "$conflict_hint"
 
     cat <<'EOF'
 

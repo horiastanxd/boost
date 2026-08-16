@@ -41,7 +41,7 @@ migrate_config() {
 }
 
 echo "[install] Copying scripts to /usr/local/bin..."
-for bin in boost powersave silent summer restore power-save-originals auto power-report boost-web ac-event; do
+for bin in boost powersave silent summer restore power-save-originals auto power-report boost-web ac-event boost-statusbar; do
     install -m 755 "$REPO_DIR/bin/$bin" /usr/local/bin/"$bin"
     echo "  -> /usr/local/bin/$bin"
 done
@@ -52,6 +52,10 @@ install -m 644 "$REPO_DIR/lib/boost-web.py" /usr/local/lib/boost-web.py
 install -m 755 "$REPO_DIR/lib/boost-daemon.py" /usr/local/lib/boost-daemon.py
 install -m 755 "$REPO_DIR/lib/boost-tray.py" /usr/local/bin/boost-tray
 
+echo "[install] Installing canonical mode presets..."
+mkdir -p /usr/local/share/boost
+install -m 644 "$REPO_DIR/presets.json" /usr/local/share/boost/presets.json
+echo "  -> /usr/local/share/boost/presets.json"
 
 echo "[install] Copying shell autocompletions..."
 mkdir -p /usr/share/bash-completion/completions

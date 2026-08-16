@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""boost-statusbar - minimal waybar/polybar-style JSON status module.
+
+Reads the daemon's live.json snapshot (written once per poll tick, see
+lib/boost-daemon.py write_live_snapshot) and prints one waybar custom-module
+JSON object to stdout. No independent sysfs/hwmon/nvidia-smi polling here on
+purpose: this module exists as a documented alternative to the GTK tray for
+KDE/wlroots (Sway, Hyprland) users who have no AppIndicator host, and it
+leans entirely on the single poll authority the daemon already provides
+instead of adding a 4th place that re-implements CPU-temp/coretemp-outlier
+correction or GPU polling.
+
+Usage (waybar config.jsonc):
+  "custom/boost": {
+    "exec": "/usr/local/bin/boost-statusbar",
+    "return-type": "json",
+    "interval": 5
+  }
+"""
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+LIVE_FILE = Path("/var/lib/power-profile/live.json")
+LIVE_FRESH_SECONDS = 10
+
+FRIENDLY_PROFILE = {
+    "performance": "Performance",
+    "balanced": "Balanced",
+    "power-saver": "Eco Mode",
+}
+
+
+def read_live_snapshot() -> dict | None:
+    try:
+        mtime = LIVE_FILE.stat().st_mtime
+    except OSError:
+        return None
+    if time.time() - mtime > LIVE_FRESH_SECONDS:
+        return None
+    try:
+        data = json.loads(LIVE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def main() -> None:
+    live = read_live_snapshot()
+    if live is None:
+        print(json.dumps({
+            "text": "Boost: offline",
+            "tooltip": "boost-auto.service is not running live data.\nRun: sudo auto start",
+            "class": "inactive",
+        }))
+        return
+
+    cpu = live.get("cpu", {})
+    temp = cpu.get("temp", 0)
+    load = cpu.get("load", 0)
+    profile = str(live.get("profile", "unknown"))
+    mode = str(live.get("mode", "dynamic"))
+    friendly = FRIENDLY_PROFILE.get(profile, profile)
+
+    css_class = "warn" if isinstance(temp, (int, float)) and temp >= 80 else profile
+    battery = live.get("battery", {})
+    bat_pct = battery.get("pct")
+    bat_suffix = f"  {bat_pct}%" if bat_pct is not None else ""
+
+    print(json.dumps({
+        "text": f" {temp}C  {load}%{bat_suffix}",
+        "tooltip": f"Profile: {friendly}\nAuto mode: {mode}\nCPU: {temp}C / {load}% load",
+        "class": css_class,
+        "percentage": load if isinstance(load, (int, float)) else 0,
+    }))
+
+
+if __name__ == "__main__":
+    main()
