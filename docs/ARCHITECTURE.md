@@ -164,6 +164,30 @@ profile switching.
   missing `webui/` directory aborts startup with an explicit message rather than
   serving a broken page.
 
+**Design system:**
+
+The dashboard follows the Legacies design system. Every brand decision is a CSS
+custom property in the token block at the top of `webui/app.css` — no rule below
+that block hardcodes a colour, and `app.js` resolves the same tokens at load
+(`getComputedStyle`) so SVG fills, which cannot use `var()`, stay in sync.
+
+| Token group | Values |
+|-------------|--------|
+| Surfaces | `--bg-deep:#101317`, `--bg-surface:rgba(24,29,35,.70)`, borders white at 10% |
+| Text | `--text-main:#FAFAFA` plus 72% / 48% / 30% steps |
+| Accents | `--accent:#6366F1` (indigo, primary) · `--accent-green:#67F264` (secondary highlights and OK status only) |
+| Status | boost / powersave / silent / warn / danger — colour carries meaning, never decoration |
+| Type | Geist (500 headings, 300–400 body), IBM Plex Mono for every number. No webfont is fetched: the stacks fall back to `system-ui`, so an offline machine still renders correctly. |
+| Radii | 20px for cards, buttons and surfaces · 10px for small elements and media |
+| Shadows | `0 1px 3px` / `0 4px 16px` / `0 8px 32px` black — diffuse and never coloured |
+| Spacing | 4px scale exposed as `--sp-1 … --sp-11`; container padding 48px desktop, 20px mobile |
+| Motion | 200–300ms interactions, a discreet fade-up reveal, and a `prefers-reduced-motion` opt-out |
+
+Buttons come in two shapes — filled indigo primary and transparent ghost with a
+thin border. Profile buttons are flat fills in their category colour. Cards are
+translucent dark with a fine blur and a `translateY(-4px)` hover. The header is
+sticky and minimal, picking up a blurred ground once the page scrolls.
+
 The Python module is organised in banner-delimited sections — helpers, config,
 presets, ambient/quiet hours, pause state, system state cache, live snapshot,
 sensors/fans/GPU, hardware telemetry, history/battery, `/api/status` payload,

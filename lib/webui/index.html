@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Boost Power Manager — premium Linux power profile control dashboard">
+<meta name="description" content="Boost — local dashboard for Linux power profiles, temperatures and fan curves">
 <title>Boost Control Dashboard</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <style>
@@ -16,7 +16,7 @@
 <main>
 <div class="header">
   <div class="header-left">
-    <h1>Boost Control Panel</h1>
+    <h1><span class="brand-mark">Boost</span> Control Panel</h1>
     <div class="tagline">Linux power profile manager • Intel / AMD + NVIDIA</div>
   </div>
   <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
@@ -38,7 +38,7 @@
     <div class="gauge-wrapper">
       <svg class="gauge-svg" viewBox="0 0 130 130">
         <circle class="gauge-bg" cx="65" cy="65" r="54" />
-        <circle id="cpuLoadCircle" class="gauge-fill" cx="65" cy="65" r="54" style="stroke:#0ea5e9;filter:drop-shadow(0 0 8px rgba(14,165,233,0.4))" />
+        <circle id="cpuLoadCircle" class="gauge-fill" cx="65" cy="65" r="54" style="stroke:var(--series-load)" />
       </svg>
       <div class="gauge-value"><span id="cpuLoadText">—</span><small>%</small></div>
     </div>
@@ -49,7 +49,7 @@
     <div class="gauge-wrapper">
       <svg class="gauge-svg" viewBox="0 0 130 130">
         <circle class="gauge-bg" cx="65" cy="65" r="54" />
-        <circle id="cpuTempCircle" class="gauge-fill" cx="65" cy="65" r="54" style="stroke:#f59e0b;filter:drop-shadow(0 0 8px rgba(245,158,11,0.4))" />
+        <circle id="cpuTempCircle" class="gauge-fill" cx="65" cy="65" r="54" style="stroke:var(--series-temp)" />
       </svg>
       <div class="gauge-value"><span id="cpuTempText">—</span><small>°C</small></div>
     </div>
@@ -58,14 +58,14 @@
 
   <div class="card gauge-card" style="animation-delay:0.15s">
     <div class="gauge-label" style="margin-bottom:12px;font-size:12px">GPU Metrics</div>
-    <div style="font-family:var(--font-title);font-size:28px;font-weight:700;line-height:1.2"><span id="gpuPowerText">—</span><small style="font-size:14px;color:var(--text-muted);font-weight:400"> W</small></div>
+    <div class="big-readout"><span id="gpuPowerText">—</span><small class="unit"> W</small></div>
     <div style="color:var(--text-muted);font-size:12px;margin-top:4px">of <span id="gpuLimitText">—</span> W limit</div>
     <div style="margin-top:12px;font-size:13px;color:var(--text-secondary)">🌡️ GPU Temp: <strong id="gpuTempText" style="color:var(--text-main)">—</strong> °C</div>
   </div>
 
   <div class="card gauge-card" style="animation-delay:0.18s">
     <div class="gauge-label" style="margin-bottom:12px;font-size:12px">Battery</div>
-    <div style="font-family:var(--font-title);font-size:28px;font-weight:700;line-height:1.2"><span id="batteryPctText">—</span><small style="font-size:14px;color:var(--text-muted);font-weight:400"> %</small></div>
+    <div class="big-readout"><span id="batteryPctText">—</span><small class="unit"> %</small></div>
     <div style="color:var(--text-muted);font-size:12px;margin-top:4px">Status: <span id="batteryStatusText">—</span></div>
     <div style="margin-top:8px;font-size:13px;color:var(--text-secondary)">🔌 AC: <strong id="acOnlineText" style="color:var(--text-main)">—</strong></div>
     <div style="margin-top:4px;font-size:12px;color:var(--text-muted)" id="batteryTimeRow" hidden>⏱ <span id="batteryTimeText">—</span></div>
@@ -84,7 +84,7 @@
 </section>
 
 <section class="card" style="margin-bottom:24px;animation-delay:0.22s">
-  <div class="section-title">🌡️ Component Temperatures <span style="font-size:12px;color:var(--text-muted);font-weight:400;font-family:var(--font-body)">(every sensor the kernel exposes)</span></div>
+  <div class="section-title">🌡️ Component Temperatures <span class="section-note">(every sensor the kernel exposes)</span></div>
   <div class="temp-grid" id="tempGrid"><div class="skeleton" style="height:96px"></div></div>
   <p style="font-size:11px;color:var(--text-muted);margin-top:10px" id="tempHint"></p>
 </section>
@@ -123,16 +123,16 @@
     </section>
 
     <section class="card" style="animation-delay:0.3s">
-      <div class="section-title">📊 Live Telemetry <span style="font-size:12px;color:var(--text-muted);font-weight:400;font-family:var(--font-body)">(last 30 samples)</span></div>
+      <div class="section-title">📊 Live Telemetry <span class="section-note">(last 30 samples)</span></div>
       <div class="chart-container">
         <svg id="historyChart" class="chart-svg" viewBox="0 0 1000 200" preserveAspectRatio="none">
-          <text x="50%" y="50%" text-anchor="middle" fill="#64748b" font-size="13" font-family="Inter,sans-serif">Collecting telemetry data...</text>
+          <text x="50%" y="50%" text-anchor="middle" fill="rgba(250,250,250,0.48)" font-size="13">Collecting telemetry data...</text>
         </svg>
         <div class="chart-legend">
-          <div class="legend-item"><span class="legend-dot" style="background:#0ea5e9"></span><span>CPU Load (%)</span></div>
-          <div class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span><span>CPU Temp (°C)</span></div>
-          <div class="legend-item"><span class="legend-dot" style="background:#ec4899"></span><span>GPU Power (W/200)</span></div>
-          <div class="legend-item"><span class="legend-dot" style="background:#22c55e"></span><span>Battery (%)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background:var(--series-load)"></span><span>CPU Load (%)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background:var(--series-temp)"></span><span>CPU Temp (°C)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background:var(--series-gpu)"></span><span>GPU Power (W/200)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background:var(--series-battery)"></span><span>Battery (%)</span></div>
         </div>
       </div>
     </section>
@@ -166,7 +166,7 @@
         <div class="field-row">
           <label>Start <input id="quietStart" value="22:00" placeholder="HH:MM"></label>
           <label>End <input id="quietEnd" value="08:00" placeholder="HH:MM"></label>
-          <button class="btn active-preset" id="saveQuiet" style="margin-top:14px;width:100%">Save Schedule</button>
+          <button class="btn primary" id="saveQuiet" style="margin-top:14px;width:100%">Save Schedule</button>
         </div>
       </div>
       <div class="control-group" style="margin-top:20px">
@@ -232,7 +232,7 @@
     <span class="slider-value" id="gpuLimitValue">auto</span>
   </div>
   <div class="actions" style="margin-top:12px">
-    <button class="btn active-preset" id="gpuLimitSave">💾 Apply limit</button>
+    <button class="btn primary" id="gpuLimitSave">💾 Apply limit</button>
     <button class="btn" id="gpuLimitAuto">↺ Back to automatic</button>
     <span style="font-size:11px;color:var(--text-muted);align-self:center">Now: <strong id="gpuLimitNow">—</strong></span>
   </div>
@@ -252,7 +252,7 @@
 </section>
 
 <section class="advanced-only" style="margin-top:32px">
-  <h2 style="font-family:var(--font-title);font-size:22px;font-weight:700;margin-bottom:12px">Preset Threshold Reference</h2>
+  <h2 class="page-title">Preset Threshold Reference</h2>
   <div class="table-wrap"><table>
     <thead><tr><th>Mode</th><th>Warm</th><th>Critical</th><th>Boost Below</th><th>Busy Trigger</th><th>Idle Trigger</th><th>Cooldown</th></tr></thead>
     <tbody id="modes"></tbody>
@@ -260,8 +260,8 @@
 </section>
 
 <section class="advanced-only" style="margin-top:32px">
-  <h2 style="font-family:var(--font-title);font-size:22px;font-weight:700;margin-bottom:12px">Sensor History Log</h2>
-  <div style="margin-bottom:10px;padding:8px 12px;background:rgba(13,24,45,0.4);border:1px solid rgba(255,255,255,0.05);border-radius:8px" id="profileSwitchLog"></div>
+  <h2 class="page-title">Sensor History Log</h2>
+  <div class="switch-log" id="profileSwitchLog"></div>
   <div class="table-wrap"><table>
     <thead><tr><th>Time</th><th>Profile</th><th>CPU Load</th><th>CPU Temp</th><th>GPU</th><th>RAPL</th></tr></thead>
     <tbody id="history"></tbody>
@@ -269,52 +269,52 @@
 </section>
 
 <section class="advanced-only" style="margin-top:32px">
-  <h2 style="font-family:var(--font-title);font-size:22px;font-weight:700;margin-bottom:12px">⚙️ Configuration</h2>
+  <h2 class="page-title">⚙️ Configuration</h2>
   <div class="card" style="padding:20px">
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px" id="configGrid">
       <div class="detail-item">
         <div class="detail-lbl">Critical Temp</div>
-        <input id="cfg_TEMP_CRITICAL" type="number" min="60" max="100" value="85" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_TEMP_CRITICAL" type="number" min="60" max="100" value="85" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Warm Threshold</div>
-        <input id="cfg_TEMP_HOT" type="number" min="50" max="95" value="78" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_TEMP_HOT" type="number" min="50" max="95" value="78" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Boost Below</div>
-        <input id="cfg_BOOST_TEMP_LIMIT" type="number" min="50" max="95" value="78" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_BOOST_TEMP_LIMIT" type="number" min="50" max="95" value="78" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Busy Load %</div>
-        <input id="cfg_LOAD_HIGH" type="number" min="10" max="100" value="75" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_LOAD_HIGH" type="number" min="10" max="100" value="75" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Busy Duration (s)</div>
-        <input id="cfg_LOAD_HIGH_DURATION" type="number" min="10" max="3600" value="120" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_LOAD_HIGH_DURATION" type="number" min="10" max="3600" value="120" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Idle Load %</div>
-        <input id="cfg_LOAD_IDLE" type="number" min="0" max="50" value="8" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_LOAD_IDLE" type="number" min="0" max="50" value="8" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Idle Duration (s)</div>
-        <input id="cfg_LOAD_IDLE_DURATION" type="number" min="10" max="3600" value="600" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_LOAD_IDLE_DURATION" type="number" min="10" max="3600" value="600" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Cooldown (s)</div>
-        <input id="cfg_PROMPT_COOLDOWN" type="number" min="10" max="7200" value="900" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_PROMPT_COOLDOWN" type="number" min="10" max="7200" value="900" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Poll Interval (s)</div>
-        <input id="cfg_POLL_INTERVAL" type="number" min="1" max="60" value="5" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_POLL_INTERVAL" type="number" min="1" max="60" value="5" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Stats Interval (s)</div>
-        <input id="cfg_STATS_INTERVAL" type="number" min="10" max="600" value="60" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_STATS_INTERVAL" type="number" min="10" max="600" value="60" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Critical Auto Protect</div>
-        <select id="cfg_ALLOW_CRITICAL_AUTO" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <select id="cfg_ALLOW_CRITICAL_AUTO" class="cfg-input">
           <option value="yes">Yes</option>
           <option value="no">No</option>
         </select>
@@ -322,7 +322,7 @@
     </div>
       <div class="detail-item">
         <div class="detail-lbl">AC Profile</div>
-        <select id="cfg_AC_PROFILE" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <select id="cfg_AC_PROFILE" class="cfg-input">
           <option value="restore">Default</option>
           <option value="boost">Performance</option>
           <option value="powersave">Balanced</option>
@@ -331,7 +331,7 @@
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Battery Profile</div>
-        <select id="cfg_BATTERY_PROFILE" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <select id="cfg_BATTERY_PROFILE" class="cfg-input">
           <option value="powersave">Balanced</option>
           <option value="silent">Power Saver</option>
           <option value="restore">Default</option>
@@ -340,59 +340,59 @@
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Battery Low %</div>
-        <input id="cfg_BATTERY_LOW_PCT" type="number" min="5" max="50" value="20" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_BATTERY_LOW_PCT" type="number" min="5" max="50" value="20" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Battery Critical %</div>
-        <input id="cfg_BATTERY_CRITICAL_PCT" type="number" min="3" max="30" value="10" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_BATTERY_CRITICAL_PCT" type="number" min="3" max="30" value="10" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Low Battery Notify</div>
-        <select id="cfg_BATTERY_LOW_NOTIFY" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <select id="cfg_BATTERY_LOW_NOTIFY" class="cfg-input">
           <option value="yes">Yes</option>
           <option value="no">No</option>
         </select>
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Boost EPP</div>
-        <select id="cfg_BOOST_EPP" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <select id="cfg_BOOST_EPP" class="cfg-input">
           <option value="balance_performance">Balanced (cooler)</option>
           <option value="performance">Performance (max)</option>
         </select>
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Boost PL1 %</div>
-        <input id="cfg_BOOST_PL1_PCT" type="number" min="40" max="100" value="100" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_BOOST_PL1_PCT" type="number" min="40" max="100" value="100" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Boost PL2 %</div>
-        <input id="cfg_BOOST_PL2_PCT" type="number" min="40" max="100" value="80" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_BOOST_PL2_PCT" type="number" min="40" max="100" value="80" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Powersave on Screen Lock</div>
-        <select id="cfg_SCREEN_LOCK_POWERSAVE" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <select id="cfg_SCREEN_LOCK_POWERSAVE" class="cfg-input">
           <option value="yes">Yes</option>
           <option value="no">No</option>
         </select>
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Battery Charge Limit % (0=off)</div>
-        <input id="cfg_BATTERY_CHARGE_LIMIT" type="number" min="0" max="100" value="0" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_BATTERY_CHARGE_LIMIT" type="number" min="0" max="100" value="0" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Slow Charge Threshold (W)</div>
-        <input id="cfg_SLOW_CHARGE_THRESHOLD_W" type="number" min="0" max="200" step="0.1" value="2" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_SLOW_CHARGE_THRESHOLD_W" type="number" min="0" max="200" step="0.1" value="2" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Slow Charge Trigger Battery %</div>
-        <input id="cfg_SLOW_CHARGE_BATTERY_PCT" type="number" min="1" max="100" value="25" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_SLOW_CHARGE_BATTERY_PCT" type="number" min="1" max="100" value="25" class="cfg-input">
       </div>
       <div class="detail-item">
         <div class="detail-lbl">Slow Charge Recovery Battery %</div>
-        <input id="cfg_SLOW_CHARGE_RECOVERY_PCT" type="number" min="1" max="100" value="35" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;color:var(--text-main);width:100%;font-size:14px">
+        <input id="cfg_SLOW_CHARGE_RECOVERY_PCT" type="number" min="1" max="100" value="35" class="cfg-input">
       </div>
     <div class="actions" style="margin-top:20px">
-      <button class="btn active-preset" id="saveConfigBtn" style="width:100%">💾 Save Configuration</button>
+      <button class="btn primary" id="saveConfigBtn" style="width:100%">💾 Save Configuration</button>
       <span style="font-size:11px;color:var(--text-muted);margin-top:8px;display:block">Changes take effect immediately. The daemon re-reads config on the next poll cycle.</span>
     </div>
   </div>
