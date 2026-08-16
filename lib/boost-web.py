@@ -11,14 +11,24 @@ import argparse
 import csv
 import html
 import json
+import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import sensors as sensor_layer
+    import fancontrol
+except ImportError:  # pragma: no cover - partial install
+    sensor_layer = None
+    fancontrol = None
 
 
 HOST = "127.0.0.1"
@@ -138,6 +148,9 @@ def config_payload() -> dict[str, Any]:
             "SLOW_CHARGE_THRESHOLD_W": config.get("SLOW_CHARGE_THRESHOLD_W", "2"),
             "SLOW_CHARGE_BATTERY_PCT": config.get("SLOW_CHARGE_BATTERY_PCT", "25"),
             "SLOW_CHARGE_RECOVERY_PCT": config.get("SLOW_CHARGE_RECOVERY_PCT", "35"),
+            "GPU_PL_BOOST_W": config.get("GPU_PL_BOOST_W", ""),
+            "GPU_PL_POWERSAVE_W": config.get("GPU_PL_POWERSAVE_W", ""),
+            "GPU_PL_SILENT_W": config.get("GPU_PL_SILENT_W", ""),
         },
     }
 
@@ -170,6 +183,10 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
     "SLOW_CHARGE_THRESHOLD_W": {"type": "float", "min": 0, "max": 200},
     "SLOW_CHARGE_BATTERY_PCT": {"type": "int", "min": 1, "max": 100},
     "SLOW_CHARGE_RECOVERY_PCT": {"type": "int", "min": 1, "max": 100},
+    # Empty means "scale the limit with the profile" (the pre-1.9 behaviour).
+    "GPU_PL_BOOST_W": {"type": "watts"},
+    "GPU_PL_POWERSAVE_W": {"type": "watts"},
+    "GPU_PL_SILENT_W": {"type": "watts"},
 }
 
 
@@ -198,6 +215,17 @@ def validate_config_updates(updates: dict[str, Any]) -> tuple[dict[str, str], st
                 allowed = ", ".join(sorted(spec["values"]))
                 return {}, f"{key} must be one of: {allowed}."
             sanitized[key] = value
+        elif spec["type"] == "watts":
+            if value in ("", "auto", "0"):
+                sanitized[key] = ""
+                continue
+            if not re.fullmatch(r"[0-9]+", value):
+                return {}, f"{key} must be a whole number of watts, or empty for automatic."
+            min_w, max_w = _gpu_limit_range()
+            number = int(value)
+            if max_w and not min_w <= number <= max_w:
+                return {}, f"{key} must be between {min_w} and {max_w} W (the driver's own range)."
+            sanitized[key] = str(number)
         elif spec["type"] == "float":
             try:
                 number = float(value)
@@ -540,6 +568,130 @@ def read_live_snapshot() -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+_SENSOR_CACHE: dict[str, Any] = {"time": 0.0, "groups": []}
+_SENSOR_LOCK = threading.Lock()
+
+
+def sensor_groups(live: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Component temperatures, preferring the daemon's per-tick snapshot.
+
+    Falling back to a direct read keeps the dashboard useful when the daemon
+    is stopped, while the 5s cache stops several browser tabs from each
+    walking every hwmon file.
+    """
+    if live and isinstance(live.get("sensors"), list):
+        return live["sensors"]
+    if sensor_layer is None:
+        return []
+    now = time.time()
+    with _SENSOR_LOCK:
+        if _SENSOR_CACHE["groups"] and now - _SENSOR_CACHE["time"] < 5:
+            return _SENSOR_CACHE["groups"]
+    try:
+        groups = sensor_layer.group_by_category(sensor_layer.get_all())
+    except Exception:  # noqa: BLE001 - a bad sensor must not break the page
+        groups = []
+    with _SENSOR_LOCK:
+        _SENSOR_CACHE["groups"], _SENSOR_CACHE["time"] = groups, time.time()
+    return groups
+
+
+_FAN_CACHE: dict[str, Any] = {"time": 0.0, "value": None}
+_FAN_LOCK = threading.Lock()
+
+
+def fan_payload(live: dict[str, Any] | None) -> dict[str, Any]:
+    """Fan engine state for the dashboard: live status + editable config."""
+    if fancontrol is None:
+        return {"available": False, "enabled": False, "fans": [], "config": {}, "presets": []}
+    now = time.time()
+    with _FAN_LOCK:
+        cached = _FAN_CACHE["value"]
+        fresh = cached is not None and now - _FAN_CACHE["time"] < 5
+    if not fresh:
+        try:
+            config = fancontrol.load_config()
+            channels = [
+                {"id": channel.id, "chip": channel.chip, "index": channel.index,
+                 "hasRpm": bool(channel.rpm_path)}
+                for channel in fancontrol.discover_channels()
+            ]
+            calibration = fancontrol._read_json(fancontrol.CALIBRATION_FILE) or {}
+        except Exception:  # noqa: BLE001
+            config, channels, calibration = {"enabled": False, "fans": {}}, [], {}
+        cached = {
+            "available": bool(channels),
+            "enabled": bool(config.get("enabled")),
+            "configError": config.get("error"),
+            "config": config.get("fans", {}),
+            "channels": channels,
+            "calibration": calibration,
+            "presets": list(fancontrol.PRESET_SHAPES.keys()),
+            "profileKeys": list(fancontrol.PROFILE_KEYS),
+        }
+        with _FAN_LOCK:
+            _FAN_CACHE["value"], _FAN_CACHE["time"] = cached, time.time()
+    payload = dict(cached)
+    status = (live or {}).get("fans") if isinstance((live or {}).get("fans"), dict) else None
+    payload["status"] = status or {"enabled": payload["enabled"], "fans": [], "guard": {}}
+    return payload
+
+
+def _invalidate_fan_cache() -> None:
+    with _FAN_LOCK:
+        _FAN_CACHE["value"], _FAN_CACHE["time"] = None, 0.0
+
+
+def gpu_limit_payload(live: dict[str, Any] | None, config: dict[str, str]) -> dict[str, Any]:
+    """Driver-reported GPU power limit range plus the user's per-profile ask."""
+    live_gpu = (live or {}).get("gpu") or {}
+    min_w = int(live_gpu.get("minLimit") or 0)
+    max_w = int(live_gpu.get("maxLimit") or 0)
+    if not max_w:
+        min_w, max_w = _gpu_limit_range()
+    return {
+        "supported": max_w > 0,
+        "minW": min_w,
+        "maxW": max_w,
+        "requested": {
+            "boost": number_config(config, "GPU_PL_BOOST_W", 0),
+            "powersave": number_config(config, "GPU_PL_POWERSAVE_W", 0),
+            "silent": number_config(config, "GPU_PL_SILENT_W", 0),
+        },
+    }
+
+
+_GPU_RANGE_CACHE: tuple[float, tuple[int, int]] = (0.0, (0, 0))
+
+
+def _gpu_limit_range() -> tuple[int, int]:
+    global _GPU_RANGE_CACHE
+    now = time.time()
+    if _GPU_RANGE_CACHE[0] and now - _GPU_RANGE_CACHE[0] < 300:
+        return _GPU_RANGE_CACHE[1]
+    result = (0, 0)
+    out = cached_run("gpu_range", [
+        "nvidia-smi", "--query-gpu=power.min_limit,power.max_limit",
+        "--format=csv,noheader,nounits", "-i", "0",
+    ], 300)
+    if out:
+        parts = [part.strip() for part in out.splitlines()[0].split(",")]
+        if len(parts) == 2:
+            try:
+                result = (int(float(parts[0])), int(float(parts[1])))
+            except ValueError:
+                result = (0, 0)
+    if result == (0, 0):
+        amd = find_amd_gpu_hwmon()
+        if amd:
+            result = (
+                int(read_text(f"{amd}power1_cap_min", "0") or "0") // 1_000_000,
+                int(read_text(f"{amd}power1_cap_max", "0") or "0") // 1_000_000,
+            )
+    _GPU_RANGE_CACHE = (now, result)
+    return result
 
 
 def power_profile() -> str:
@@ -904,6 +1056,42 @@ def battery_drain_rate(rows: list[dict[str, str]]) -> float | None:
         return None
 
 
+SILENT_PENDING_FILE = Path("/var/lib/power-profile/silent-pending")
+
+
+def interlock_payload(
+    live: dict[str, Any] | None, config: dict[str, str], cpu_temp: int, cpu_load: int
+) -> dict[str, Any]:
+    """Why Eco/Silent is (or is not) available right now.
+
+    The daemon publishes this in the live snapshot because it also tracks how
+    long the load has been high; without the snapshot we fall back to the same
+    instantaneous rule bin/silent uses.
+    """
+    if live and isinstance(live.get("interlock"), dict):
+        data = dict(live["interlock"])
+    else:
+        boost_limit = number_config(config, "BOOST_TEMP_LIMIT", 78)
+        load_high = number_config(config, "LOAD_HIGH", 75)
+        if cpu_temp >= boost_limit:
+            data = {"silentBlocked": True, "reason": f"the CPU is {cpu_temp} C (limit {boost_limit} C)"}
+        elif cpu_load >= load_high:
+            data = {"silentBlocked": True, "reason": f"the CPU is {cpu_load}% busy (busy threshold {load_high}%)"}
+        else:
+            data = {"silentBlocked": False, "reason": ""}
+        data["pending"] = SILENT_PENDING_FILE.exists()
+    if data.get("silentBlocked"):
+        data["hint"] = (
+            f"Eco Mode is held back because {data.get('reason', 'the machine is busy')}. "
+            "Pick it anyway and Boost will switch over by itself once things cool down."
+        )
+    elif data.get("pending"):
+        data["hint"] = "Eco Mode is queued and will apply as soon as the machine cools down."
+    else:
+        data["hint"] = ""
+    return data
+
+
 def status_payload() -> dict[str, Any]:
     config = read_config()
     rows = history()
@@ -957,6 +1145,10 @@ def status_payload() -> dict[str, Any]:
         "gpu": gpu,
         "limits": {"pl1": pl1, "pl2": pl2},
         "system": get_sys_state(),
+        "sensors": sensor_groups(live),
+        "fans": fan_payload(live),
+        "interlock": interlock_payload(live, config, cpu_temp, cpu_load),
+        "gpuLimit": gpu_limit_payload(live, config),
         "report": {"latestExists": LATEST_REPORT.exists(), "path": str(LATEST_REPORT)},
         "summary": summary(rows),
         "history": rows[-30:],
@@ -1013,6 +1205,8 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
         result = run(["/usr/local/bin/auto", "quiet-hours", start, end], timeout=10)
     elif action == "summer-nights" and value in {"on", "off"}:
         result = run(["/usr/local/bin/auto", "summer-nights", value], timeout=10)
+    elif action in FAN_ACTIONS or action == "gpu-limit":
+        return fan_or_gpu_action(action, value)
     elif action == "report":
         result = run(["/usr/local/bin/power-report"], timeout=10)
     elif action == "save-config" and value is not None:

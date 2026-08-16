@@ -21,6 +21,12 @@ REPORT_BIN="/usr/local/bin/power-report"
 PRESETS_FILE="/usr/local/share/boost/presets.json"
 [[ -f "$PRESETS_FILE" ]] || PRESETS_FILE="$SCRIPT_DIR/../presets.json"
 
+# Fan curve engine (lib/fancontrol.py), used by `auto fans ...`.
+FANCONTROL_PY="/usr/local/lib/fancontrol.py"
+[[ -f "$FANCONTROL_PY" ]] || FANCONTROL_PY="$SCRIPT_DIR/../lib/fancontrol.py"
+SENSORS_PY="/usr/local/lib/sensors.py"
+[[ -f "$SENSORS_PY" ]] || SENSORS_PY="$SCRIPT_DIR/../lib/sensors.py"
+
 
 # Friendly defaults. Use `auto mode dynamic|creator|quiet|off`.
 AUTO_MODE="${AUTO_MODE:-dynamic}"
@@ -657,6 +663,82 @@ case "${1:-start}" in
         ;;
     logs)
         journalctl -u "$SERVICE" -f --no-pager
+        exit 0
+        ;;
+    fans)
+        [[ -f "$FANCONTROL_PY" ]] || { echo "Fan engine not installed ($FANCONTROL_PY missing)." >&2; exit 1; }
+        sub="${2:-status}"
+        case "$sub" in
+            status|discover) python3 "$FANCONTROL_PY" "$sub" ;;
+            on|enable)   need_root "$@"; python3 "$FANCONTROL_PY" enable ;;
+            off|disable) need_root "$@"; python3 "$FANCONTROL_PY" disable ;;
+            init|failsafe) need_root "$@"; python3 "$FANCONTROL_PY" "$sub" ;;
+            calibrate)
+                need_root "$@"
+                echo "Calibrating fans. They will spin up and down for a minute or two."
+                echo "The curve engine is paused while this runs."
+                shift 2
+                python3 "$FANCONTROL_PY" calibrate "$@"
+                ;;
+            preset|test)
+                need_root "$@"
+                cmd="$sub"
+                shift 2
+                python3 "$FANCONTROL_PY" "$cmd" "$@"
+                ;;
+            *)
+                echo "Usage: auto fans [status|on|off|init|calibrate|preset <fan> <name>|test <fan> <pwm%> [s]|failsafe]" >&2
+                exit 1
+                ;;
+        esac
+        exit $?
+        ;;
+    sensors)
+        [[ -f "$SENSORS_PY" ]] || { echo "Sensor layer not installed ($SENSORS_PY missing)." >&2; exit 1; }
+        python3 "$SENSORS_PY" "${2:-list}"
+        exit $?
+        ;;
+    gpu-limit)
+        range=$(get_gpu_pl_range_w 2>/dev/null || true)
+        if [[ -z "$range" ]]; then
+            echo "This system has no adjustable GPU power limit." >&2
+            exit 1
+        fi
+        read -r gpu_min gpu_max <<< "$range"
+        if [[ $# -eq 1 ]]; then
+            echo "GPU power limit: $(get_gpu_pl_w) W (allowed ${gpu_min}-${gpu_max} W)"
+            echo "Per-profile requests: boost=${GPU_PL_BOOST_W:-auto} powersave=${GPU_PL_POWERSAVE_W:-auto} silent=${GPU_PL_SILENT_W:-auto}"
+            echo "Usage: auto gpu-limit <watts>|auto [boost|powersave|silent]"
+            exit 0
+        fi
+        need_root "$@"
+        target_profile="${3:-}"
+        if [[ -z "$target_profile" ]]; then
+            case "$(current_power_profile)" in
+                performance|throughput-performance|latency-performance|accelerator-performance) target_profile=boost ;;
+                power-saver|powersave|balanced-battery) target_profile=silent ;;
+                *) target_profile=powersave ;;
+            esac
+        fi
+        case "$target_profile" in boost|powersave|silent) ;; *) echo "Profile must be boost, powersave or silent." >&2; exit 1 ;; esac
+        conf_key="GPU_PL_$(echo "$target_profile" | tr '[:lower:]' '[:upper:]')_W"
+        if [[ "$2" == "auto" || "$2" == "off" ]]; then
+            set_config_value "$conf_key" ""
+            echo "GPU power limit for ${target_profile} is back to automatic scaling."
+            exit 0
+        fi
+        [[ "$2" =~ ^[0-9]+$ ]] || { echo "Usage: auto gpu-limit <watts>|auto [boost|powersave|silent]" >&2; exit 1; }
+        set_config_value "$conf_key" "$2"
+        echo "GPU power limit for ${target_profile} set to $2 W (allowed ${gpu_min}-${gpu_max} W)."
+        # Apply immediately when the requested profile is the active one.
+        if [[ "$target_profile" == "$( \
+            case "$(current_power_profile)" in
+                performance|throughput-performance|latency-performance|accelerator-performance) echo boost ;;
+                power-saver|powersave|balanced-battery) echo silent ;;
+                *) echo powersave ;;
+            esac)" ]]; then
+            set_gpu_pl_w "$2" || true
+        fi
         exit 0
         ;;
     stats)

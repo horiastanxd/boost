@@ -7,12 +7,16 @@
 readonly VERSION="1.8.1"
 ORIGINALS_FILE="/var/lib/power-profile/originals.env"
 FAN_BACKUP="/var/lib/power-profile/fan-curve-backup.env"
+SILENT_PENDING_FILE="/var/lib/power-profile/silent-pending"
 # Fan controller hwmon — discovered at source time, not hardcoded
 HWMON=""
 for _hwmon_dir in /sys/class/hwmon/hwmon*; do
     [[ -f "${_hwmon_dir}/pwm1_auto_point1_pwm" ]] && HWMON="$_hwmon_dir" && break
 done
 unset _hwmon_dir
+# Directory this library lives in, so helpers can find their python siblings
+# both when installed (/usr/local/lib) and when run from a repo checkout.
+BOOST_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PPD_BIN="$(command -v powerprofilesctl 2>/dev/null || true)"
 TUNED_BIN="$(command -v tuned-adm 2>/dev/null || true)"
 AUTO_CONF_FILE="/etc/boost-auto.conf"
@@ -420,22 +424,54 @@ get_gpu_csv() {
     true  # No GPU found; callers check for empty output
 }
 
+# Header shared with lib/boost-daemon.py's STATS_HEADER; keep both in sync.
+STATS_HEADER="epoch,iso,profile,cpu_load,cpu_temp,gpu_temp,gpu_power,gpu_limit,pl1,pl2,governor,epp,turbo,battery_pct,battery_status,nvme_temp,ram_temp,vrm_temp,board_temp"
+
 ensure_stats_file() {
     mkdir -p "$(dirname "$STATS_FILE")"
     if [[ ! -f "$STATS_FILE" ]]; then
-        echo "epoch,iso,profile,cpu_load,cpu_temp,gpu_temp,gpu_power,gpu_limit,pl1,pl2,governor,epp,turbo,battery_pct,battery_status" > "$STATS_FILE"
+        echo "$STATS_HEADER" > "$STATS_FILE"
+        return
+    fi
+    # Widen an older header in place so existing history stays readable.
+    if [[ "$(head -n 1 "$STATS_FILE")" != "$STATS_HEADER" ]]; then
+        local tmp="${STATS_FILE}.tmp"
+        { echo "$STATS_HEADER"; tail -n +2 "$STATS_FILE"; } > "$tmp" && mv "$tmp" "$STATS_FILE"
     fi
 }
 
+# Hottest reading per component category as "nvme,ram,vrm,board" using the
+# shared sensor layer (lib/sensors.py). Empty fields when unavailable.
+get_component_temps_csv() {
+    local script
+    for script in /usr/local/lib/sensors.py "${BOOST_LIB_DIR}/sensors.py"; do
+        [[ -r "$script" ]] || continue
+        command -v python3 >/dev/null 2>&1 || break
+        python3 - "$script" <<'PYEOF' 2>/dev/null && return 0
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("boost_sensors", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+values = module.get_all()
+print(",".join(
+    "" if module.hottest(category, values) is None else str(module.hottest(category, values))
+    for category in ("nvme", "ram", "vrm", "board")
+))
+PYEOF
+    done
+    echo ",,,"
+}
+
 record_power_sample() {
-    local cpu_load="${1:-}" gpu_csv gpu_temp gpu_power gpu_limit bat_pct bat_status
+    local cpu_load="${1:-}" gpu_csv gpu_temp gpu_power gpu_limit bat_pct bat_status components
     [[ -n "$cpu_load" ]] || cpu_load=$(get_cpu_load_percent)
     gpu_csv=$(get_gpu_csv)
     IFS=',' read -r gpu_temp gpu_power gpu_limit <<< "$gpu_csv"
     bat_pct=$(get_battery_pct 2>/dev/null || echo "")
     bat_status=$(get_battery_status 2>/dev/null || echo "Unknown")
+    components=$(get_component_temps_csv)
     ensure_stats_file
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "$(date +%s)" \
         "$(date -Is)" \
         "$(get_power_profile)" \
@@ -450,7 +486,8 @@ record_power_sample() {
         "$(get_epp)" \
         "$(get_turbo_state)" \
         "${bat_pct}" \
-        "${bat_status}" >> "$STATS_FILE"
+        "${bat_status}" \
+        "${components}" >> "$STATS_FILE"
 }
 
 save_originals() {
@@ -515,6 +552,142 @@ set_rapl() {
     safe_write "$limit_uw" "${base}/constraint_${constraint}_power_limit_uw" 2>/dev/null || true
 }
 
+# ── Silent interlock (dumb-proof profile switching) ──────────────────
+
+# Silent caps power *and* asks for the quietest fan curve. Applying it while
+# the machine is already hot or under sustained load is how people end up
+# throttling, so `silent` queues itself instead and lib/boost-daemon.py
+# releases the request as soon as the machine cools down.
+# Prints the reason and returns 0 when Silent must wait; returns 1 when clear.
+silent_interlock_reason() {
+    local temp load limit busy
+    if [[ -f "$AUTO_CONF_FILE" ]]; then
+        read_safe_config "$AUTO_CONF_FILE"
+    fi
+    limit="${BOOST_TEMP_LIMIT:-78}"
+    busy="${LOAD_HIGH:-75}"
+    [[ "$limit" =~ ^[0-9]+$ ]] || limit=78
+    [[ "$busy" =~ ^[0-9]+$ ]] || busy=75
+    temp=$(get_cpu_temp_c 2>/dev/null || echo 0)
+    load=$(get_cpu_load_percent 2>/dev/null || echo 0)
+    if [[ "$temp" =~ ^[0-9]+$ ]] && (( temp >= limit )); then
+        echo "the CPU is at ${temp} C (limit ${limit} C)"
+        return 0
+    fi
+    if [[ "$load" =~ ^[0-9]+$ ]] && (( load >= busy )); then
+        echo "the CPU is ${load}% busy (busy threshold ${busy}%)"
+        return 0
+    fi
+    return 1
+}
+
+queue_silent_pending() {
+    local reason="$1"
+    mkdir -p "$(dirname "$SILENT_PENDING_FILE")"
+    printf '%s %s\n' "$(date +%s)" "$reason" > "$SILENT_PENDING_FILE"
+    logger -t power-profile "silent queued: $reason"
+}
+
+clear_silent_pending() {
+    rm -f "$SILENT_PENDING_FILE" 2>/dev/null || true
+}
+
+# ── GPU power limit in watts ─────────────────────────────────────────
+
+# Prints "min max" in watts as reported by the driver, or nothing when the
+# GPU has no adjustable limit. Values always come from the driver (LACT's
+# approach) so the UI can never offer a watt figure the card would reject.
+get_gpu_pl_range_w() {
+    local limits min_l max_l amd_hwmon
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        limits=$(nvidia-smi --query-gpu=power.min_limit,power.max_limit \
+            --format=csv,noheader,nounits -i 0 2>/dev/null | head -1)
+        if [[ -n "$limits" ]]; then
+            IFS=',' read -r min_l max_l <<< "$limits"
+            printf '%d %d\n' "$(echo "$min_l" | awk '{print int($1)}')" "$(echo "$max_l" | awk '{print int($1)}')"
+            return 0
+        fi
+    fi
+    amd_hwmon=$(find_amd_gpu_hwmon 2>/dev/null || true)
+    if [[ -n "$amd_hwmon" ]]; then
+        printf '%d %d\n' \
+            "$(( $(cat "${amd_hwmon}power1_cap_min" 2>/dev/null || echo 0) / 1000000 ))" \
+            "$(( $(cat "${amd_hwmon}power1_cap_max" 2>/dev/null || echo 0) / 1000000 ))"
+        return 0
+    fi
+    return 1
+}
+
+get_gpu_pl_w() {
+    local amd_hwmon value
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        value=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits -i 0 2>/dev/null | awk '{printf "%d", $1}')
+        [[ -n "$value" ]] && echo "$value" && return 0
+    fi
+    amd_hwmon=$(find_amd_gpu_hwmon 2>/dev/null || true)
+    if [[ -n "$amd_hwmon" ]]; then
+        echo $(( $(cat "${amd_hwmon}power1_cap" 2>/dev/null || echo 0) / 1000000 ))
+        return 0
+    fi
+    return 1
+}
+
+get_gpu_temp_c() {
+    local csv temp
+    csv=$(get_gpu_csv)
+    IFS=',' read -r temp _ _ <<< "$csv"
+    [[ "$temp" =~ ^[0-9]+$ ]] && echo "$temp" || echo 0
+}
+
+# set_gpu_pl_w <watts> [--force]
+# Clamps to the driver range and refuses to *raise* the limit while the GPU is
+# already at 85 C or hotter; lowering it is always allowed.
+set_gpu_pl_w() {
+    local want="$1" force="${2:-}" range min_l max_l current gpu_temp amd_hwmon
+    [[ "$want" =~ ^[0-9]+$ ]] || { echo "  [WARN] GPU limit must be a whole number of watts" >&2; return 1; }
+    range=$(get_gpu_pl_range_w) || { echo "  [WARN] no adjustable GPU power limit on this system" >&2; return 1; }
+    read -r min_l max_l <<< "$range"
+    (( max_l <= 0 )) && { echo "  [WARN] driver reports no GPU power limit range" >&2; return 1; }
+    (( want < min_l )) && want="$min_l"
+    (( want > max_l )) && want="$max_l"
+    current=$(get_gpu_pl_w 2>/dev/null || echo 0)
+    gpu_temp=$(get_gpu_temp_c)
+    if [[ "$force" != "--force" ]] && (( want > current )) && (( gpu_temp >= 85 )); then
+        echo "[GPU]  refusing to raise the limit to ${want}W: GPU is ${gpu_temp} C" >&2
+        return 2
+    fi
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        nvidia-smi -pm 1 -i 0 >/dev/null 2>&1 || true
+        if nvidia-smi --power-limit="$want" -i 0 >/dev/null 2>&1; then
+            echo "[GPU]  NVIDIA limit=${want}W (requested, range ${min_l}-${max_l}W)"
+            return 0
+        fi
+        echo "  [WARN] nvidia-smi rejected the ${want}W limit" >&2
+        return 1
+    fi
+    amd_hwmon=$(find_amd_gpu_hwmon 2>/dev/null || true)
+    if [[ -n "$amd_hwmon" ]]; then
+        if echo $(( want * 1000000 )) > "${amd_hwmon}power1_cap" 2>/dev/null; then
+            echo "[GPU]  AMD limit=${want}W (requested, range ${min_l}-${max_l}W)"
+            return 0
+        fi
+        echo "  [WARN] AMD GPU power limit write failed (check amdgpu driver)" >&2
+        return 1
+    fi
+    return 1
+}
+
+# Explicit per-profile watt limit from /etc/boost-auto.conf, empty when unset.
+gpu_pl_for_mode() {
+    local mode="$1" value=""
+    case "$mode" in
+        boost)     value="${GPU_PL_BOOST_W:-}" ;;
+        powersave) value="${GPU_PL_POWERSAVE_W:-}" ;;
+        silent)    value="${GPU_PL_SILENT_W:-}" ;;
+    esac
+    [[ "$value" =~ ^[0-9]+$ ]] && (( value > 0 )) && echo "$value"
+}
+
 apply_hardware_limits() {
     local mode="$1" # boost, powersave, silent, restore
 
@@ -562,6 +735,19 @@ apply_hardware_limits() {
         set_rapl 0 "$t_pl1"
         set_rapl 1 "$t_pl2"
         echo "[CPU]  RAPL PL1=$((t_pl1 / 1000000))W, PL2=$((t_pl2 / 1000000))W (scaled for $mode)"
+    fi
+
+    # Explicit per-profile GPU watt limit wins over the percentage scaling
+    # below: if the user picked a number in the dashboard or via
+    # `auto gpu-limit`, that is what gets applied on every profile switch,
+    # boot and resume.
+    local explicit_gpu_w
+    explicit_gpu_w=$(gpu_pl_for_mode "$mode")
+    if [[ -n "$explicit_gpu_w" ]]; then
+        # A refused write (hot GPU) must not fall through to the percentage
+        # scaling below, which would raise the limit the guard just blocked.
+        set_gpu_pl_w "$explicit_gpu_w" || true
+        return 0
     fi
 
     # NVIDIA GPU dynamic scaling

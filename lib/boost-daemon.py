@@ -14,11 +14,20 @@ import sys
 import time
 import json
 import csv
+import socket
 import subprocess
 import shlex
 import syslog
 import threading
 from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import sensors as sensor_layer
+    import fancontrol
+except ImportError:  # pragma: no cover - only when lib/ is installed partially
+    sensor_layer = None
+    fancontrol = None
 
 STATE_DIR = "/var/lib/power-profile"
 CONF_FILE = "/etc/boost-auto.conf"
@@ -27,8 +36,18 @@ SNOOZE_FILE = os.path.join(STATE_DIR, "auto-snooze-until")
 SKIP_TODAY_FILE = os.path.join(STATE_DIR, "auto-skip-date")
 LIVE_FILE = os.path.join(STATE_DIR, "live.json")
 DAILY_FILE = os.path.join(STATE_DIR, "daily.csv")
+PENDING_SILENT_FILE = os.path.join(STATE_DIR, "silent-pending")
 GPU_HEAVY_UTIL_PCT = 80
 GPU_HEAVY_DURATION_S = 30
+
+STATS_HEADER = (
+    "epoch,iso,profile,cpu_load,cpu_temp,gpu_temp,gpu_power,gpu_limit,pl1,pl2,"
+    "governor,epp,turbo,battery_pct,battery_status,nvme_temp,ram_temp,vrm_temp,board_temp"
+)
+
+# A queued Silent request only becomes stale after this long; the daemon keeps
+# retrying until the machine actually cools down.
+PENDING_SILENT_MAX_AGE_S = 4 * 3600
 
 # Canonical mode presets, shared with lib/boost-web.py and bin/auto so the
 # three implementations can never drift apart (see CHANGELOG v1.2.0).
@@ -118,6 +137,17 @@ class BoostDaemon:
         self.screen_lock_powersave = "yes"
         self._battery_charge_limit = 0
         self._process_cache = (0, set())
+        self.gpu_pl_profiles = {"boost": 0, "powersave": 0, "silent": 0}
+        self._sensor_values = {}
+        self._sensor_groups = []
+        self._fan_status = {"enabled": False, "supported": False, "fans": []}
+        self._pending_silent_notified = False
+        self.fan_engine = None
+        if fancontrol is not None:
+            try:
+                self.fan_engine = fancontrol.FanEngine(log=self.log)
+            except Exception as exc:  # noqa: BLE001 - fans must never block startup
+                self.log(f"Fan engine unavailable: {exc!r}", LOG_WARNING)
 
         self.cpu_temp_path, self.cpu_temp_coretemp_dir = self.find_cpu_temp_path()
         self.amd_gpu_hwmon = self.find_amd_gpu_hwmon()
@@ -142,7 +172,9 @@ class BoostDaemon:
         self._cached_profile = None
         self._profile_cycle_count = 0
         self._snooze_cache = (0, 0, False)
-        
+        self._gpu_pl_range = None
+        self._watchdog_usec = 0
+
     def log(self, msg, level=syslog.LOG_INFO):
         syslog.syslog(level, msg)
 
@@ -392,6 +424,10 @@ class BoostDaemon:
                         elif k == "SLOW_CHARGE_RECOVERY_PCT": self.slow_charge_recovery_pct = self._config_int(k, v, self.slow_charge_recovery_pct, 1, 100)
                         elif k == "SCREEN_LOCK_POWERSAVE": self.screen_lock_powersave = self._config_choice(k, v, self.screen_lock_powersave, YES_NO)
                         elif k == "BATTERY_CHARGE_LIMIT": self._battery_charge_limit = self._config_int(k, v, self._battery_charge_limit, 0, 100)
+                        elif k in ("GPU_PL_BOOST_W", "GPU_PL_POWERSAVE_W", "GPU_PL_SILENT_W"):
+                            # Empty means "let the profile scale the limit itself".
+                            slot = k[len("GPU_PL_"):-len("_W")].lower()
+                            self.gpu_pl_profiles[slot] = 0 if not v else self._config_int(k, v, self.gpu_pl_profiles[slot], 0, 1000)
         except Exception: pass
 
     def apply_preset(self):
@@ -580,6 +616,112 @@ class BoostDaemon:
         except Exception as e:
             self.log(f"Failed to set charge limit: {e}")
 
+    # ── Component sensors & fan curves ───────────────────────────────
+
+    def read_all_sensors(self):
+        """Read every hwmon temperature once per tick (single poll authority)."""
+        if sensor_layer is None:
+            self._sensor_values, self._sensor_groups = {}, []
+            return self._sensor_values
+        try:
+            self._sensor_values = sensor_layer.get_all()
+            self._sensor_groups = sensor_layer.group_by_category(self._sensor_values)
+        except Exception as exc:  # noqa: BLE001 - a bad sensor must not stop the tick
+            self.log(f"Sensor read failed: {exc!r}", LOG_WARNING)
+            self._sensor_values, self._sensor_groups = {}, []
+        return self._sensor_values
+
+    def category_temp(self, category):
+        """Hottest reading for a component category, or "" when absent."""
+        if sensor_layer is None or not self._sensor_values:
+            return ""
+        value = sensor_layer.hottest(category, self._sensor_values)
+        return "" if value is None else str(value)
+
+    def run_fan_engine(self, profile):
+        if self.fan_engine is None:
+            return
+        thresholds = {"tempHot": self.temp_hot, "tempCritical": self.temp_critical}
+        self._fan_status = self.fan_engine.tick(self._sensor_values, profile, thresholds)
+
+    # ── Silent interlock ─────────────────────────────────────────────
+
+    def silent_interlock(self, temp, load, now):
+        """Should a Silent request be held back right now?
+
+        Silent caps power *and* asks for the quietest fan curve; doing that
+        while the machine is already hot or under sustained load is how people
+        end up thermal throttling. Returns (blocked, reason).
+        """
+        if temp and temp >= self.boost_temp_limit:
+            return True, f"CPU is {temp} C (limit {self.boost_temp_limit} C)"
+        sustained = self.high_since != 0 and now - self.high_since >= 30
+        if load >= self.load_high and sustained:
+            return True, f"CPU load has been at {load}% for {int(now - self.high_since)}s"
+        return False, ""
+
+    def handle_pending_silent(self, temp, load, now):
+        """Apply a queued "silent-pending" request once the machine cools down."""
+        raw = self.read_text(PENDING_SILENT_FILE, "")
+        if not raw:
+            self._pending_silent_notified = False
+            return
+        try:
+            requested_at = int(raw.split()[0])
+        except (ValueError, IndexError):
+            requested_at = 0
+        if requested_at and now - requested_at > PENDING_SILENT_MAX_AGE_S:
+            self._clear_pending_silent()
+            self.log("Dropped a stale queued Silent request")
+            return
+        blocked, reason = self.silent_interlock(temp, load, now)
+        if blocked:
+            if not self._pending_silent_notified:
+                self._pending_silent_notified = True
+                self.send_notification(
+                    "Silent is queued",
+                    f"Waiting for the machine to cool down first — {reason}.",
+                )
+            return
+        self._clear_pending_silent()
+        self.log("Queued Silent request released; machine has cooled down")
+        self.run_command("/usr/local/bin/silent --force --auto")
+        self.note_switch("silent-pending-applied", f"Applied the queued Silent profile: CPU is now {temp} C at {load}% load.")
+        self.send_notification("Silent mode applied", f"The machine cooled to {temp} C, so the queued Silent profile is now active.")
+
+    def _clear_pending_silent(self):
+        self._pending_silent_notified = False
+        try:
+            os.remove(PENDING_SILENT_FILE)
+        except OSError:
+            pass
+
+    # ── GPU power limit ──────────────────────────────────────────────
+
+    def read_gpu_pl_range(self):
+        """Return (min_w, max_w) allowed by the driver, or (0, 0)."""
+        if self._gpu_pl_range is not None:
+            return self._gpu_pl_range
+        result = (0, 0)
+        try:
+            out = subprocess.check_output(
+                ['nvidia-smi', '--query-gpu=power.min_limit,power.max_limit',
+                 '--format=csv,noheader,nounits'], text=True, stderr=subprocess.DEVNULL).strip()
+            parts = [x.strip() for x in out.split('\n')[0].split(',')]
+            if len(parts) == 2:
+                result = (int(float(parts[0])), int(float(parts[1])))
+        except Exception:
+            if self.amd_gpu_hwmon:
+                try:
+                    result = (
+                        int(self.read_text(self.amd_gpu_hwmon + "power1_cap_min", "0") or "0") // 1_000_000,
+                        int(self.read_text(self.amd_gpu_hwmon + "power1_cap_max", "0") or "0") // 1_000_000,
+                    )
+                except ValueError:
+                    result = (0, 0)
+        self._gpu_pl_range = result
+        return result
+
     def read_rapl_limits(self):
         """Return (pl1_watts_str, pl2_watts_str); ("0", "0") when RAPL is unavailable (AMD CPUs)."""
         rapl_base = '/sys/class/powercap/intel-rapl/intel-rapl:0'
@@ -653,6 +795,32 @@ class BoostDaemon:
         except Exception as e:
             self.log(f"Error writing daily rollup: {e}")
 
+    def ensure_stats_header(self):
+        """Create stats.csv, or widen an older file's header in place.
+
+        The component-temperature columns were added after the first release;
+        rewriting just the header keeps existing rows readable (csv.DictReader
+        fills the new keys with None) instead of throwing the history away.
+        """
+        if not os.path.exists(STATS_FILE):
+            with open(STATS_FILE, 'w') as f:
+                f.write(STATS_HEADER + "\n")
+            return
+        try:
+            with open(STATS_FILE, 'r') as f:
+                first = f.readline().strip()
+            if first == STATS_HEADER:
+                return
+            with open(STATS_FILE, 'r') as f:
+                lines = f.readlines()
+            lines[0] = STATS_HEADER + "\n"
+            with open(f"{STATS_FILE}.tmp", 'w') as f:
+                f.writelines(lines)
+            os.rename(f"{STATS_FILE}.tmp", STATS_FILE)
+            self.log("Widened stats.csv header with component temperature columns")
+        except OSError as e:
+            self.log(f"Could not update stats header: {e}", LOG_WARNING)
+
     def record_stats(self, load, temp, profile, gpu_stats=None):
         try:
             if not getattr(self, '_state_dir_created', False):
@@ -670,12 +838,15 @@ class BoostDaemon:
             battery_pct = "" if pct is None else str(pct)
             battery_status = self.read_battery_status_text()
             iso_time = datetime.now().astimezone().replace(microsecond=0).isoformat()
-            row = f"{int(time.time())},{iso_time},{profile},{load},{temp},{gpu_temp},{gpu_power},{gpu_limit},{pl1},{pl2},{gov},{epp},{turbo},{battery_pct},{battery_status}\n"
-            
-            if not os.path.exists(STATS_FILE):
-                with open(STATS_FILE, 'w') as f:
-                    f.write("epoch,iso,profile,cpu_load,cpu_temp,gpu_temp,gpu_power,gpu_limit,pl1,pl2,governor,epp,turbo,battery_pct,battery_status\n")
-            
+            row = (
+                f"{int(time.time())},{iso_time},{profile},{load},{temp},{gpu_temp},{gpu_power},"
+                f"{gpu_limit},{pl1},{pl2},{gov},{epp},{turbo},{battery_pct},{battery_status},"
+                f"{self.category_temp('nvme')},{self.category_temp('ram')},"
+                f"{self.category_temp('vrm')},{self.category_temp('board')}\n"
+            )
+
+            self.ensure_stats_header()
+
             with open(STATS_FILE, 'a') as f:
                 f.write(row)
                 
@@ -704,14 +875,35 @@ class BoostDaemon:
                 os.makedirs(STATE_DIR, exist_ok=True)
                 self._state_dir_created = True
             gpu_temp, gpu_power, gpu_limit, gpu_util = gpu_stats
+            gpu_min_w, gpu_max_w = self.read_gpu_pl_range()
+            now = int(time.time())
+            blocked, block_reason = self.silent_interlock(temp, load, now)
+            pending_raw = self.read_text(PENDING_SILENT_FILE, "")
             snapshot = {
-                "time": int(time.time()),
+                "time": now,
                 "cpu": {"temp": temp, "load": load},
-                "gpu": {"temp": gpu_temp, "power": gpu_power, "limit": gpu_limit, "util": gpu_util},
+                "gpu": {
+                    "temp": gpu_temp, "power": gpu_power, "limit": gpu_limit, "util": gpu_util,
+                    "minLimit": gpu_min_w, "maxLimit": gpu_max_w,
+                    "requested": self.gpu_pl_profiles,
+                },
                 "profile": profile,
                 "mode": self.mode,
                 "limits": {"pl1": pl1, "pl2": pl2},
                 "battery": {"acOnline": ac_online, "pct": battery_pct},
+                "sensors": self._sensor_groups,
+                "fans": self._fan_status,
+                "interlock": {
+                    "silentBlocked": blocked,
+                    "reason": block_reason,
+                    "pending": bool(pending_raw),
+                    "thresholds": {
+                        "tempHot": self.temp_hot,
+                        "tempCritical": self.temp_critical,
+                        "boostTempLimit": self.boost_temp_limit,
+                        "loadHigh": self.load_high,
+                    },
+                },
                 "lastSwitch": {
                     "reason": self.last_switch_reason,
                     "text": self.last_switch_reason_text,
@@ -896,15 +1088,56 @@ class BoostDaemon:
         self._snooze_cache = (now, until_epoch, skipped)
         return skipped or until_epoch > now
 
+    def sd_notify(self, message):
+        """Best-effort sd_notify(3) so systemd can watchdog this daemon.
+
+        A hung poll loop with fans under our control is exactly the failure
+        that must not go unnoticed: systemd restarts the unit, and the unit's
+        ExecStopPost hands the fans back to the board.
+        """
+        address = os.environ.get("NOTIFY_SOCKET")
+        if not address:
+            return
+        if address.startswith("@"):
+            address = "\0" + address[1:]
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+                sock.connect(address)
+                sock.sendall(message.encode("utf-8"))
+        except OSError:
+            pass
+
+    def shutdown(self, signum=None, frame=None):
+        """Release the fans before exiting (SIGTERM from systemctl stop)."""
+        self.log("Daemon stopping; returning fans to board control")
+        if self.fan_engine is not None:
+            try:
+                self.fan_engine.release()
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"Fan release failed: {exc!r}", LOG_WARNING)
+        raise SystemExit(0)
+
+    def _sleep_with_watchdog(self):
+        """Sleep one poll interval, pinging the systemd watchdog meanwhile."""
+        deadline = time.monotonic() + self.poll_interval
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(5.0, remaining))
+            self.sd_notify("WATCHDOG=1")
+
     def loop(self):
         self.log("Boost Daemon started in Python High-Performance mode")
+        self.sd_notify("READY=1")
         while True:
-            time.sleep(self.poll_interval)
+            self._sleep_with_watchdog()
             try:
                 self._tick()
             except Exception as e:
                 # Never let a single bad poll cycle kill the daemon
                 self.log(f"Poll cycle error (recovered): {e!r}", LOG_WARNING)
+            self.sd_notify("WATCHDOG=1")
 
     def _tick(self):
         try:
@@ -922,9 +1155,22 @@ class BoostDaemon:
         temp = self.read_cpu_temp()
         load = self.read_cpu_load()
         profile = self.get_ppd_profile()
+        self.read_all_sensors()
         is_game = self.is_game_running()
         is_creator = self.is_creator_running()
         is_meeting = self.is_meeting_running()
+
+        # Sustained-load tracking lives here rather than in the suggestion
+        # chain below because the Silent interlock needs it on every tick,
+        # including the ones that return early.
+        if load >= self.load_high:
+            if self.high_since == 0:
+                self.high_since = now
+        elif not is_game:
+            self.high_since = 0
+
+        self.run_fan_engine(profile)
+        self.handle_pending_silent(temp, load, now)
 
         # GPU-bound heavy workload: catches unlisted GPU apps (Stable
         # Diffusion/ComfyUI, Lutris/Heroic games, niche engines) that
@@ -1185,5 +1431,9 @@ class BoostDaemon:
             self.idle_since = 0
 
 if __name__ == "__main__":
+    import signal
+
     daemon = BoostDaemon()
+    signal.signal(signal.SIGTERM, daemon.shutdown)
+    signal.signal(signal.SIGINT, daemon.shutdown)
     daemon.loop()

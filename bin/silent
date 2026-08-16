@@ -11,12 +11,32 @@ if [[ "$1" == "--version" ]]; then echo "silent $VERSION"; exit 0; fi
 check_root "$@"
 
 AUTO_SILENT=0
-if [[ "${1:-}" == "--auto" ]]; then
-    AUTO_SILENT=1
-    shift
-fi
+FORCE_SILENT=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --auto)  AUTO_SILENT=1; shift ;;
+        # Skips the thermal interlock. Used by the daemon when it releases a
+        # queued request (it has just checked the temperature itself).
+        --force) FORCE_SILENT=1; shift ;;
+        *) break ;;
+    esac
+done
 
 ORIG_USER="${SUDO_USER:-$(logname 2>/dev/null)}"
+
+# Thermal interlock: never drop into the quiet profile while the machine
+# still needs the cooling. The request is queued instead and boost-auto
+# applies it by itself once temperature and load come back down.
+if [[ "$FORCE_SILENT" != "1" ]]; then
+    if block_reason=$(silent_interlock_reason); then
+        queue_silent_pending "$block_reason"
+        echo "[SILENT] Not applying yet: ${block_reason}."
+        echo "[SILENT] Silent is queued and will switch on by itself once the machine cools down."
+        echo "[SILENT] Run 'silent --force' to apply it right now anyway."
+        exit 0
+    fi
+fi
+clear_silent_pending
 
 disable_auto_for_manual_profile "Silent"
 
