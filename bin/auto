@@ -725,14 +725,25 @@ case "${1:-start}" in
                 shift 2
                 python3 "$FANCONTROL_PY" calibrate "$@"
                 ;;
-            preset|test)
+            preset|preset-all|test)
                 need_root "$@"
                 cmd="$sub"
                 shift 2
                 python3 "$FANCONTROL_PY" "$cmd" "$@"
                 ;;
+            quiet)
+                need_root "$@"
+                preset="${3:-whisper}"
+                case "$preset" in
+                    whisper|hush|silent) ;;
+                    *) echo "Usage: auto fans quiet <whisper|hush|silent>" >&2; exit 1 ;;
+                esac
+                python3 "$FANCONTROL_PY" preset-all "$preset" silent || exit 1
+                python3 "$FANCONTROL_PY" enable >/dev/null 2>&1
+                exec /usr/local/bin/silent
+                ;;
             *)
-                echo "Usage: auto fans [status|on|off|init|calibrate|preset <fan> <name>|test <fan> <pwm%> [s]|failsafe]" >&2
+                echo "Usage: auto fans [status|on|off|init|calibrate|preset <fan> <name>|preset-all <name>|quiet <whisper|hush|silent>|test <fan> <pwm%> [s]|failsafe]" >&2
                 exit 1
                 ;;
         esac

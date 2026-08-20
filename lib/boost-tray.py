@@ -355,6 +355,19 @@ class BoostTray:
         self.add_profile_item("🍃 Eco Mode", "silent", "power-saver")
         self.add_profile_item("♻️ Default", "restore", "balanced")
 
+        # Quiet Fans — dedicated presets, quieter than the Eco Mode default.
+        # Applies the curve to every fan's silent profile, then switches to
+        # Eco Mode so it's audible right away (same guard_floor safety net).
+        quiet_menu = Gtk.Menu()
+        quiet_item = Gtk.MenuItem(label="🔇 Quiet Fans")
+        quiet_item.set_submenu(quiet_menu)
+        self.menu.append(quiet_item)
+
+        for preset, label in [("whisper", "Whisper (quietest)"), ("hush", "Hush"), ("silent", "Silent (default)")]:
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", self.on_quiet_fans, preset)
+            quiet_menu.append(item)
+
         self.menu.append(Gtk.SeparatorMenuItem())
 
         # Auto Modes
@@ -432,6 +445,16 @@ class BoostTray:
         # Optimistic UI update
         prof = {"boost": "performance", "powersave": "balanced", "silent": "power-saver"}.get(command, "balanced")
         self._last_state["prof"] = prof
+        GLib.idle_add(lambda: self.apply_status(**self._last_state) or False)
+
+    def on_quiet_fans(self, widget, preset):
+        """Apply a quiet fan preset to every fan and switch to Eco Mode."""
+        global _cached_profile, _profile_cycle_count
+        run_cmd(f"/usr/local/bin/auto fans quiet {preset}")
+        _cached_profile = None
+        _profile_cycle_count = 0
+        notify(f"Fans set to {preset.capitalize()} 🔇")
+        self._last_state["prof"] = "power-saver"
         GLib.idle_add(lambda: self.apply_status(**self._last_state) or False)
 
     def on_auto_mode(self, widget, mode):

@@ -1009,6 +1009,22 @@ def main(argv: list[str]) -> int:
         ok, error = save_config(config)
         print(f"{args[0]}: {args[1]} preset applied" if ok else f"Failed: {error}")
         return 0 if ok else 1
+    elif command == "preset-all":
+        if len(args) < 1 or args[0] not in PRESET_SHAPES:
+            print(f"Usage: fancontrol.py preset-all <{'|'.join(PRESET_SHAPES)}> [profile]", file=sys.stderr)
+            return 1
+        profile = args[1] if len(args) > 1 and args[1] in PROFILE_KEYS else "silent"
+        config = load_config()
+        config.pop("error", None)
+        if not config.get("fans"):
+            print("No fans configured; run 'auto fans init' first.", file=sys.stderr)
+            return 1
+        for fan in config["fans"].values():
+            fan["preset"][profile] = args[0]
+            fan["profiles"][profile] = preset_curve(args[0], fan.get("min_pwm", MIN_PWM_FLOOR))
+        ok, error = save_config(config)
+        print(f"{args[0]} preset applied to every fan's {profile} profile" if ok else f"Failed: {error}")
+        return 0 if ok else 1
     else:
         print(__doc__)
         return 1
