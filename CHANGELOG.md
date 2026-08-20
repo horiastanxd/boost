@@ -7,7 +7,8 @@ All notable changes to Boost are documented here.
 ### Added
 - **Two quieter fan presets, `whisper` and `hush`** — sit below the existing `silent` preset for people who find it still audible at idle. Both hold near the calibrated stall floor well into the 60s/70s C and only reach full speed past 85C, same as every other preset. They go through `guard_floor()` like any curve, so the daemon still forces fans up if CPU/GPU/NVMe/VRM actually gets hot — a quiet curve can't cook the machine. Selectable per-fan from the existing preset buttons and `auto fans preset <fan> whisper|hush [profile]`; no UI or profile-key changes needed since presets were already data-driven.
 - **`auto fans preset-all <name> [profile]`** — applies one preset to every discovered fan's given profile (default `silent`) in one call, instead of looping `auto fans preset <fan> ...` by hand.
-- **Tray → 🔇 Quiet Fans submenu** (Whisper / Hush / Silent) — one click applies the preset to every fan's silent profile and switches to Eco Mode so it's audible immediately, backed by `auto fans quiet <whisper|hush|silent>`.
+- **Tray → 🔇 Quiet Fans submenu** (Whisper / Hush / Silent) — one click applies the preset to every fan profile and takes effect immediately under whatever power profile is already active, backed by `auto fans quiet <whisper|hush|silent>`. Doesn't touch power-profiles-daemon or stop boost-auto.service, so it can't fight the auto daemon the way switching profiles would.
+- **Eco Mode busy-machine warning** — clicking Eco Mode (tray or `silent`) while the GPU is over 30% busy now prints/notifies a heads-up that Eco Mode's power cap may make GPU-bound work feel slower, without blocking the switch. CPU-side, the existing thermal interlock (hot CPU or sustained high load) still queues Silent instead of applying it outright — this only adds the GPU signal it didn't have.
 
 ## [1.10.0] - 2026-08-16
 

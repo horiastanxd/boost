@@ -38,6 +38,16 @@ if [[ "$FORCE_SILENT" != "1" ]]; then
 fi
 clear_silent_pending
 
+# Non-blocking heads-up: GPU load isn't part of the thermal interlock above
+# (rendering/gaming doesn't heat the CPU the way sustained CPU load does),
+# but Eco Mode's power cap can still make GPU-bound work feel sluggish.
+if command -v nvidia-smi >/dev/null 2>&1; then
+    gpu_busy=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+    if [[ "$gpu_busy" =~ ^[0-9]+$ ]] && (( gpu_busy >= 30 )); then
+        echo "[SILENT] Heads up: GPU is ${gpu_busy}% busy right now — Eco Mode may feel slower for GPU work."
+    fi
+fi
+
 disable_auto_for_manual_profile "Silent"
 
 apply_quiet_fan_curve() {

@@ -434,6 +434,25 @@ class BoostTray:
         item.connect("activate", self._on_profile_click, command, friendly)
         self.menu.append(item)
 
+    def _activity_warning(self):
+        """Return a heads-up string if the machine looks busy right now, else None.
+
+        Non-blocking: Eco Mode / Quiet Fans still apply either way, this just
+        sets expectations before they do. Reads the daemon's live snapshot
+        instead of re-polling sysfs/nvidia-smi itself.
+        """
+        data = read_live_snapshot()
+        if not data:
+            return None
+        load = data.get("cpu", {}).get("load", 0)
+        gpu_util = data.get("gpu", {}).get("util", 0)
+        load_high = data.get("interlock", {}).get("thresholds", {}).get("loadHigh", 75)
+        if isinstance(load, (int, float)) and load >= load_high:
+            return f"CPU is {load}% busy right now"
+        if isinstance(gpu_util, (int, float)) and gpu_util >= 30:
+            return f"GPU is {gpu_util}% busy right now"
+        return None
+
     def _on_profile_click(self, _widget, command, friendly_name):
         """Execute a profile command and show a notification."""
         global _cached_profile, _profile_cycle_count
@@ -441,6 +460,10 @@ class BoostTray:
         # Invalidate profile cache so next status update picks up the change
         _cached_profile = None
         _profile_cycle_count = 0
+        if command == "silent":
+            warning = self._activity_warning()
+            if warning:
+                notify(f"⚠️ Eco Mode while {warning} — might feel slower", icon="dialog-warning-symbolic")
         notify(f"Switched to {friendly_name} mode ⚡")
         # Optimistic UI update
         prof = {"boost": "performance", "powersave": "balanced", "silent": "power-saver"}.get(command, "balanced")
