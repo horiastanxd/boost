@@ -448,14 +448,15 @@ class BoostTray:
         GLib.idle_add(lambda: self.apply_status(**self._last_state) or False)
 
     def on_quiet_fans(self, widget, preset):
-        """Apply a quiet fan preset to every fan and switch to Eco Mode."""
-        global _cached_profile, _profile_cycle_count
+        """Apply a quiet fan preset to every fan, active immediately.
+
+        Deliberately does not switch the power profile: `auto fans quiet`
+        writes the preset to every fan profile and leaves boost-auto.service
+        running, so it takes effect under whatever profile is active right
+        now instead of fighting the auto daemon.
+        """
         run_cmd(f"/usr/local/bin/auto fans quiet {preset}")
-        _cached_profile = None
-        _profile_cycle_count = 0
         notify(f"Fans set to {preset.capitalize()} 🔇")
-        self._last_state["prof"] = "power-saver"
-        GLib.idle_add(lambda: self.apply_status(**self._last_state) or False)
 
     def on_auto_mode(self, widget, mode):
         run_cmd(f"/usr/local/bin/auto mode {mode}")

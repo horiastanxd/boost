@@ -732,15 +732,25 @@ case "${1:-start}" in
                 python3 "$FANCONTROL_PY" "$cmd" "$@"
                 ;;
             quiet)
+                # Applies to every fan profile (not just "silent") so it takes
+                # effect right now regardless of the active power profile, and
+                # deliberately does NOT touch power-profiles-daemon or call
+                # bin/silent — that would run disable_auto_for_manual_profile
+                # and stop boost-auto.service, which is the very process that
+                # ticks the fan curve engine (the fans would then fail back to
+                # board control a few seconds later, undoing this command).
                 need_root "$@"
                 preset="${3:-whisper}"
                 case "$preset" in
                     whisper|hush|silent) ;;
                     *) echo "Usage: auto fans quiet <whisper|hush|silent>" >&2; exit 1 ;;
                 esac
-                python3 "$FANCONTROL_PY" preset-all "$preset" silent || exit 1
+                for key in boost balanced silent; do
+                    python3 "$FANCONTROL_PY" preset-all "$preset" "$key" || exit 1
+                done
                 python3 "$FANCONTROL_PY" enable >/dev/null 2>&1
-                exec /usr/local/bin/silent
+                systemctl is-active --quiet boost-auto.service || systemctl start boost-auto.service
+                echo "Quiet fan preset '$preset' applied to every profile."
                 ;;
             *)
                 echo "Usage: auto fans [status|on|off|init|calibrate|preset <fan> <name>|preset-all <name>|quiet <whisper|hush|silent>|test <fan> <pwm%> [s]|failsafe]" >&2
