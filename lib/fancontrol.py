@@ -66,6 +66,8 @@ PROFILE_MAP = {
 # The 85C+/>=80% tail is mandatory (validate_curve enforces it), so even the
 # quietest preset ends in a curve that can actually cool the machine.
 PRESET_SHAPES = {
+    "whisper": [(52, 0.00), (66, 0.10), (77, 0.32), (85, 0.80), (92, 1.00)],
+    "hush": [(48, 0.00), (63, 0.15), (74, 0.40), (83, 0.75), (90, 1.00)],
     "silent": [(45, 0.00), (60, 0.20), (72, 0.50), (82, 0.80), (90, 1.00)],
     "balanced": [(40, 0.10), (55, 0.35), (70, 0.65), (80, 0.90), (90, 1.00)],
     "aggressive": [(35, 0.30), (50, 0.55), (65, 0.80), (75, 0.95), (85, 1.00)],
