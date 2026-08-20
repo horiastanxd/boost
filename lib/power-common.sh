@@ -189,15 +189,23 @@ set_auto_config_value() {
 }
 
 disable_auto_for_manual_profile() {
+    # Stops the daemon's automatic *profile switching* only. The daemon
+    # process itself keeps running with AUTO_MODE=off (a real, supported
+    # mode — boost-daemon.py's tick loop still runs the fan curve engine,
+    # sensors and live snapshot in that state, it just skips the "pick a
+    # profile for you" logic). Previously this fully stopped
+    # boost-auto.service, which also killed the fan engine that ticks it —
+    # fans would fail back to raw board control seconds after any manual
+    # profile click (Performance/Balanced/Eco/Default), independent of
+    # whatever fan preset was configured.
     local profile_name="$1"
     [[ "${AUTO_HELPER_INTERNAL:-0}" == "1" ]] && return 0
 
     set_auto_config_value AUTO_MODE off
     if systemctl is-active --quiet "$AUTO_SERVICE" 2>/dev/null; then
-        systemctl stop "$AUTO_SERVICE" 2>/dev/null || true
-        echo "[AUTO] Disabled auto mode because you chose ${profile_name} manually."
-        echo "[AUTO] Run 'auto start' or 'auto mode calm|friendly|active' to enable it again."
-        logger -t power-profile "auto disabled after manual ${profile_name}"
+        echo "[AUTO] Disabled automatic profile switching because you chose ${profile_name} manually."
+        echo "[AUTO] Fan curves keep running. Run 'auto mode dynamic|gaming|creator|quiet' to re-enable automatic switching."
+        logger -t power-profile "auto mode set to off after manual ${profile_name}"
     fi
 }
 

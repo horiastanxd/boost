@@ -4,6 +4,9 @@ All notable changes to Boost are documented here.
 
 ## Unreleased
 
+### Fixed
+- **Manual profile clicks (Performance/Balanced/Eco/Default) were killing the fan engine.** `disable_auto_for_manual_profile` fully stopped `boost-auto.service` on every manual pick — but that's the only process that ticks the fan curve engine, so fans fell back to raw board control (BIOS Smart Fan) a few seconds after *any* tray click, independent of preset. Now it only flips `AUTO_MODE=off` in config, which `boost-daemon.py`'s tick loop already treats as "keep running the fan engine and sensors, skip the auto-switch suggestions" — this mode existed and was tested, it just wasn't being used for manual switches.
+
 ### Added
 - **Two quieter fan presets, `whisper` and `hush`** — sit below the existing `silent` preset for people who find it still audible at idle. Both hold near the calibrated stall floor well into the 60s/70s C and only reach full speed past 85C, same as every other preset. They go through `guard_floor()` like any curve, so the daemon still forces fans up if CPU/GPU/NVMe/VRM actually gets hot — a quiet curve can't cook the machine. Selectable per-fan from the existing preset buttons and `auto fans preset <fan> whisper|hush [profile]`; no UI or profile-key changes needed since presets were already data-driven.
 - **`auto fans preset-all <name> [profile]`** — applies one preset to every discovered fan's given profile (default `silent`) in one call, instead of looping `auto fans preset <fan> ...` by hand.
