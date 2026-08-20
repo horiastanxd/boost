@@ -45,6 +45,31 @@ SKIP_TODAY_FILE = STATE_DIR / "auto-skip-date"
 SILENT_PENDING_FILE = STATE_DIR / "silent-pending"
 LATEST_REPORT = STATE_DIR / "reports" / "latest.html"
 
+#: Windows has no systemd unit to hold the daemon's pid or its stdout/stderr,
+#: so the auto daemon manages both itself (see boost_daemon_windows.py).
+AUTO_PID_FILE = STATE_DIR / "auto.pid"
+AUTO_LOG_FILE = STATE_DIR / "auto.log"
+
+
+def presets_file() -> Path | None:
+    """Canonical mode-preset file (config/presets.json), or None if missing.
+
+    Shared with lib/boost-daemon.py's own resolution on Linux. On Windows the
+    file ships next to boost.exe (see packaging/windows/build.ps1).
+    """
+    candidates = [
+        Path("/usr/local/share/boost/presets.json"),
+        _app_root() / "presets.json",
+        Path(__file__).resolve().parent.parent / "config" / "presets.json",
+    ]
+    return next((c for c in candidates if c.is_file()), None)
+
+
+def _app_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
 
 def ensure_state_dir() -> None:
     """Create the state directory if it is missing.

@@ -67,6 +67,8 @@ class PlatformBackend:
     supports_rapl = False
     supports_epp = False
     supports_tray = False
+    #: HTML history reports (bin/power-report) are a Linux-only script for now.
+    supports_html_report = False
 
     def apply_profile(self, profile: str) -> dict[str, Any]:
         raise NotImplementedError
@@ -114,6 +116,7 @@ class LinuxBackend(PlatformBackend):
     supports_rapl = True
     supports_epp = True
     supports_tray = True
+    supports_html_report = True
 
     BIN = "/usr/local/bin"
 

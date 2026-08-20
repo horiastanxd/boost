@@ -71,6 +71,21 @@ def print_status(backend: platform_backend.PlatformBackend) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+
+    # `auto` takes its own free-form subcommand (start/stop/status/mode X/...),
+    # which doesn't fit argparse's single-positional-command shape below, so
+    # it is dispatched before the parser ever sees it. Only meaningful where
+    # the daemon exists (Windows for now; see boost_daemon_windows.py).
+    if argv and argv[0] == "auto":
+        if not boost_paths.IS_WINDOWS:
+            print("boost: the auto daemon on Linux is the separate `auto` command "
+                  "installed by install.sh.", file=sys.stderr)
+            return 1
+        import boost_daemon_windows
+
+        return boost_daemon_windows.main(argv[1:])
+
     parser = argparse.ArgumentParser(
         prog="boost", description="Boost power manager (cross-platform entry point)"
     )

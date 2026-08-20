@@ -580,6 +580,21 @@ def active_service(name: str) -> str:
     return cached_run(f"service_{name}", ["systemctl", "is-active", name], 5) or "inactive"
 
 
+def auto_argv() -> list[str]:
+    """Command prefix for the `auto` control CLI, per platform.
+
+    Linux has a separate installed `auto` script. Windows has no such
+    binary — boost.exe itself dispatches "auto ..." to
+    boost_daemon_windows.py, so re-invoke whichever executable is running.
+    """
+    if not boost_paths.IS_WINDOWS:
+        return ["/usr/local/bin/auto"]
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "auto"]
+    boost_py = Path(__file__).resolve().parent.parent / "bin" / "boost.py"
+    return [sys.executable, str(boost_py), "auto"]
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Live snapshot written by the auto daemon
 # ──────────────────────────────────────────────────────────────────────────
@@ -1410,20 +1425,20 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
         return outcome
     if action in AUTO_ACTIONS and not BACKEND.supports_auto_daemon:
         return BACKEND.unsupported("The auto daemon")
-    if action == "report" and not BACKEND.supports_auto_daemon:
+    if action == "report" and not BACKEND.supports_html_report:
         return BACKEND.unsupported("HTML reports")
     if action == "auto-mode" and value in allowed_modes:
-        result = run(["/usr/local/bin/auto", "mode", value], timeout=10)
+        result = run([*auto_argv(), "mode", value], timeout=10)
     elif action == "snooze" and value in allowed_durations:
-        result = run(["/usr/local/bin/auto", "snooze", value], timeout=10)
+        result = run([*auto_argv(), "snooze", value], timeout=10)
         with _SNOOZE_WEB_LOCK:
             _SNOOZE_WEB_CACHE = (0, 0, False)
     elif action == "today-off":
-        result = run(["/usr/local/bin/auto", "today-off"], timeout=10)
+        result = run([*auto_argv(), "today-off"], timeout=10)
         with _SNOOZE_WEB_LOCK:
             _SNOOZE_WEB_CACHE = (0, 0, False)
     elif action == "resume":
-        result = run(["/usr/local/bin/auto", "resume"], timeout=10)
+        result = run([*auto_argv(), "resume"], timeout=10)
         with _SNOOZE_WEB_LOCK:
             _SNOOZE_WEB_CACHE = (0, 0, False)
     elif action == "quiet-hours":
@@ -1435,9 +1450,9 @@ def run_action(action: str, value: str | None = None) -> dict[str, Any]:
         end = str(payload.get("end", "08:00"))
         if not valid_hhmm(start) or not valid_hhmm(end):
             return {"ok": False, "message": "Quiet hours must use HH:MM."}
-        result = run(["/usr/local/bin/auto", "quiet-hours", start, end], timeout=10)
+        result = run([*auto_argv(), "quiet-hours", start, end], timeout=10)
     elif action == "summer-nights" and value in {"on", "off"}:
-        result = run(["/usr/local/bin/auto", "summer-nights", value], timeout=10)
+        result = run([*auto_argv(), "summer-nights", value], timeout=10)
     elif action in FAN_ACTIONS or action == "gpu-limit":
         if action in FAN_ACTIONS and not BACKEND.supports_fan_control:
             return BACKEND.unsupported("Fan control")

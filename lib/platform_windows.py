@@ -114,8 +114,13 @@ class WindowsBackend(PlatformBackend):
     reads_sysfs = False
 
     # Windows v1 intentionally ships none of these. See docs/ARCHITECTURE.md.
+    # The auto daemon (boost_daemon_windows.py) *is* supported: it covers
+    # temperature/load-driven profile switching, game/creator/meeting
+    # detection, AC/battery and screen-lock automation, all built on
+    # interfaces Windows exposes safely. Fan curves, RAPL and EPP still need
+    # sysfs or a signed kernel driver Boost will not ship — see README.md.
     supports_fan_control = False
-    supports_auto_daemon = False
+    supports_auto_daemon = True
     supports_rapl = False
     supports_epp = False
     supports_tray = False

@@ -92,9 +92,12 @@ of pretending.
 | Web dashboard | ✅ | The same dashboard, at `http://127.0.0.1:8765` |
 | CPU load, GPU watts / temp | ✅ | `GetSystemTimes` (or psutil) and `nvidia-smi` |
 | CPU temperature | ⚠️ Best effort | ACPI thermal zone; most desktop boards hide it, and Boost shows `n/a` rather than guessing |
+| Auto daemon | ✅ | `boost.exe auto start\|stop\|status\|logs\|mode\|snooze\|...`, driven by `GetSystemPowerStatus`/`tasklist` instead of sysfs |
+| Game / creator / meeting detection | ✅ | Process-name based, same triggers as Linux (boost on game, suggest Boost for renders, quiet down for calls) |
+| AC / battery, screen-lock automation | ✅ | Profile switches on plug/unplug, low/critical battery, and lock/unlock |
 | Fan control | ❌ | Needs a signed kernel driver to reach the embedded controller |
 | RAPL power limits, EPP | ❌ | Linux kernel interfaces with no safe userspace equivalent |
-| Auto daemon, game detection | ❌ | Linux-only for now |
+| HTML history reports | ❌ | Linux-only for now (`power-report`) |
 | Tray applet | ❌ | GTK3 / Ayatana are Linux desktop components |
 
 **Get it:** download `boost-windows.zip` from the

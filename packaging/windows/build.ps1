@@ -70,6 +70,7 @@ Write-Host '[build] Running PyInstaller...'
     --hidden-import boost_paths `
     --hidden-import platform_backend `
     --hidden-import platform_windows `
+    --hidden-import boost_daemon_windows `
     --hidden-import http.server `
     --hidden-import socketserver `
     --hidden-import urllib.parse `
