@@ -170,6 +170,28 @@ sudo -v
    GDK_BACKEND=x11 /usr/local/bin/boost-tray
    ```
 
+### Tray icon click opens GNOME Quick Settings instead of the Boost menu
+
+**Symptom:** The Boost icon is visible in the top bar, but clicking it opens
+the system's Quick Settings panel (Wi-Fi/Bluetooth/Power Mode/...) instead of
+the Boost menu (profiles, Auto Mode, Snooze, Open Web Dashboard). Other
+indicators, like Livepatch, keep their own separate popup on click.
+
+**Cause:** The indicator was registered under
+`AyatanaAppIndicator3.IndicatorCategory.SYSTEM_SERVICES`, a category some
+shells treat as "no menu of its own" and fold into the system quick-settings
+area instead of rendering as an independent indicator. This is fixed in the
+current version by registering under `APPLICATION_STATUS`, the category used
+by indicators that keep their own dropdown menu (e.g. Livepatch).
+
+**If the symptom persists after upgrading:** there is also a known upstream
+bug in the `gnome-shell-extension-appindicator` ("AppIndicator and
+KStatusNotifierItem Support") on GNOME 50 / Ubuntu 26.04 that mis-renders
+indicator icons regardless of category — see
+[ubuntu/gnome-shell-extension-appindicator#628](https://github.com/ubuntu/gnome-shell-extension-appindicator/issues/628)
+("Does not show icons on Gnome 50 (Ubuntu 26.04)"). If updating Boost alone
+doesn't fix it, update or reinstall that extension via Extension Manager.
+
 ### Temperature sensor not detected
 
 **Symptom:** CPU temperature shows 0°C in status or dashboard.

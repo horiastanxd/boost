@@ -1,0 +1,5 @@
+# HANDOFF
+
+## Stare curenta
+
+Initializat.

@@ -5,6 +5,7 @@ All notable changes to Boost are documented here.
 ## Unreleased
 
 ### Fixed
+- **Tray icon click opens GNOME Quick Settings instead of the Boost menu** on GNOME 50 / Ubuntu 26.04 — the indicator was registered under `AyatanaAppIndicator3.IndicatorCategory.SYSTEM_SERVICES`, a category some shells absorb into the system quick-settings panel instead of giving it its own dropdown. Switched to `APPLICATION_STATUS`, the category used by indicators that keep an independent click menu (e.g. Livepatch).
 - **Manual profile clicks (Performance/Balanced/Eco/Default) were killing the fan engine.** `disable_auto_for_manual_profile` fully stopped `boost-auto.service` on every manual pick — but that's the only process that ticks the fan curve engine, so fans fell back to raw board control (BIOS Smart Fan) a few seconds after *any* tray click, independent of preset. Now it only flips `AUTO_MODE=off` in config, which `boost-daemon.py`'s tick loop already treats as "keep running the fan engine and sensors, skip the auto-switch suggestions" — this mode existed and was tested, it just wasn't being used for manual switches.
 
 ### Added

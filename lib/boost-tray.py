@@ -21,7 +21,7 @@ gi.require_version('AyatanaAppIndicator3', '0.1')
 gi.require_version('Notify', '0.7')
 from gi.repository import Gtk, Gdk, GLib, AyatanaAppIndicator3, Notify
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 STATE_DIR = Path("/var/lib/power-profile")
 CONF_FILE = Path("/etc/boost-auto.conf")
 LIVE_FILE = STATE_DIR / "live.json"
@@ -329,7 +329,7 @@ class BoostTray:
         self.indicator = AyatanaAppIndicator3.Indicator.new(
             "boost-tray",
             "power-profile-balanced-symbolic",
-            AyatanaAppIndicator3.IndicatorCategory.SYSTEM_SERVICES
+            AyatanaAppIndicator3.IndicatorCategory.APPLICATION_STATUS
         )
         self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
         self._last_state = {

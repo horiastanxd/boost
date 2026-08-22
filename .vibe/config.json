@@ -1,0 +1,8 @@
+{
+  "reset_day": "monday",
+  "economy_threshold": 30,
+  "context_warn_tokens": 8000,
+  "context_target_tokens": 5000,
+  "solutions_max_lines": 250,
+  "handoff_max_lines": 120
+}
