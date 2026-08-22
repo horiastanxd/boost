@@ -2,6 +2,19 @@
   "active_spec": "boost-tray-gnome50-menu.md",
   "build_done": false,
   "verified_ok": false,
-  "attempts": {},
+  "attempts": {
+    "3a73352340c29b16": {
+      "count": 1,
+      "error": "install: No such file or directory"
+    },
+    "a99e150611509c90": {
+      "count": 1,
+      "error": "ex.html app.css app.js\n+ install -m <n> '<path> Public<path> <path>\n+ echo '  -> <path>\n+ for asset in index.html app.css app.js\n+ install -m <n> '<path> Public<path> <path>\n+ echo '  -> <path>\n+ echo '[install] Installing canonical mode presets...'\n+ mkdir -p <path>\n+ install -m <n> '<path> Public<path> <path>\n+ echo '  -> <path>\n+ echo '[install] Copying shell autocompletions...'\n+ mkdir -p <path>\n+ install -m <n> '<path> Public<path> <path>\n+ for cmd in boost powersave silent restore summer\n+ ln -sf auto <path>\n+ for cmd in boost powersave silent restore summer\n+ ln -sf auto <path>\n+ for cmd in boost powersave silent restore summer\n+ ln -sf auto <path>\n+ for cmd in boost powersave silent restore summer\n+ ln -sf auto <path>\n+ for cmd in boost powersave silent restore summer\n+ ln -sf auto <path>\n+ echo '[install] Installing desktop app launcher & tray autostart...'\n+ mkdir -p <path>\n+ mkdir -p <path>\n+ install -m <n> '<path> Public<path> <path>\n+ install -m <n> '<path> Public<path> <path>\n+ command -v update-desktop-database\n+ update-desktop-database <path>\n+ echo '[install] Loading component temperature drivers...'\n+ install -m <n> <path> <path>\ninstall: No such file or directory"
+    },
+    "30e4747b839ba8e0": {
+      "count": 1,
+      "error": "[install] Copying scripts to <path>\n  -> <path>\n  -> <path>\n  -> <path>\n  -> <path>\n  -> <path>\n  -> <path>\n  -> <path>\n  -> <path>\n  -> <path>\n  -> <path>\n  -> <path>\n[install] Copying lib to <path>\n[install] Copying dashboard assets to <path>\n  -> <path>\n  -> <path>\n  -> <path>\n[install] Installing canonical mode presets...\n  -> <path>\n[install] Copying shell autocompletions...\n[install] Installing desktop app launcher & tray autostart...\n[install] Loading component temperature drivers...\ninstall: No such file or directory"
+    }
+  },
   "checkpoints": []
 }

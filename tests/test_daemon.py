@@ -27,7 +27,6 @@ with patch("syslog.openlog"), patch("syslog.syslog"):
     sys.modules["boost_daemon"] = _mod
     _spec.loader.exec_module(_mod)
 
-import boost_daemon  # noqa: E402
 from boost_daemon import BoostDaemon  # noqa: E402
 
 

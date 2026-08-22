@@ -1,6 +1,5 @@
 """Unit tests for lib/boost-web.py - valid_hhmm, CSRF, and basic endpoints."""
 import importlib.util
-import io
 import json
 import os
 import sys

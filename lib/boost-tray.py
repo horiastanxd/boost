@@ -6,7 +6,6 @@ auto-mode switching, snooze controls, and live CPU telemetry.
 """
 import json
 import os
-import sys
 import shlex
 import shutil
 import subprocess
@@ -19,7 +18,7 @@ import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('AyatanaAppIndicator3', '0.1')
 gi.require_version('Notify', '0.7')
-from gi.repository import Gtk, Gdk, GLib, AyatanaAppIndicator3, Notify
+from gi.repository import Gtk, GLib, AyatanaAppIndicator3, Notify
 
 VERSION = "1.7.1"
 STATE_DIR = Path("/var/lib/power-profile")
