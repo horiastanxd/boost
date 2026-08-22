@@ -144,6 +144,16 @@ sudo -v
    ```bash
    ps aux | grep boost-tray
    ```
+   If it's not running at all, check the user journal for a startup crash
+   (e.g. a missing GObject Introspection typelib such as
+   `gir1.2-ayatanaappindicator3-0.1` — installed but not always pulled in on
+   Ubuntu upgrades):
+   ```bash
+   journalctl --user -b 0 | grep boost-tray
+   ```
+   `install.sh` runs a pre-flight check for these typelibs before starting
+   the tray and prints the exact `apt install` command if any are missing —
+   see `docs/DEPENDENCIES.md` for the equivalent packages on other distros.
 
 2. Start it manually to see errors:
    ```bash

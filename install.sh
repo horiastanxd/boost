@@ -163,7 +163,28 @@ fi
 
 if [ -n "$REAL_USER" ]; then
     echo ""
-    echo "[install] Starting tray applet for user $REAL_USER..."
-    pkill -f boost-tray || true
-    sudo -u "$REAL_USER" env "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$REAL_USER")/bus" "DISPLAY=${DISPLAY:-:0}" "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}" "XDG_RUNTIME_DIR=/run/user/$(id -u "$REAL_USER")" nohup /usr/local/bin/boost-tray >/dev/null 2>&1 &
+    if ! python3 -c "
+import gi
+gi.require_version('Gtk', '3.0')
+gi.require_version('AyatanaAppIndicator3', '0.1')
+gi.require_version('Notify', '0.7')
+from gi.repository import Gtk, AyatanaAppIndicator3, Notify
+" >/dev/null 2>&1; then
+        echo "[install] boost-tray dependencies missing — run:"
+        echo "  sudo apt install gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 gir1.2-notify-0.7"
+        echo "  (other distros: see docs/DEPENDENCIES.md)"
+        echo "  Skipping tray applet startup."
+    else
+        echo "[install] Starting tray applet for user $REAL_USER..."
+        pkill -f boost-tray || true
+        TRAY_LOG="/tmp/boost-tray-install.log"
+        sudo -u "$REAL_USER" env "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$REAL_USER")/bus" "DISPLAY=${DISPLAY:-:0}" "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}" "XDG_RUNTIME_DIR=/run/user/$(id -u "$REAL_USER")" nohup /usr/local/bin/boost-tray >"$TRAY_LOG" 2>&1 &
+        sleep 2
+        if pgrep -f /usr/local/bin/boost-tray >/dev/null 2>&1; then
+            echo "  -> boost-tray started successfully"
+        else
+            echo "  -> boost-tray failed to start; captured output:"
+            sed 's/^/     /' "$TRAY_LOG"
+        fi
+    fi
 fi
